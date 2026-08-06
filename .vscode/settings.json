@@ -1,0 +1,16 @@
+{
+  "go.goroot": "/home/namplh/sdk/go1.26.5",
+  "go.gopath": "/home/namplh/go",
+  "go.alternateTools": {
+    "go": "/home/namplh/sdk/go1.26.5/bin/go"
+  },
+  "go.toolsEnvVars": {
+    "GOROOT": "/home/namplh/sdk/go1.26.5",
+    "GOPATH": "/home/namplh/go"
+  },
+  "terminal.integrated.env.linux": {
+    "GOROOT": "/home/namplh/sdk/go1.26.5",
+    "GOPATH": "/home/namplh/go",
+    "PATH": "/home/namplh/sdk/go1.26.5/bin:/home/namplh/go/bin:${env:PATH}"
+  }
+}
