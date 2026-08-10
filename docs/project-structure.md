@@ -62,9 +62,7 @@ PaySplit-BE/
 │           ├── router/
 │           │   └── router.go                  # Tạo Chi router và gắn route các module
 │           ├── middleware/
-│           │   ├── logging.go                 # Request logging và request ID
-│           │   ├── recovery.go                # Khôi phục khi handler panic
-│           │   └── timeout.go                 # Giới hạn thời gian xử lý request
+│           │   └── timeout.go                 # Giới hạn thời gian xử lý request và trả lỗi JSON
 │           ├── response/
 │           │   ├── response.go                # Chuẩn hóa JSON success response
 │           │   └── error.go                   # Chuẩn hóa JSON error response
