@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"paysplit-backend/internal/config"
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
@@ -17,7 +18,7 @@ const requestTimeout = 15 * time.Second
 
 // New builds the application HTTP router, installs global middleware, and
 // mounts each module under its versioned API prefix.
-func New(authHandler *authhttp.Handler) http.Handler {
+func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler {
 	if authHandler == nil {
 		panic("router: auth handler must not be nil")
 	}
@@ -33,6 +34,8 @@ func New(authHandler *authhttp.Handler) http.Handler {
 		chiMiddleware.ClientIPFromRemoteAddr,
 		chiMiddleware.Logger,
 		chiMiddleware.Recoverer,
+		middleware.CORS(appConfig.CORSAllowedOrigins...),
+		middleware.RateLimit(appConfig.RateLimitRequestsPerMinute, time.Minute),
 		middleware.Timeout(requestTimeout),
 	)
 

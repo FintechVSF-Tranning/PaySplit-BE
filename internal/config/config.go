@@ -9,8 +9,10 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Environment string
-	Address     string
+	Environment                string
+	Address                    string
+	CORSAllowedOrigins         []string
+	RateLimitRequestsPerMinute int
 }
 
 type DatabaseConfig struct {
