@@ -11,12 +11,14 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Config chứa các thiết lập runtime đã được kiểm tra dùng để khởi tạo API.
 type Config struct {
 	App      AppConfig
 	Database DatabaseConfig
 	Auth     AuthConfig
 }
 
+// AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
 type AppConfig struct {
 	Environment                string
 	Address                    string
@@ -25,6 +27,8 @@ type AppConfig struct {
 	RateLimitRequestsPerMinute int
 }
 
+// DatabaseConfig chứa cấu hình kết nối và pool PostgreSQL; giá trị này không
+// đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
 	URL               string
 	MaxConns          int32
@@ -34,15 +38,18 @@ type DatabaseConfig struct {
 	HealthCheckPeriod time.Duration
 }
 
+// AuthConfig chứa các thiết lập cần thiết để phát hành access token.
 type AuthConfig struct {
 	JWTSecret      string
 	JWTIssuer      string
 	AccessTokenTTL time.Duration
 }
 
+// Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
+// kiểm tra kết quả trước khi bootstrap khởi tạo các tài nguyên bên ngoài.
 func Load() (*Config, error) {
-	// .env is a local-development convenience. Existing environment variables
-	// keep precedence, which lets deployment platforms supply their own values.
+	// File .env hỗ trợ cấu hình thuận tiện khi phát triển cục bộ. Biến môi trường
+	// hiện có vẫn được ưu tiên để nền tảng triển khai có thể cung cấp giá trị riêng.
 	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load .env: %w", err)
 	}
@@ -109,6 +116,8 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// Validate từ chối cấu hình thiếu hoặc không nhất quán để startup thất bại
+// trước khi mở cổng mạng hoặc kết nối database.
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config must not be nil")

@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ParsePoolConfig chuyển thiết lập database của ứng dụng thành cấu hình
+// dành riêng cho driver mà pgxpool sử dụng.
 func ParsePoolConfig(cfg config.DatabaseConfig) (*pgxpool.Config, error) {
 	poolConfig, err := pgxpool.ParseConfig(cfg.URL)
 	if err != nil {
@@ -23,6 +25,8 @@ func ParsePoolConfig(cfg config.DatabaseConfig) (*pgxpool.Config, error) {
 	return poolConfig, nil
 }
 
+// NewPostgresPool tạo và kiểm tra pool kết nối PostgreSQL. Bên gọi sở hữu pool
+// được trả về và phải đóng pool khi ứng dụng dừng.
 func NewPostgresPool(ctx context.Context, cfg config.DatabaseConfig) (*pgxpool.Pool, error) {
 	poolConfig, err := ParsePoolConfig(cfg)
 	if err != nil {
@@ -33,6 +37,8 @@ func NewPostgresPool(ctx context.Context, cfg config.DatabaseConfig) (*pgxpool.P
 	if err != nil {
 		return nil, fmt.Errorf("create PostgreSQL pool: %w", err)
 	}
+	// Pool được khởi tạo theo cơ chế lazy, vì vậy ping ngay để startup thất bại
+	// sớm nếu không thể truy cập database thay vì đợi đến request đầu tiên.
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping PostgreSQL: %w", err)
