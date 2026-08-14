@@ -8,20 +8,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"paysplit-backend/internal/config"
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
 )
 
-const requestTimeout = 15 * time.Second
-
 // New builds the application HTTP router, installs global middleware, and
 // mounts each module under its versioned API prefix.
-func New(authHandler *authhttp.Handler) http.Handler {
-	if authHandler == nil {
-		panic("router: auth handler must not be nil")
-	}
-
+func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler {
 	router := chi.NewRouter()
 
 	// RequestID makes one correlation ID available through the request context.
@@ -33,12 +28,16 @@ func New(authHandler *authhttp.Handler) http.Handler {
 		chiMiddleware.ClientIPFromRemoteAddr,
 		chiMiddleware.Logger,
 		chiMiddleware.Recoverer,
-		middleware.Timeout(requestTimeout),
+		middleware.CORS(appConfig.CORSAllowedOrigins...),
+		middleware.RateLimit(appConfig.RateLimitRequestsPerMinute, time.Minute),
+		middleware.Timeout(appConfig.RequestTimeout),
 	)
 
 	router.Get("/", root)
 	router.Get("/health", health)
-	router.Route("/api/v1/auth", authHandler.RegisterRoutes)
+	if authHandler != nil {
+		router.Route("/api/v1/auth", authHandler.RegisterRoutes)
+	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "route not found")
