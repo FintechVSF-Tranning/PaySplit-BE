@@ -1,5 +1,8 @@
 .PHONY: run build test fmt tidy sqlc migrate-up migrate-down migrate-status
 
+include .env #Tạo file .env để lưu trữ các biến môi trường, ví dụ DATABASE_URL, và sử dụng chúng trong Makefile.
+export
+
 run:
 	go run ./cmd/api
 
@@ -19,10 +22,10 @@ sqlc:
 	sqlc generate
 
 migrate-up:
-	go run ./cmd/migrate up
+	migrate -path db/migrations -database "$(DATABASE_URL)" -verbose up
 
 migrate-down:
-	go run ./cmd/migrate down
+	migrate -path db/migrations -database "$(DATABASE_URL)" -verbose down
 
 migrate-status:
-	go run ./cmd/migrate status
+	migrate -path db/migrations -database "$(DATABASE_URL)" version
