@@ -14,15 +14,9 @@ import (
 	middleware "paysplit-backend/internal/transport/http/middleware"
 )
 
-const requestTimeout = 15 * time.Second
-
 // New builds the application HTTP router, installs global middleware, and
 // mounts each module under its versioned API prefix.
 func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler {
-	if authHandler == nil {
-		panic("router: auth handler must not be nil")
-	}
-
 	router := chi.NewRouter()
 
 	// RequestID makes one correlation ID available through the request context.
@@ -36,12 +30,14 @@ func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler
 		chiMiddleware.Recoverer,
 		middleware.CORS(appConfig.CORSAllowedOrigins...),
 		middleware.RateLimit(appConfig.RateLimitRequestsPerMinute, time.Minute),
-		middleware.Timeout(requestTimeout),
+		middleware.Timeout(appConfig.RequestTimeout),
 	)
 
 	router.Get("/", root)
 	router.Get("/health", health)
-	router.Route("/api/v1/auth", authHandler.RegisterRoutes)
+	if authHandler != nil {
+		router.Route("/api/v1/auth", authHandler.RegisterRoutes)
+	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "route not found")

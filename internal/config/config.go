@@ -20,6 +20,7 @@ type Config struct {
 type AppConfig struct {
 	Environment                string
 	Address                    string
+	RequestTimeout             time.Duration
 	CORSAllowedOrigins         []string
 	RateLimitRequestsPerMinute int
 }
@@ -74,11 +75,16 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	requestTimeout, err := durationEnv("HTTP_REQUEST_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
 			Environment:                stringEnv("APP_ENV", "development"),
 			Address:                    stringEnv("HTTP_ADDRESS", ":8080"),
+			RequestTimeout:             requestTimeout,
 			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
 			RateLimitRequestsPerMinute: rateLimit,
 		},
@@ -109,6 +115,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.App.Address) == "" {
 		return errors.New("HTTP_ADDRESS must not be empty")
+	}
+	if c.App.RequestTimeout <= 0 {
+		return errors.New("HTTP_REQUEST_TIMEOUT_SECONDS must be positive")
 	}
 	if len(c.App.CORSAllowedOrigins) == 0 {
 		return errors.New("HTTP_CORS_ALLOWED_ORIGINS must contain at least one origin")

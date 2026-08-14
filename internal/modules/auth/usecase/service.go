@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	"paysplit-backend/internal/modules/auth/domain"
 	"paysplit-backend/internal/modules/auth/repository"
@@ -13,7 +15,7 @@ type PasswordManager interface {
 }
 
 type TokenIssuer interface {
-	Issue(userID int64) (token string, expiresIn int64, err error)
+	IssueWithRole(userID, role string) (token string, expiresIn int64, err error)
 }
 
 type Service struct {
@@ -23,9 +25,9 @@ type Service struct {
 }
 
 type RegisterInput struct {
-	Email    string
-	Name     string
-	Password string
+	Email       string
+	DisplayName string
+	Password    string
 }
 
 type LoginInput struct {
@@ -41,7 +43,10 @@ type AuthOutput struct {
 }
 
 func NewService(repo repository.Repository, passwords PasswordManager, tokens TokenIssuer) *Service {
-	panic("TODO: implement usecase.NewService")
+	if repo == nil || passwords == nil || tokens == nil {
+		panic("auth service dependencies must not be nil")
+	}
+	return &Service{repo: repo, passwords: passwords, tokens: tokens}
 }
 
 func (s *Service) Register(ctx context.Context, input RegisterInput) (*AuthOutput, error) {
@@ -49,5 +54,30 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (*AuthOutpu
 }
 
 func (s *Service) Login(ctx context.Context, input LoginInput) (*AuthOutput, error) {
-	panic("TODO: implement Service.Login")
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	if email == "" || input.Password == "" {
+		return nil, domain.ErrInvalidInput
+	}
+
+	user, err := s.repo.GetByEmail(ctx, email)
+	if errors.Is(err, domain.ErrUserNotFound) {
+		return nil, domain.ErrInvalidCredentials
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := s.passwords.Compare(user.PasswordHash, input.Password); err != nil {
+		return nil, domain.ErrInvalidCredentials
+	}
+
+	token, expiresIn, err := s.tokens.IssueWithRole(user.ID, user.Role)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthOutput{
+		User:        user,
+		AccessToken: token,
+		TokenType:   "Bearer",
+		ExpiresIn:   expiresIn,
+	}, nil
 }
