@@ -9,24 +9,30 @@ import (
 	jwtv5 "github.com/golang-jwt/jwt/v5"
 )
 
-type Issuer struct {
-	secret []byte
-	issuer string
-	ttl    time.Duration
+// AccessTokenManager tạo và xác thực access token JWT bằng thuật toán HS256.
+// Cùng một secret được dùng cho cả quá trình ký và xác thực token.
+type AccessTokenManager struct {
+	secret []byte        // Khóa bí mật dùng để ký và xác thực chữ ký.
+	issuer string        // Đơn vị phát hành token, được lưu trong claim "iss".
+	ttl    time.Duration // Thời gian token có hiệu lực kể từ lúc phát hành.
 }
 
+// Các role hợp lệ có thể được ghi vào access token.
 const (
 	RoleAdmin = "admin"
 	RoleUser  = "user"
 )
 
+// claims định nghĩa dữ liệu mà PaySplit lưu trong payload của JWT.
+// RegisteredClaims cung cấp các claim tiêu chuẩn như iss, sub, iat và exp.
 type claims struct {
 	Role string `json:"role"`
 	jwtv5.RegisteredClaims
 }
 
-// NewIssuer creates an HS256 access-token issuer and verifier.
-func NewIssuer(secret, issuer string, ttl time.Duration) (*Issuer, error) {
+// NewAccessTokenManager kiểm tra cấu hình và tạo một AccessTokenManager dùng
+// để phát hành cũng như xác thực access token HS256.
+func NewAccessTokenManager(secret, issuer string, ttl time.Duration) (*AccessTokenManager, error) {
 	secret = strings.TrimSpace(secret)
 	issuer = strings.TrimSpace(issuer)
 	if secret == "" {
@@ -39,17 +45,17 @@ func NewIssuer(secret, issuer string, ttl time.Duration) (*Issuer, error) {
 		return nil, errors.New("JWT access token TTL must be positive")
 	}
 
-	return &Issuer{secret: []byte(secret), issuer: issuer, ttl: ttl}, nil
+	return &AccessTokenManager{secret: []byte(secret), issuer: issuer, ttl: ttl}, nil
 }
 
-// Issue signs a regular-user access token for userID and returns its lifetime
-// in seconds. Use IssueWithRole when issuing an admin token.
-func (i *Issuer) Issue(userID string) (string, int64, error) {
+// Issue phát hành access token có role mặc định là user và trả về token cùng
+// thời gian hiệu lực tính bằng giây. Dùng IssueWithRole khi cần chỉ định role.
+func (i *AccessTokenManager) Issue(userID string) (string, int64, error) {
 	return i.IssueWithRole(userID, RoleUser)
 }
 
-// IssueWithRole signs an access token containing an application role.
-func (i *Issuer) IssueWithRole(userID, role string) (string, int64, error) {
+// IssueWithRole phát hành access token chứa ID và role của người dùng.
+func (i *AccessTokenManager) IssueWithRole(userID, role string) (string, int64, error) {
 	if strings.TrimSpace(userID) == "" {
 		return "", 0, errors.New("user ID must not be empty")
 	}
@@ -75,9 +81,9 @@ func (i *Issuer) IssueWithRole(userID, role string) (string, int64, error) {
 	return signed, int64(i.ttl.Seconds()), nil
 }
 
-// Verify validates an HS256 access token and returns its authenticated user ID
-// and role.
-func (i *Issuer) Verify(token string) (string, string, error) {
+// Verify kiểm tra chữ ký, thuật toán, đơn vị phát hành, hạn sử dụng và dữ liệu
+// nghiệp vụ của token; nếu hợp lệ, hàm trả về ID cùng role của người dùng.
+func (i *AccessTokenManager) Verify(token string) (string, string, error) {
 	parsedClaims := &claims{}
 	parsed, err := jwtv5.ParseWithClaims(
 		token,

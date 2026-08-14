@@ -9,20 +9,18 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"paysplit-backend/internal/config"
-	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
 )
 
-// New builds the application HTTP router, installs global middleware, and
-// mounts each module under its versioned API prefix.
-func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler {
+// New tạo router gốc của ứng dụng, cài đặt middleware dùng chung và trả về
+// chi.Router để bootstrap có thể đăng ký route của từng module trước khi chạy server.
+func New(appConfig config.AppConfig) chi.Router {
 	router := chi.NewRouter()
 
-	// RequestID makes one correlation ID available through the request context.
-	// ClientIPFromRemoteAddr trusts only the TCP peer address and ignores
-	// spoofable forwarding headers. Read it with middleware.GetClientIP when
-	// building rate-limit or analytics keys.
+	// RequestID thêm mã định danh vào context để theo dõi request xuyên suốt hệ thống.
+	// ClientIPFromRemoteAddr chỉ tin địa chỉ TCP trực tiếp, không tin các forwarding
+	// header có thể bị giả mạo. Dùng middleware.GetClientIP khi tạo khóa rate limit.
 	router.Use(
 		chiMiddleware.RequestID,
 		chiMiddleware.ClientIPFromRemoteAddr,
@@ -35,9 +33,6 @@ func New(authHandler *authhttp.Handler, appConfig config.AppConfig) http.Handler
 
 	router.Get("/", root)
 	router.Get("/health", health)
-	if authHandler != nil {
-		router.Route("/api/v1/auth", authHandler.RegisterRoutes)
-	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "route not found")
