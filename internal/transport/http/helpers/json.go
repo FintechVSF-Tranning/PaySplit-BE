@@ -10,7 +10,7 @@ import (
 
 // maxJSONBodySize protects the server from clients sending unbounded JSON
 // request bodies. Authentication and regular API payloads should fit in 1 MiB.
-const maxJSONBodySize int64 = 1 << 20
+const maxJSONBodySize int64 = 64 << 10
 
 // WriteJSON writes data as a JSON response. The payload is marshaled before
 // the status code is committed so the caller can handle encoding failures.

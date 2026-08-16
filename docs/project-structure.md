@@ -19,7 +19,10 @@ PaySplit-BE/
 │
 ├── docs/
 │   ├── Product_Requirement_Document.md     # Yêu cầu sản phẩm của PaySplit
+│   ├── auth-module.md                      # Giải thích luồng code auth v1
 │   ├── openapi.yaml                        # Hợp đồng REST API
+│   ├── scope/scope.md                      # Phạm vi và tiến độ feature
+│   ├── specs/0001-auth-account-v1/         # Quyết định đã chốt cho auth
 │   └── project-structure.md                # Tài liệu cấu trúc dự án
 │
 ├── internal/
@@ -34,9 +37,12 @@ PaySplit-BE/
 │   │   └── auth/
 │   │       ├── domain/
 │   │       │   ├── errors.go               # Lỗi nghiệp vụ của auth
-│   │       │   └── user.go                 # Entity User
+│   │       │   ├── token.go                # Sinh và hash opaque token
+│   │       │   └── user.go                 # User, session và cleanup entity
+│   │       ├── jobs/
+│   │       │   └── workers.go              # Auth và Cloudinary cleanup workers
 │   │       ├── usecase/
-│   │       │   └── service.go              # Luồng đăng ký và đăng nhập
+│   │       │   └── service.go              # Toàn bộ auth, password, profile và avatar flow
 │   │       ├── repository/
 │   │       │   ├── repository.go           # Interface lưu trữ mà usecase sử dụng
 │   │       │   └── postgres/
@@ -53,17 +59,21 @@ PaySplit-BE/
 │   │               ├── handler.go           # Nhận request và gọi usecase
 │   │               ├── request.go           # DTO đầu vào
 │   │               ├── response.go          # DTO đầu ra
-│   │               └── routes.go            # Route register và login
+│   │               └── routes.go            # Route auth và /users/me
 │   │
 │   ├── platform/
 │   │   ├── auth/
 │   │   │   └── jwt/
 │   │   │       └── access_token_manager.go  # Phát hành và xác thực JWT access token
+│   │   ├── banks/                           # Snapshot VietQR được embed và kiểm tra startup
 │   │   ├── database/
 │   │   │   └── postgres.go                  # Khởi tạo pgx connection pool
+│   │   ├── email/gmail/                     # Gmail SMTP adapter
+│   │   ├── image/avatar/                    # EXIF, resize và WebP converter
 │   │   └── security/
 │   │       └── password/
 │   │           └── bcrypt.go                # Băm và so sánh mật khẩu
+│   │   └── storage/cloudinary/              # Upload và xóa avatar Cloudinary
 │   │
 │   └── transport/
 │       └── http/
@@ -82,7 +92,7 @@ PaySplit-BE/
 ├── .env.example                             # Mẫu cấu hình chạy local
 ├── .gitignore                               # Các file Git bỏ qua
 ├── Dockerfile                               # Build image cho API
-├── docker-compose.yaml                      # PostgreSQL 17 dùng khi phát triển local
+├── docker-compose.yaml                      # PostgreSQL 18 với volume mới dùng local
 ├── Makefile                                 # Lệnh run, build, test, sqlc và goose
 ├── README.md                                # Hướng dẫn sử dụng dự án
 ├── LICENSE                                  # Giấy phép của dự án
@@ -123,7 +133,7 @@ Quy tắc chính:
 7. `platform` chứa hạ tầng kỹ thuật dùng chung như database, JWT và password hashing.
 8. `transport/http` chứa thành phần HTTP dùng chung giữa nhiều module.
 
-Module `auth` hiện có code do sqlc sinh trong `repository/postgres/sqlc`, nhưng `repository/postgres/repository.go` đang gọi `pgxpool` trực tiếp. Khi chuyển sang dùng các hàm do sqlc sinh, repository adapter là nơi thực hiện việc chuyển đổi đó, không để kiểu dữ liệu của sqlc đi vào `domain` hoặc `usecase`.
+Module `auth` dùng sqlc cho các query cơ bản và pgx transaction cho các luồng cần khóa nhiều dòng như sign in, refresh rotation và password reset. Cả hai đều chỉ tồn tại trong PostgreSQL adapter. Kiểu pgx và sqlc không đi vào `domain` hoặc `usecase`.
 
 ## Cấu trúc một module mới
 
@@ -157,12 +167,12 @@ Bạn có thể thêm module theo thứ tự sau:
 2. Tạo entity, lỗi và quy tắc nghiệp vụ trong `domain`.
 3. Khai báo repository interface theo đúng nhu cầu của usecase.
 4. Viết query trong `repository/postgres/queries`.
-5. Thêm một mục SQL mới vào `sqlc.yaml`, trỏ `queries` và `out` tới module mới.
+5. Thêm một mục SQL mới vào `sqlc.yaml`, trỏ `queries` và `out` tới module mới. Không dùng chung output package giữa hai module.
 6. Chạy `make sqlc` để sinh code. Không sửa tay thư mục `sqlc`.
 7. Viết PostgreSQL adapter, usecase, HTTP DTO, handler và routes.
 8. Khởi tạo repository, service và handler trong `internal/bootstrap/app.go`.
 9. Mount route bằng prefix như `/api/v1/groups`.
-10. Chạy `make test` và gọi endpoint để kiểm tra luồng hoàn chỉnh.
+10. Chạy `make test`, áp migration trên PostgreSQL thật và gọi endpoint để kiểm tra luồng hoàn chỉnh.
 
 ## Database migration
 

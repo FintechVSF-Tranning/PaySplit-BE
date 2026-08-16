@@ -13,9 +13,13 @@ import (
 
 // Config chứa các thiết lập runtime đã được kiểm tra dùng để khởi tạo API.
 type Config struct {
-	App      AppConfig
-	Database DatabaseConfig
-	Auth     AuthConfig
+	App        AppConfig
+	Database   DatabaseConfig
+	Auth       AuthConfig
+	SMTP       SMTPConfig
+	Cloudinary CloudinaryConfig
+	Avatar     AvatarConfig
+	Cleanup    CleanupConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -40,9 +44,39 @@ type DatabaseConfig struct {
 
 // AuthConfig chứa các thiết lập cần thiết để phát hành access token.
 type AuthConfig struct {
-	JWTSecret      string
-	JWTIssuer      string
-	AccessTokenTTL time.Duration
+	JWTSecret            string
+	JWTIssuer            string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	EmailVerificationTTL time.Duration
+	PasswordResetTTL     time.Duration
+	EmailVerificationURL string
+	PasswordResetURL     string
+}
+
+type SMTPConfig struct {
+	Host        string
+	Port        int
+	Username    string
+	AppPassword string
+	FromName    string
+	Timeout     time.Duration
+}
+type CloudinaryConfig struct {
+	CloudName string
+	APIKey    string
+	APISecret string
+}
+type AvatarConfig struct {
+	UploadTimeout            time.Duration
+	ProcessingTimeout        time.Duration
+	MaxConcurrentConversions int
+}
+type CleanupConfig struct {
+	Interval            time.Duration
+	Retention           time.Duration
+	MediaWorkerInterval time.Duration
+	MediaMaxAttempts    int
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -74,7 +108,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	accessTokenTTL, err := durationEnv("JWT_ACCESS_TOKEN_TTL_MINUTES", 60, time.Minute)
+	accessTokenTTL, err := durationEnv("JWT_ACCESS_TOKEN_TTL_MINUTES", 15, time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +117,55 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	requestTimeout, err := durationEnv("HTTP_REQUEST_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshTTL, err := durationEnv("AUTH_REFRESH_TOKEN_TTL_HOURS", 168, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	verificationTTL, err := durationEnv("AUTH_EMAIL_VERIFICATION_TTL_MINUTES", 10, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	resetTTL, err := durationEnv("AUTH_PASSWORD_RESET_TTL_MINUTES", 10, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	smtpPort, err := intEnv("SMTP_PORT", 587)
+	if err != nil {
+		return nil, err
+	}
+	smtpTimeout, err := durationEnv("SMTP_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarUploadTimeout, err := durationEnv("AVATAR_UPLOAD_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarProcessingTimeout, err := durationEnv("AVATAR_PROCESSING_TIMEOUT_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarConcurrency, err := intEnv("AVATAR_MAX_CONCURRENT_CONVERSIONS", 2)
+	if err != nil {
+		return nil, err
+	}
+	cleanupInterval, err := durationEnv("AUTH_CLEANUP_INTERVAL_HOURS", 24, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	retention, err := durationEnv("AUTH_RECORD_RETENTION_DAYS", 30, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	mediaInterval, err := durationEnv("MEDIA_CLEANUP_WORKER_INTERVAL_SECONDS", 60, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	mediaAttempts, err := intEnv("MEDIA_CLEANUP_MAX_ATTEMPTS", 10)
 	if err != nil {
 		return nil, err
 	}
@@ -104,10 +187,19 @@ func Load() (*Config, error) {
 			HealthCheckPeriod: healthCheckPeriod,
 		},
 		Auth: AuthConfig{
-			JWTSecret:      os.Getenv("JWT_SECRET_KEY"),
-			JWTIssuer:      stringEnv("JWT_ISSUER", "paysplit-backend"),
-			AccessTokenTTL: accessTokenTTL,
+			JWTSecret:            os.Getenv("JWT_SECRET_KEY"),
+			JWTIssuer:            stringEnv("JWT_ISSUER", "paysplit-backend"),
+			AccessTokenTTL:       accessTokenTTL,
+			RefreshTokenTTL:      refreshTTL,
+			EmailVerificationTTL: verificationTTL,
+			PasswordResetTTL:     resetTTL,
+			EmailVerificationURL: os.Getenv("AUTH_EMAIL_VERIFICATION_URL"),
+			PasswordResetURL:     os.Getenv("AUTH_PASSWORD_RESET_URL"),
 		},
+		SMTP:       SMTPConfig{Host: stringEnv("SMTP_HOST", "smtp.gmail.com"), Port: smtpPort, Username: os.Getenv("SMTP_USERNAME"), AppPassword: os.Getenv("SMTP_APP_PASSWORD"), FromName: stringEnv("SMTP_FROM_NAME", "PaySplit"), Timeout: smtpTimeout},
+		Cloudinary: CloudinaryConfig{CloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"), APIKey: os.Getenv("CLOUDINARY_API_KEY"), APISecret: os.Getenv("CLOUDINARY_API_SECRET")},
+		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
+		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -149,8 +241,26 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
 		return errors.New("JWT_ISSUER must not be empty")
 	}
-	if c.Auth.AccessTokenTTL <= 0 {
-		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be positive")
+	if c.Auth.AccessTokenTTL != 15*time.Minute {
+		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
+	}
+	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
+		return errors.New("auth TTL settings must match the v1 contract")
+	}
+	if strings.TrimSpace(c.Auth.EmailVerificationURL) == "" || strings.TrimSpace(c.Auth.PasswordResetURL) == "" {
+		return errors.New("auth callback URLs must not be empty")
+	}
+	if strings.TrimSpace(c.SMTP.Host) == "" || c.SMTP.Port <= 0 || strings.TrimSpace(c.SMTP.Username) == "" || strings.TrimSpace(c.SMTP.AppPassword) == "" || strings.TrimSpace(c.SMTP.FromName) == "" || c.SMTP.Timeout <= 0 {
+		return errors.New("Gmail SMTP configuration is required")
+	}
+	if strings.TrimSpace(c.Cloudinary.CloudName) == "" || strings.TrimSpace(c.Cloudinary.APIKey) == "" || strings.TrimSpace(c.Cloudinary.APISecret) == "" {
+		return errors.New("Cloudinary configuration is required")
+	}
+	if c.Avatar.UploadTimeout <= 0 || c.Avatar.ProcessingTimeout <= 0 || c.Avatar.MaxConcurrentConversions <= 0 {
+		return errors.New("avatar settings must be positive")
+	}
+	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
+		return errors.New("cleanup settings are invalid")
 	}
 	return nil
 }

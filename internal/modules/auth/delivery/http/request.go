@@ -1,14 +1,61 @@
 package http
 
-// registerRequest mô tả JSON đầu vào của endpoint đăng ký.
-type registerRequest struct {
+import "encoding/json"
+
+type signUpRequest struct {
 	Email       string `json:"email"`
+	PhoneNumber string `json:"phone_number"`
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
 }
+type tokenRequest struct {
+	Token string `json:"token"`
+}
+type emailRequest struct {
+	Email string `json:"email"`
+}
+type signInRequest struct {
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+}
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+	DeviceID     string `json:"device_id"`
+}
+type resetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
 
-// loginRequest mô tả JSON đầu vào của endpoint đăng nhập.
-type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+type optionalString struct {
+	Set   bool
+	Value *string
+}
+
+func (o *optionalString) UnmarshalJSON(data []byte) error {
+	o.Set = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	o.Value = &value
+	return nil
+}
+
+type patchProfileRequest struct {
+	DisplayName       optionalString `json:"display_name"`
+	PhoneNumber       optionalString `json:"phone_number"`
+	BankCode          optionalString `json:"bank_code"`
+	BankAccountNumber optionalString `json:"bank_account_number"`
+	BankAccountHolder optionalString `json:"bank_account_holder"`
 }

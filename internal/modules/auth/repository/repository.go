@@ -2,15 +2,55 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"paysplit-backend/internal/modules/auth/domain"
 )
 
-// Repository là cổng lưu trữ mà auth usecase sử dụng. Interface này trao đổi
-// domain.User để không làm lộ kiểu dữ liệu của PostgreSQL hoặc sqlc ra ngoài adapter.
+type CreateUserParams struct {
+	Email, PhoneNumber, DisplayName, PasswordHash string
+	VerificationTokenHash                         []byte
+	VerificationExpiresAt                         time.Time
+}
+
+type CreateSessionParams struct {
+	UserID, ExpectedPasswordHash, DeviceID, DeviceName string
+	RefreshTokenHash                                   []byte
+	Now, ExpiresAt                                     time.Time
+}
+
+type RotateRefreshResult struct {
+	User      *domain.User
+	SessionID string
+	ExpiresAt time.Time
+}
+
+type ProfilePatch struct {
+	DisplayName *string
+	PhoneNumber *string
+	Bank        *domain.BankProfile
+}
+
 type Repository interface {
-	// Create lưu một người dùng mới.
-	Create(ctx context.Context, user *domain.User) error
-	// GetByEmail trả về người dùng theo email hoặc domain.ErrUserNotFound.
-	GetByEmail(ctx context.Context, email string) (*domain.User, error)
+	CreateUser(context.Context, CreateUserParams) (*domain.User, error)
+	GetByEmail(context.Context, string) (*domain.User, error)
+	GetByID(context.Context, string) (*domain.User, error)
+	CreateUserToken(context.Context, string, string, []byte, time.Time) error
+	VerifyEmail(context.Context, []byte, time.Time) (*domain.User, error)
+	RecordLoginFailure(context.Context, string, time.Time) (time.Duration, error)
+	CreateSession(context.Context, CreateSessionParams) (*domain.User, *domain.Session, error)
+	RotateRefresh(context.Context, []byte, []byte, string, time.Time) (*RotateRefreshResult, error)
+	ValidateSession(context.Context, string, string, time.Time) (*domain.SessionIdentity, error)
+	RevokeSession(context.Context, string, string, string, time.Time) error
+	ResetPassword(context.Context, []byte, string, time.Time) error
+	ChangePassword(context.Context, string, string, string, time.Time) error
+	UpdateProfile(context.Context, string, ProfilePatch) (*domain.User, error)
+	SetAvatar(context.Context, string, string) (*domain.User, *string, error)
+	ClearAvatar(context.Context, string) (*string, error)
+	CheckAndRecordRateLimit(context.Context, string, map[string][]byte, time.Time) (time.Duration, error)
+	EnqueueMediaCleanup(context.Context, string, string) error
+	ClaimMediaCleanup(context.Context, time.Time, int) ([]domain.MediaCleanupJob, error)
+	CompleteMediaCleanup(context.Context, string, time.Time) error
+	FailMediaCleanup(context.Context, string, string, time.Time) error
+	CleanupExpiredAuth(context.Context, time.Time, int) (int64, error)
 }

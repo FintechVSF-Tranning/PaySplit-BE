@@ -13,10 +13,11 @@ Repository này chứa **backend API** (Go). Ứng dụng Flutter nằm ở `Pay
 ## 🛠 Công nghệ sử dụng
 * **Ngôn ngữ:** Go 1.26
 * **HTTP router:** [chi/v5](https://github.com/go-chi/chi) (`RequestID`, `Logger`, `Recoverer`, middleware timeout tự viết)
-* **Cơ sở dữ liệu:** PostgreSQL 17 qua connection pool [pgx/v5](https://github.com/jackc/pgx)
+* **Cơ sở dữ liệu:** PostgreSQL 18 qua connection pool [pgx/v5](https://github.com/jackc/pgx), UUID v7 do database sinh
 * **Tầng truy vấn:** [sqlc](https://sqlc.dev) – sinh code Go type-safe từ các file `.sql`
-* **Migration:** Các file SQL theo chuẩn goose, chạy qua `cmd/migrate`
-* **Xác thực:** JWT access token + băm mật khẩu bằng bcrypt
+* **Migration:** Các file SQL theo chuẩn Goose, chạy bằng các target `make migrate-*`
+* **Xác thực:** Access JWT 15 phút có `sid`, session PostgreSQL, refresh rotation 7 ngày và bcrypt
+* **Email và ảnh:** Gmail SMTP bằng App Password, avatar WebP lưu trên Cloudinary
 * **Ứng dụng di động:** Flutter (Dart)
 
 ## 📁 Cấu trúc dự án
@@ -24,11 +25,10 @@ Repository này chứa **backend API** (Go). Ứng dụng Flutter nằm ở `Pay
 ```text
 PaySplit-BE/
 ├── cmd/                          # Điểm khởi chạy (main mỏng, không chứa nghiệp vụ)
-│   ├── api/main.go               # Khởi động HTTP API
-│   └── migrate/main.go           # Chạy migration up/down/status
+│   └── api/main.go               # Khởi động HTTP API và cleanup workers
 │
 ├── db/migrations/                # Migration SQL toàn hệ thống (định dạng goose)
-│   └── 00001_create_users.sql
+│   └── 000001_init_schema.up.sql
 │
 ├── docs/
 │   ├── openapi.yaml              # Đặc tả REST API
@@ -50,7 +50,11 @@ PaySplit-BE/
 │   │
 │   ├── platform/                 # Hạ tầng kỹ thuật dùng chung
 │   │   ├── database/             # Thiết lập pgx pool và health check
-│   │   ├── auth/jwt/             # Bộ phát hành token
+│   │   ├── auth/jwt/             # Access JWT có session ID
+│   │   ├── banks/                # Snapshot VietQR được embed
+│   │   ├── email/gmail/          # Gmail SMTP adapter
+│   │   ├── image/avatar/         # EXIF, resize và WebP backend
+│   │   ├── storage/cloudinary/   # Cloudinary avatar adapter
 │   │   └── security/password/    # Bộ băm bcrypt
 │   │
 │   └── transport/http/           # Phần HTTP dùng chung giữa các module
@@ -79,7 +83,7 @@ delivery/http  →  usecase  →  repository (interface)  →  repository/postgr
 * `repository/postgres` chuyển đổi qua lại giữa model do sqlc sinh ra và entity của domain.
 * `bootstrap/app.go` là nơi duy nhất lắp ráp các implementation cụ thể.
 
-Để thêm một module mới, hãy làm theo đúng bố cục thư mục `auth/`, đăng ký route của nó trong [internal/transport/http/router/router.go](internal/transport/http/router/router.go), và khai báo thư mục queries của nó trong [sqlc.yaml](sqlc.yaml).
+Để thêm một module mới, hãy theo bố cục trong [docs/project-structure.md](docs/project-structure.md). Module sở hữu `domain`, `usecase`, repository port, adapter PostgreSQL và HTTP delivery. Dependency cụ thể chỉ được ghép tại `internal/bootstrap/app.go`.
 
 ## ⚙️ Yêu cầu môi trường
 
@@ -107,7 +111,12 @@ cp .env.example .env
 | `DB_HEALTH_CHECK_SECONDS` | `30` | Chu kỳ kiểm tra sức khỏe của pool |
 | `JWT_SECRET_KEY` | — | **Bắt buộc.** Chuỗi bí mật ngẫu nhiên, đủ dài, dùng để ký token |
 | `JWT_ISSUER` | `paysplit-backend` | Giá trị claim `iss` |
-| `JWT_ACCESS_TOKEN_TTL_MINUTES` | `60` | Thời hạn của access token |
+| `JWT_ACCESS_TOKEN_TTL_MINUTES` | `15` | Thời hạn access token, v1 yêu cầu đúng 15 phút |
+| `AUTH_REFRESH_TOKEN_TTL_HOURS` | `168` | Session tuyệt đối 7 ngày, rotation không kéo dài session |
+| `AUTH_EMAIL_VERIFICATION_TTL_MINUTES` / `AUTH_PASSWORD_RESET_TTL_MINUTES` | `10` | Thời hạn email token |
+| `AUTH_EMAIL_VERIFICATION_URL` / `AUTH_PASSWORD_RESET_URL` | — | Deep link hoặc HTTPS callback, backend thêm query `token` |
+| `SMTP_USERNAME` / `SMTP_APP_PASSWORD` | — | Gmail có bật xác minh hai bước và Google App Password 16 ký tự |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | — | Cloudinary lưu avatar WebP |
 
 **2. Khởi động PostgreSQL**
 
@@ -171,8 +180,17 @@ Image được build nhiều tầng: build binary tĩnh với `CGO_ENABLED=0` r�
 | --- | --- | --- |
 | `GET` | `/` | Tên dịch vụ, trạng thái, phiên bản |
 | `GET` | `/health` | Kiểm tra liveness |
-| `POST` | `/api/v1/auth/register` | Tạo tài khoản, trả về access token |
-| `POST` | `/api/v1/auth/login` | Đăng nhập, trả về access token |
+| `POST` | `/api/v1/auth/sign-up` | Đăng ký bằng email, điện thoại, tên và password |
+| `POST` | `/api/v1/auth/verify-email` | Xác minh email |
+| `POST` | `/api/v1/auth/resend-verification` | Gửi lại email xác minh |
+| `POST` | `/api/v1/auth/sign-in` | Đăng nhập bằng email và password |
+| `POST` | `/api/v1/auth/refresh` | Rotate refresh token |
+| `POST` | `/api/v1/auth/sign-out` | Thu hồi session hiện tại |
+| `POST` | `/api/v1/auth/forgot-password` | Yêu cầu email đặt lại password |
+| `POST` | `/api/v1/auth/reset-password` | Đặt lại password bằng token |
+| `GET/PATCH` | `/api/v1/users/me` | Đọc hoặc cập nhật hồ sơ |
+| `PUT` | `/api/v1/users/me/password` | Đổi password |
+| `PUT/DELETE` | `/api/v1/users/me/avatar` | Tải lên hoặc xóa avatar |
 
 Hợp đồng API đầy đủ được mô tả trong [docs/openapi.yaml](docs/openapi.yaml). Route không tồn tại trả về JSON `404`; sai method trả về JSON `405`. Mọi request đều bị giới hạn bởi middleware timeout 15 giây.
 
@@ -185,6 +203,6 @@ Hợp đồng API đầy đủ được mô tả trong [docs/openapi.yaml](docs/
 
 Tuyệt đối không sửa tay bất cứ thứ gì trong thư mục `sqlc/` — chúng sẽ bị ghi đè mỗi lần sinh code.
 
-## 🚧 Trạng thái hiện tại
+## Trạng thái auth
 
-Bố cục, routing và các interface đã sẵn sàng; tuy nhiên một số phần cài đặt vẫn chỉ là khung và sẽ `panic("TODO: ...")` khi được gọi — cụ thể là `bootstrap.New`, `config.Load`, usecase của auth và các HTTP handler của auth. Vì vậy `make run` sẽ chưa phục vụ được request cho đến khi những chỗ đó được hoàn thiện. Dùng grep tìm `TODO:` để biết phần việc còn lại.
+Module auth v1 đã có schema PostgreSQL 18, email verification, password recovery, một session hoạt động cho mỗi user, refresh rotation và reuse detection, hồ sơ ngân hàng, avatar WebP cùng cleanup workers. Xem [docs/auth-module.md](docs/auth-module.md) để hiểu luồng code và cách mở rộng module.
