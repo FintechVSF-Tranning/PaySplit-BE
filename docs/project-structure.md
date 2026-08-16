@@ -1,81 +1,186 @@
-# Cấu trúc thư mục PaySplit Backend
+# Cấu trúc dự án PaySplit Backend
+
+Tài liệu này mô tả cấu trúc hiện tại của backend PaySplit và cách tổ chức một module nghiệp vụ mới.
+
+## Cây thư mục hiện tại
 
 ```text
 PaySplit-BE/
-├── cmd/                                      # Các điểm khởi chạy của ứng dụng
-│   ├── api/
-│   │   └── main.go                          # Khởi chạy HTTP API
-│   └── migrate/
-│       └── main.go                          # Chạy các lệnh database migration
+├── .agents/                                # Skill và quy trình hỗ trợ agent phát triển
+├── .claude/                                # Liên kết skill dành cho Claude Code
 │
-├── db/                                       # Tài nguyên database dùng toàn ứng dụng
+├── cmd/
+│   └── api/
+│       └── main.go                         # Điểm khởi chạy HTTP API và graceful shutdown
+│
+├── db/
 │   └── migrations/
-│       └── 00001_create_users.sql            # Migration tạo bảng users phục vụ xác thực
+│       └── 000001_init_schema.up.sql       # Schema khởi tạo, gồm cả goose Up và Down
 │
-├── docs/                                     # Tài liệu kỹ thuật của dự án
-│   ├── openapi.yaml                          # Đặc tả REST API
-│   └── project-structure.md                  # Tài liệu cấu trúc thư mục này
+├── docs/
+│   ├── Product_Requirement_Document.md     # Yêu cầu sản phẩm của PaySplit
+│   ├── openapi.yaml                        # Hợp đồng REST API
+│   └── project-structure.md                # Tài liệu cấu trúc dự án
 │
-├── internal/                                 # Mã nguồn chỉ được sử dụng trong backend
-│   ├── bootstrap/                            # Lắp ráp dependency và quản lý vòng đời app
-│   │   └── app.go                            # Tạo config, DB, router và HTTP server
+├── internal/
+│   ├── bootstrap/
+│   │   └── app.go                          # Kết nối config, database, module, router và server
 │   │
-│   ├── config/                               # Cấu hình toàn ứng dụng
-│   │   ├── config.go                         # Định nghĩa và nạp cấu hình từ environment
-│   │   └── config_test.go                    # Kiểm thử việc nạp và validate cấu hình
+│   ├── config/
+│   │   ├── config.go                       # Đọc và kiểm tra biến môi trường
+│   │   └── config_test.go                  # Kiểm thử cấu hình
 │   │
-│   ├── modules/                              # Các module nghiệp vụ độc lập
-│   │   └── auth/                             # Module đăng ký, đăng nhập và xác thực
-│   │       ├── domain/                       # Mô hình và quy tắc nghiệp vụ cốt lõi
-│   │       │   ├── user.go                   # Entity User và thông tin xác thực
-│   │       │   └── errors.go                 # Lỗi nghiệp vụ của auth
-│   │       │
-│   │       ├── usecase/                      # Các ca sử dụng và application service
-│   │       │   └── service.go                # Register, login, input, business error và validation
-│   │       │
-│   │       ├── repository/                   # Cổng truy cập dữ liệu của module
-│   │       │   ├── repository.go             # Repository interface dùng bởi usecase
-│   │       │   └── postgres/                 # Adapter triển khai repository bằng PostgreSQL
-│   │       │       ├── repository.go         # Triển khai interface và mapping domain/sqlc
-│   │       │       ├── queries/              # Câu lệnh SQL do module auth sở hữu
-│   │       │       │   └── users.sql         # Query tạo và tìm user theo email/username
-│   │       │       └── sqlc/                  # Go code được sqlc sinh tự động
-│   │       │           ├── db.go              # DBTX và constructor của sqlc Queries
-│   │       │           ├── models.go          # Database models được sinh từ schema
-│   │       │           ├── querier.go         # Interface các query được sinh tự động
-│   │       │           └── users.sql.go       # Hàm Go được sinh từ users.sql
-│   │       │
-│   │       └── delivery/                     # Adapter nhận yêu cầu từ bên ngoài
-│   │           └── http/                     # HTTP delivery của module auth
-│   │               ├── handler.go             # Xử lý HTTP request và gọi usecase
-│   │               ├── routes.go              # Đăng ký endpoint register và login
-│   │               ├── request.go             # DTO cho register và login request
-│   │               └── response.go            # DTO cho user và access token response
+│   ├── modules/
+│   │   └── auth/
+│   │       ├── domain/
+│   │       │   ├── errors.go               # Lỗi nghiệp vụ của auth
+│   │       │   └── user.go                 # Entity User
+│   │       ├── usecase/
+│   │       │   └── service.go              # Luồng đăng ký và đăng nhập
+│   │       ├── repository/
+│   │       │   ├── repository.go           # Interface lưu trữ mà usecase sử dụng
+│   │       │   └── postgres/
+│   │       │       ├── repository.go       # Adapter PostgreSQL
+│   │       │       ├── queries/
+│   │       │       │   └── users.sql       # Query do module auth sở hữu
+│   │       │       └── sqlc/
+│   │       │           ├── db.go            # Code do sqlc sinh
+│   │       │           ├── models.go        # Database model do sqlc sinh
+│   │       │           ├── querier.go       # Query interface do sqlc sinh
+│   │       │           └── users.sql.go     # Hàm query do sqlc sinh
+│   │       └── delivery/
+│   │           └── http/
+│   │               ├── handler.go           # Nhận request và gọi usecase
+│   │               ├── request.go           # DTO đầu vào
+│   │               ├── response.go          # DTO đầu ra
+│   │               └── routes.go            # Route register và login
 │   │
-│   ├── platform/                             # Hạ tầng kỹ thuật dùng chung giữa các module
-│   │   └── database/
-│   │       ├── postgres.go                    # Khởi tạo và kiểm tra pgx connection pool
-│   │       └── postgres_test.go               # Kiểm thử cấu hình/kết nối PostgreSQL
+│   ├── platform/
+│   │   ├── auth/
+│   │   │   └── jwt/
+│   │   │       └── access_token_manager.go  # Phát hành và xác thực JWT access token
+│   │   ├── database/
+│   │   │   └── postgres.go                  # Khởi tạo pgx connection pool
+│   │   └── security/
+│   │       └── password/
+│   │           └── bcrypt.go                # Băm và so sánh mật khẩu
 │   │
-│   └── transport/                            # Thành phần giao tiếp dùng chung
+│   └── transport/
 │       └── http/
-│           ├── router/
-│           │   └── router.go                  # Tạo Chi router và gắn route các module
+│           ├── helpers/
+│           │   ├── error.go                 # Khuôn dạng lỗi JSON
+│           │   ├── json.go                  # Đọc và ghi JSON
+│           │   └── pagination.go            # Kiểu và helper phân trang
 │           ├── middleware/
-│           │   └── timeout.go                 # Giới hạn thời gian xử lý request và trả lỗi JSON
-│           ├── response/
-│           │   ├── response.go                # Chuẩn hóa JSON success response
-│           │   └── error.go                   # Chuẩn hóa JSON error response
-│           └── utils/
-│               └── validation.go              # Parse và validate dữ liệu HTTP dùng chung
+│           │   ├── auth.go                  # Xác thực request bằng access token
+│           │   ├── cors.go                  # Chính sách CORS
+│           │   ├── ratelimit.go             # Giới hạn tần suất request
+│           │   └── timeout.go               # Giới hạn thời gian xử lý request
+│           └── router/
+│               └── router.go                # Router gốc, middleware và health endpoint
 │
-├── .env.example                              # Mẫu biến môi trường cần thiết
-├── .gitignore                                # Danh sách file Git bỏ qua
-├── docker-compose.yaml                       # PostgreSQL và service dùng khi phát triển
-├── Dockerfile                                # Build image cho backend
-├── Makefile                                  # Lệnh build, run, test, sqlc và migration
-├── go.mod                                    # Khai báo Go module và dependency
-├── go.sum                                    # Checksum dependency
-├── README.md                                 # Hướng dẫn cài đặt và chạy dự án
-└── sqlc.yaml                                 # Cấu hình sinh PostgreSQL repository code
+├── .env.example                             # Mẫu cấu hình chạy local
+├── .gitignore                               # Các file Git bỏ qua
+├── Dockerfile                               # Build image cho API
+├── docker-compose.yaml                      # PostgreSQL 17 dùng khi phát triển local
+├── Makefile                                 # Lệnh run, build, test, sqlc và goose
+├── README.md                                # Hướng dẫn sử dụng dự án
+├── LICENSE                                  # Giấy phép của dự án
+├── go.mod                                   # Module và dependency Go
+├── go.sum                                   # Checksum dependency
+├── skills-lock.json                         # Phiên bản các agent skill của dự án
+└── sqlc.yaml                                # Cấu hình sinh code truy vấn PostgreSQL
+```
+
+File `.env` có thể tồn tại trên máy lập trình viên nhưng không được commit vì chứa cấu hình riêng và có thể chứa secret.
+
+## Hướng phụ thuộc
+
+Backend dùng clean architecture theo từng module. Một request thường đi qua các tầng sau:
+
+```text
+HTTP request
+    ↓
+delivery/http
+    ↓
+usecase
+    ↓
+repository interface
+    ↓
+repository/postgres
+    ↓
+PostgreSQL
+```
+
+Quy tắc chính:
+
+1. `domain` chứa entity và quy tắc nghiệp vụ thuần. Tầng này không phụ thuộc HTTP, pgx hoặc sqlc.
+2. `usecase` điều phối nghiệp vụ. Nó chỉ làm việc với interface và kiểu dữ liệu của domain.
+3. `repository/repository.go` định nghĩa cổng dữ liệu mà usecase cần.
+4. `repository/postgres` triển khai cổng dữ liệu bằng PostgreSQL.
+5. `delivery/http` chuyển đổi giữa HTTP DTO và input hoặc output của usecase.
+6. `bootstrap/app.go` là nơi tạo implementation cụ thể và lắp chúng lại với nhau.
+7. `platform` chứa hạ tầng kỹ thuật dùng chung như database, JWT và password hashing.
+8. `transport/http` chứa thành phần HTTP dùng chung giữa nhiều module.
+
+Module `auth` hiện có code do sqlc sinh trong `repository/postgres/sqlc`, nhưng `repository/postgres/repository.go` đang gọi `pgxpool` trực tiếp. Khi chuyển sang dùng các hàm do sqlc sinh, repository adapter là nơi thực hiện việc chuyển đổi đó, không để kiểu dữ liệu của sqlc đi vào `domain` hoặc `usecase`.
+
+## Cấu trúc một module mới
+
+Một module mới, ví dụ `groups`, nên theo bố cục sau:
+
+```text
+internal/modules/groups/
+├── domain/
+│   ├── group.go
+│   └── errors.go
+├── usecase/
+│   └── service.go
+├── repository/
+│   ├── repository.go
+│   └── postgres/
+│       ├── repository.go
+│       ├── queries/
+│       │   └── groups.sql
+│       └── sqlc/                          # Code sinh tự động, không sửa tay
+└── delivery/
+    └── http/
+        ├── handler.go
+        ├── request.go
+        ├── response.go
+        └── routes.go
+```
+
+Bạn có thể thêm module theo thứ tự sau:
+
+1. Đọc use case tương ứng trong `docs/Product_Requirement_Document.md` và hợp đồng trong `docs/openapi.yaml`.
+2. Tạo entity, lỗi và quy tắc nghiệp vụ trong `domain`.
+3. Khai báo repository interface theo đúng nhu cầu của usecase.
+4. Viết query trong `repository/postgres/queries`.
+5. Thêm một mục SQL mới vào `sqlc.yaml`, trỏ `queries` và `out` tới module mới.
+6. Chạy `make sqlc` để sinh code. Không sửa tay thư mục `sqlc`.
+7. Viết PostgreSQL adapter, usecase, HTTP DTO, handler và routes.
+8. Khởi tạo repository, service và handler trong `internal/bootstrap/app.go`.
+9. Mount route bằng prefix như `/api/v1/groups`.
+10. Chạy `make test` và gọi endpoint để kiểm tra luồng hoàn chỉnh.
+
+## Database migration
+
+Migration dùng Goose và nằm chung trong `db/migrations`. File `000001_init_schema.up.sql` hiện chứa cả phần `-- +goose Up` và `-- +goose Down`.
+
+Sau khi version 1 đã được áp dụng, mọi thay đổi schema tiếp theo nên nằm trong migration mới, ví dụ:
+
+```text
+db/migrations/000002_add_group_description.sql
+```
+
+Không nên sửa migration cũ để thay đổi một database đã chạy, vì Goose không tự áp dụng lại version đã hoàn thành.
+
+Các lệnh thường dùng:
+
+```bash
+make goose-install   # Chỉ cần khi máy chưa có Goose
+make migrate-up      # Áp dụng các migration còn thiếu
+make migrate-status  # Xem trạng thái migration
+make migrate-down    # Hoàn tác migration gần nhất
 ```

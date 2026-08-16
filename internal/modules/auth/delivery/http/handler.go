@@ -9,10 +9,13 @@ import (
 	"paysplit-backend/internal/transport/http/helpers"
 )
 
+// Handler là HTTP adapter của module auth: đọc request, gọi usecase và chuyển
+// kết quả hoặc lỗi nghiệp vụ thành HTTP response.
 type Handler struct {
 	service *usecase.Service
 }
 
+// NewHandler tạo auth handler từ service đã được bootstrap khởi tạo.
 func NewHandler(service *usecase.Service) *Handler {
 	if service == nil {
 		panic("auth handler service must not be nil")
@@ -20,10 +23,12 @@ func NewHandler(service *usecase.Service) *Handler {
 	return &Handler{service: service}
 }
 
+// Register tiếp nhận HTTP request đăng ký và chuyển dữ liệu sang auth usecase.
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	panic("TODO: implement Handler.Register")
 }
 
+// Login tiếp nhận thông tin đăng nhập và trả access token khi xác thực thành công.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var request loginRequest
 	if err := helpers.ReadJSON(w, r, &request); err != nil {
@@ -40,6 +45,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, domain.ErrInvalidInput):
 			writeError(w, http.StatusBadRequest, "email and password are required")
 		case errors.Is(err, domain.ErrInvalidCredentials):
+			// Dùng cùng một response cho email không tồn tại và mật khẩu sai để
+			// không làm lộ tài khoản đã đăng ký.
 			writeError(w, http.StatusUnauthorized, "invalid email or password")
 		default:
 			writeError(w, http.StatusInternalServerError, "unable to log in")
@@ -47,6 +54,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ánh xạ sang response DTO để PasswordHash không bao giờ xuất hiện trong API.
 	writeJSON(w, http.StatusOK, authResponse{
 		User: userResponse{
 			ID:          output.User.ID,

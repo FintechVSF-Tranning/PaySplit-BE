@@ -16,6 +16,7 @@ type postgresRepository struct {
 	pool *pgxpool.Pool
 }
 
+// New tạo PostgreSQL adapter triển khai repository.Repository bằng pool dùng chung.
 func New(pool *pgxpool.Pool) repository.Repository {
 	if pool == nil {
 		panic("auth repository pool must not be nil")
@@ -23,6 +24,7 @@ func New(pool *pgxpool.Pool) repository.Repository {
 	return &postgresRepository{pool: pool}
 }
 
+// Create lưu domain.User vào bảng users mà không để chi tiết SQL lan sang usecase.
 func (r *postgresRepository) Create(ctx context.Context, user *domain.User) error {
 	const query = `
 		INSERT INTO users (id, email, display_name, password_hash)
@@ -35,6 +37,7 @@ func (r *postgresRepository) Create(ctx context.Context, user *domain.User) erro
 	return nil
 }
 
+// GetByEmail đọc bản ghi PostgreSQL và ánh xạ kết quả thành domain.User.
 func (r *postgresRepository) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	const query = `
 		SELECT id, email, display_name, password_hash, role, created_at
@@ -51,6 +54,7 @@ func (r *postgresRepository) GetByEmail(ctx context.Context, email string) (*dom
 		&user.Role,
 		&user.CreatedAt,
 	)
+	// Chuyển lỗi riêng của pgx thành lỗi domain để usecase không phụ thuộc driver.
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrUserNotFound
 	}

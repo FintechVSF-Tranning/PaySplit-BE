@@ -10,7 +10,8 @@ import (
 )
 
 // AccessTokenManager tạo và xác thực access token JWT bằng thuật toán HS256.
-// Cùng một secret được dùng cho cả quá trình ký và xác thực token.
+// Nó triển khai cổng phát hành token của auth usecase và cổng xác thực token của
+// HTTP middleware; quyết định đăng nhập vẫn thuộc về usecase.
 type AccessTokenManager struct {
 	secret []byte        // Khóa bí mật dùng để ký và xác thực chữ ký.
 	issuer string        // Đơn vị phát hành token, được lưu trong claim "iss".

@@ -85,7 +85,8 @@ delivery/http  →  usecase  →  repository (interface)  →  repository/postgr
 
 * Go **1.26+**
 * Docker & Docker Compose (để chạy PostgreSQL local)
-* [`sqlc`](https://docs.sqlc.dev/en/latest/overview/install.html) — chỉ cần khi bạn thay đổi các file `.sql`
+* [`sqlc`](https://docs.sqlc.dev/en/latest/overview/install.html) — chỉ cần khi bạn thay đổi các file query `.sql`
+* [`goose`](https://github.com/pressly/goose) — quản lý migration (`make goose-install` nếu máy chưa có)
 
 ## ▶️ Bắt đầu
 
@@ -143,7 +144,8 @@ curl http://localhost:8080/health
 | `make fmt` | `gofmt -w ./cmd ./internal` |
 | `make tidy` | `go mod tidy` |
 | `make sqlc` | Sinh lại code sqlc từ `queries/` + `db/migrations/` |
-| `make migrate-up` | Áp dụng các migration còn thiếu |
+| `make goose-install` | Cài Goose CLI nếu máy chưa có |
+| `make migrate-up` | Áp dụng các migration còn thiếu bằng Goose |
 | `make migrate-down` | Quay lui migration gần nhất |
 | `make migrate-status` | Xem trạng thái migration |
 
@@ -176,7 +178,7 @@ Hợp đồng API đầy đủ được mô tả trong [docs/openapi.yaml](docs/
 
 ## 🗄 Quy trình làm việc với cơ sở dữ liệu
 
-1. Thêm migration trong `db/migrations/` theo quy ước đặt tên `NNNNN_description.sql` và có đủ marker goose `-- +goose Up` / `-- +goose Down`.
+1. Thêm migration trong `db/migrations/` theo quy ước đặt tên `NNNNNN_description.sql`. Mỗi version là **một file duy nhất**, gồm phần `-- +goose Up` và `-- +goose Down`; không tách thành hai file `.up.sql` / `.down.sql` vì Goose sẽ xem chúng là hai migration trùng version.
 2. Viết hoặc cập nhật query trong `repository/postgres/queries/*.sql` của module sở hữu nó.
 3. Chạy `make sqlc` để sinh lại code Go có kiểu.
 4. Chạy `make migrate-up`.

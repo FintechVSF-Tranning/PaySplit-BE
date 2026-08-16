@@ -1,4 +1,4 @@
-.PHONY: run build test fmt tidy sqlc migrate-up migrate-down migrate-status
+.PHONY: run build test fmt tidy sqlc goose-install migrate-up migrate-down migrate-status
 
 include .env #Tạo file .env để lưu trữ các biến môi trường, ví dụ DATABASE_URL, và sử dụng chúng trong Makefile.
 export
@@ -21,11 +21,14 @@ tidy:
 sqlc:
 	sqlc generate
 
+goose-install:
+	go install github.com/pressly/goose/v3/cmd/goose@latest
+
 migrate-up:
-	migrate -path db/migrations -database "$(DATABASE_URL)" -verbose up
+	goose -dir db/migrations postgres "$(DATABASE_URL)" up
 
 migrate-down:
-	migrate -path db/migrations -database "$(DATABASE_URL)" -verbose down
+	goose -dir db/migrations postgres "$(DATABASE_URL)" down
 
 migrate-status:
-	migrate -path db/migrations -database "$(DATABASE_URL)" version
+	goose -dir db/migrations postgres "$(DATABASE_URL)" status
