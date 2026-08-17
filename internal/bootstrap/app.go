@@ -93,7 +93,10 @@ func New(ctx context.Context) (*App, error) {
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
 	// Khởi tạo River Queue & Worker
-	_ = riverpkg.AutoMigrate(ctx, db)
+	if err := riverpkg.AutoMigrate(ctx, db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("auto-migrate river: %w", err)
+	}
 	riverWorkers := river.NewWorkers()
 	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationService))
 
