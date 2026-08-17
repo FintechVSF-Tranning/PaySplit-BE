@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -42,7 +41,7 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	writeJSON(w, r, http.StatusCreated, map[string]any{
 		"group":      newGroupResponse(*out.Group),
 		"membership": newMembershipResponse(*out.Membership),
 	})
@@ -67,7 +66,7 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	for _, item := range out.Items {
 		items = append(items, newGroupListItemResponse(item))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": items, "next_cursor": out.NextCursor})
+	writeJSON(w, r, http.StatusOK, map[string]any{"groups": items, "next_cursor": out.NextCursor})
 }
 
 func (h *Handler) GetGroupDetail(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +85,7 @@ func (h *Handler) GetGroupDetail(w http.ResponseWriter, r *http.Request) {
 	for _, b := range detail.Balances {
 		balances = append(balances, newBalanceResponse(b))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, r, http.StatusOK, map[string]any{
 		"group":       newGroupResponse(detail.Group),
 		"members":     members,
 		"balances":    balances,
@@ -116,7 +115,7 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	if out.Created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, map[string]any{"invite": newInviteResponse(*out.Invite, out.InviteURL)})
+	writeJSON(w, r, status, map[string]any{"invite": newInviteResponse(*out.Invite, out.InviteURL)})
 }
 
 func (h *Handler) RevokeInvite(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +136,7 @@ func (h *Handler) PreviewInvite(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"preview": newInvitePreviewResponse(*preview)})
+	writeJSON(w, r, http.StatusOK, map[string]any{"preview": newInvitePreviewResponse(*preview)})
 }
 
 func (h *Handler) JoinGroup(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +150,7 @@ func (h *Handler) JoinGroup(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"join": newJoinResultResponse(*result)})
+	writeJSON(w, r, http.StatusOK, map[string]any{"join": newJoinResultResponse(*result)})
 }
 
 func (h *Handler) LeaveOrRemoveMember(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +181,7 @@ func (h *Handler) TransferRole(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"transfer": newCaptainTransferResponse(*transfer)})
+	writeJSON(w, r, http.StatusOK, map[string]any{"transfer": newCaptainTransferResponse(*transfer)})
 }
 
 func (h *Handler) ListActivities(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +204,7 @@ func (h *Handler) ListActivities(w http.ResponseWriter, r *http.Request) {
 	for _, a := range out.Items {
 		activities = append(activities, h.newActivityResponse(a))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"activities": activities, "next_cursor": out.NextCursor})
+	writeJSON(w, r, http.StatusOK, map[string]any{"activities": activities, "next_cursor": out.NextCursor})
 }
 
 // parseListLimit reads the optional limit query param, defaulting to 20 and
@@ -230,9 +229,9 @@ func read(w http.ResponseWriter, r *http.Request, d any) bool {
 	}
 	return true
 }
-func writeJSON(w http.ResponseWriter, status int, data any) {
+func writeJSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 	if err := helpers.WriteJSON(w, status, data); err != nil {
-		log.Printf("event=response_write_failed request_id=%s", chiMiddleware.GetReqID(context.Background()))
+		log.Printf("event=response_write_failed request_id=%s", chiMiddleware.GetReqID(r.Context()))
 	}
 }
 func writeDomainError(w http.ResponseWriter, err error) {

@@ -230,14 +230,14 @@ func (r *postgresRepository) CreateOrReuseInvite(ctx context.Context, p reposito
 	// Locking the group row first serializes this against every other
 	// group mutation, including a concurrent Captain transfer (spec 0002
 	// invariant 1).
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); err != nil {
+	q := dbgen.New(tx)
+	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrCaptainRequired
 		}
 		return nil, fmt.Errorf("lock group: %w", err)
 	}
 
-	q := dbgen.New(tx)
 	membership, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrCaptainRequired
@@ -366,14 +366,14 @@ func (r *postgresRepository) RevokeInvite(ctx context.Context, groupID, inviteID
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); err != nil {
+	q := dbgen.New(tx)
+	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrCaptainRequired
 		}
 		return fmt.Errorf("lock group: %w", err)
 	}
 
-	q := dbgen.New(tx)
 	membership, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrCaptainRequired
@@ -470,14 +470,14 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 
 	// Locking the group row first serializes concurrent redemptions and
 	// every other group mutation (spec 0002 invariant 1).
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, groupID); err != nil {
+	q := dbgen.New(tx)
+	if _, err = q.LockGroup(ctx, groupID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrInviteNotFound
 		}
 		return nil, fmt.Errorf("lock group: %w", err)
 	}
 
-	q := dbgen.New(tx)
 	existing, err := q.GetMembershipByUserForUpdate(ctx, dbgen.GetMembershipByUserForUpdateParams{GroupID: groupID, UserID: pgUUID(uid)})
 	hasExisting := true
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -585,14 +585,14 @@ func (r *postgresRepository) LeaveOrRemoveMember(ctx context.Context, groupID, t
 	// Locking the group row first serializes this against every other
 	// group mutation, including invite redemption and Captain transfer
 	// (spec 0002 invariant 1).
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); err != nil {
+	q := dbgen.New(tx)
+	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrForbidden
 		}
 		return fmt.Errorf("lock group: %w", err)
 	}
 
-	q := dbgen.New(tx)
 	target, err := q.LockMembership(ctx, dbgen.LockMembershipParams{ID: pgUUID(tid), GroupID: pgUUID(gid)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrForbidden
@@ -721,6 +721,9 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 	}
 	if fmt.Sprint(caller.Role) != domain.RoleCaptain {
 		return nil, domain.ErrCaptainRequired
+	}
+	if uuid.UUID(caller.ID.Bytes) == tid {
+		return nil, domain.ErrInvalidInput
 	}
 
 	// Lock both memberships in ascending ID order so a concurrent transfer

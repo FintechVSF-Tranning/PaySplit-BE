@@ -10,6 +10,10 @@
 -- currency check at all, so an untrimmed name or a non-VND currency is legal
 -- under the old schema and would otherwise abort this migration outright.
 UPDATE groups SET name = btrim(name) WHERE name <> btrim(name);
+-- A pre-existing all-whitespace or over-length name would fail the trimmed
+-- CHECK below and abort VALIDATE CONSTRAINT, so normalize those cases too.
+UPDATE groups SET name = 'Unnamed Group' WHERE char_length(btrim(name)) = 0;
+UPDATE groups SET name = substring(btrim(name) from 1 for 100) WHERE char_length(btrim(name)) > 100;
 -- v1 has no other currency support and the API has never accepted a value
 -- other than VND (usecase.CreateGroup rejects it before the repository is
 -- reached), so normalize any stray legacy row to the only supported value

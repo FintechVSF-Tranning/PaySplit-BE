@@ -249,7 +249,7 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
 		return errors.New("JWT_ISSUER must not be empty")
 	}
-	if c.Auth.AccessTokenTTL != 240*time.Minute {
+	if c.Auth.AccessTokenTTL != 15*time.Minute {
 		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
 	}
 	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
