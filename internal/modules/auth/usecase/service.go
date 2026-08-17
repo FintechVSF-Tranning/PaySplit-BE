@@ -179,7 +179,7 @@ func (s *Service) sendUserToken(ctx context.Context, inputEmail, clientIP, kind 
 	return nil
 }
 
-type SignInInput struct{ Email, Password, DeviceID, DeviceName string }
+type SignInInput struct{ Email, Password, DeviceID, DeviceName, FCMToken string }
 type TokenOutput struct {
 	User                              *domain.User
 	AccessToken, RefreshToken         string
@@ -199,6 +199,7 @@ func (s *Service) SignIn(ctx context.Context, in SignInInput) (*TokenOutput, err
 	if utf8.RuneCountInString(deviceName) > 120 {
 		return nil, domain.ErrInvalidInput
 	}
+	fcmToken := strings.TrimSpace(in.FCMToken)
 	now := time.Now()
 	user, err := s.repo.GetByEmail(ctx, email)
 	if errors.Is(err, domain.ErrUserNotFound) {
@@ -226,7 +227,7 @@ func (s *Service) SignIn(ctx context.Context, in SignInInput) (*TokenOutput, err
 		return nil, err
 	}
 	sessionExpires := now.Add(s.sessionTTL)
-	user, session, err := s.repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: deviceID, DeviceName: deviceName, RefreshTokenHash: refreshHash, Now: now, ExpiresAt: sessionExpires})
+	user, session, err := s.repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: deviceID, DeviceName: deviceName, FCMToken: fcmToken, RefreshTokenHash: refreshHash, Now: now, ExpiresAt: sessionExpires})
 	if err != nil {
 		return nil, err
 	}

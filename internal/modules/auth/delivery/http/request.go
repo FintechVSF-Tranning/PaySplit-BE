@@ -19,6 +19,7 @@ type signInRequest struct {
 	Password   string `json:"password"`
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
+	FCMToken   string `json:"fcm_token,omitempty"`
 }
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`

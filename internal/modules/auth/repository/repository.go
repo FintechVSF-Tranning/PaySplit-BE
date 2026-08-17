@@ -14,9 +14,9 @@ type CreateUserParams struct {
 }
 
 type CreateSessionParams struct {
-	UserID, ExpectedPasswordHash, DeviceID, DeviceName string
-	RefreshTokenHash                                   []byte
-	Now, ExpiresAt                                     time.Time
+	UserID, ExpectedPasswordHash, DeviceID, DeviceName, FCMToken string
+	RefreshTokenHash                                             []byte
+	Now, ExpiresAt                                               time.Time
 }
 
 type RotateRefreshResult struct {

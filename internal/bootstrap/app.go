@@ -15,11 +15,15 @@ import (
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	"paysplit-backend/internal/modules/auth/usecase"
+	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
+	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
+	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
 	"paysplit-backend/internal/platform/auth/jwt"
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/database"
 	"paysplit-backend/internal/platform/email/gmail"
 	avatarimage "paysplit-backend/internal/platform/image/avatar"
+	"paysplit-backend/internal/platform/notification/fcm"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
 	transportmw "paysplit-backend/internal/transport/http/middleware"
@@ -75,6 +79,16 @@ func New(ctx context.Context) (*App, error) {
 	authService := usecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, usecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
 	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
 
+	fcmNotifier, err := fcm.New(ctx, cfg.Firebase.CredentialsFile, cfg.Firebase.CredentialsJSON, cfg.Firebase.Timeout)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create FCM notifier: %w", err)
+	}
+
+	notificationRepo := notificationpostgres.New(db)
+	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier)
+	notificationHandler := notificationhttp.NewHandler(notificationService)
+
 	appRouter := router.New(cfg.App)
 	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
 	// chỉ cần mount tại đây, không phải thêm tham số vào router.New.
@@ -84,6 +98,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 	})
+	notificationHandler.RegisterRoutes(appRouter, liveAuth)
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
 

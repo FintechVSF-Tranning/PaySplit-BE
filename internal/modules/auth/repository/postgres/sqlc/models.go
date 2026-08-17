@@ -137,6 +137,8 @@ type Notification struct {
 	ID        pgtype.UUID        `json:"id"`
 	UserID    pgtype.UUID        `json:"user_id"`
 	Type      string             `json:"type"`
+	Title     string             `json:"title"`
+	Body      string             `json:"body"`
 	Payload   []byte             `json:"payload"`
 	ReadAt    pgtype.Timestamptz `json:"read_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
@@ -178,6 +180,7 @@ type Session struct {
 	UserID        pgtype.UUID        `json:"user_id"`
 	DeviceID      pgtype.UUID        `json:"device_id"`
 	DeviceName    pgtype.Text        `json:"device_name"`
+	FcmToken      pgtype.Text        `json:"fcm_token"`
 	IssuedAt      pgtype.Timestamptz `json:"issued_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt     pgtype.Timestamptz `json:"revoked_at"`

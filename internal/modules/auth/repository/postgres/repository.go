@@ -224,7 +224,7 @@ func (r *postgresRepository) CreateSession(ctx context.Context, p repository.Cre
 		return nil, nil, err
 	}
 	var session domain.Session
-	err = tx.QueryRow(ctx, `INSERT INTO sessions (user_id,device_id,device_name,issued_at,expires_at) VALUES ($1,$2,NULLIF($3,''),$4,$5) RETURNING id,user_id,device_id,expires_at`, p.UserID, p.DeviceID, p.DeviceName, p.Now, p.ExpiresAt).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.ExpiresAt)
+	err = tx.QueryRow(ctx, `INSERT INTO sessions (user_id,device_id,device_name,fcm_token,issued_at,expires_at) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6) RETURNING id,user_id,device_id,fcm_token,expires_at`, p.UserID, p.DeviceID, p.DeviceName, p.FCMToken, p.Now, p.ExpiresAt).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.FCMToken, &session.ExpiresAt)
 	if err != nil {
 		return nil, nil, mapWriteError(err)
 	}

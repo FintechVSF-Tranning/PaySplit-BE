@@ -78,7 +78,7 @@ func (h *Handler) SignIn(w http.ResponseWriter, r *http.Request) {
 	if !read(w, r, &req) {
 		return
 	}
-	out, err := h.service.SignIn(r.Context(), usecase.SignInInput{Email: req.Email, Password: req.Password, DeviceID: req.DeviceID, DeviceName: req.DeviceName})
+	out, err := h.service.SignIn(r.Context(), usecase.SignInInput{Email: req.Email, Password: req.Password, DeviceID: req.DeviceID, DeviceName: req.DeviceName, FCMToken: req.FCMToken})
 	if err != nil {
 		writeDomainError(w, err)
 		return

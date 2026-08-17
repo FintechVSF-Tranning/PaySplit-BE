@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_id           UUID NOT NULL,          -- UUID do app sinh một lần cho mỗi lần cài đặt
     device_name         TEXT,
+    fcm_token           TEXT,
     issued_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at          TIMESTAMPTZ NOT NULL,
     revoked_at          TIMESTAMPTZ,
@@ -413,11 +414,17 @@ CREATE TABLE IF NOT EXISTS notifications (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
     payload     JSONB,
     read_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT notifications_type_length CHECK (char_length(btrim(type)) BETWEEN 1 AND 60),
+    CONSTRAINT notifications_title_length CHECK (char_length(btrim(title)) BETWEEN 1 AND 255),
+    CONSTRAINT notifications_body_length CHECK (char_length(btrim(body)) BETWEEN 1 AND 1000)
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE read_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
     id              UUID PRIMARY KEY DEFAULT uuidv7(),

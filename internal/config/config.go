@@ -20,6 +20,7 @@ type Config struct {
 	Cloudinary CloudinaryConfig
 	Avatar     AvatarConfig
 	Cleanup    CleanupConfig
+	Firebase   FirebaseConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -77,6 +78,11 @@ type CleanupConfig struct {
 	Retention           time.Duration
 	MediaWorkerInterval time.Duration
 	MediaMaxAttempts    int
+}
+type FirebaseConfig struct {
+	CredentialsFile string
+	CredentialsJSON string
+	Timeout         time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -169,6 +175,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	fcmTimeout, err := durationEnv("FCM_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
@@ -200,6 +210,7 @@ func Load() (*Config, error) {
 		Cloudinary: CloudinaryConfig{CloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"), APIKey: os.Getenv("CLOUDINARY_API_KEY"), APISecret: os.Getenv("CLOUDINARY_API_SECRET")},
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
+		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
 	}
 
 	if err := cfg.Validate(); err != nil {
