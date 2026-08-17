@@ -14,6 +14,8 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | in-progress |
 | 3 | Bill and OCR v1 | Slice 3 | in-progress |
+| 4 | Notification and background queue v1 | Slice 4 | in-progress |
+| 5 | Debt and VietQR payment v1 | Slice 5 | planned |
 
 ## Slice 1: Identity and account
 
@@ -80,6 +82,38 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
 - [ ] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
+
+## Slice 4: Notification and background queue
+
+### 4. Notification and background queue v1 · in-progress
+
+Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed River Queue job processing, device token session binding, dead token pruning, and in-app notification center.
+
+**Done when:** all seven acceptance criteria in spec 0004 pass against PostgreSQL 18, background jobs run reliably through River with exponential backoff on transient errors, dead FCM tokens are pruned automatically, in-app notifications support unread count and pagination, and graceful shutdown drains queue workers cleanly.
+
+- [x] Design it (spec): `/architect notification and background queue v1`
+- [ ] Build it: `/develop notification and background queue v1`
+  - [ ] PostgreSQL schema migration for session FCM token and notification records (satisfies AC-1, AC-3)
+  - [ ] River Queue platform adapter, worker registry, and graceful lifecycle wiring (satisfies AC-2, AC-7)
+  - [ ] FCM push notification client, payload builders, and dead token pruning (satisfies AC-4, AC-5)
+  - [ ] In-app notification repository, usecase, and River enqueuer (satisfies AC-3, AC-4, AC-6)
+  - [ ] HTTP delivery handlers, routes registration, and unit/integration tests (satisfies AC-1, AC-6)
+- [ ] Verify it: `/check verify notification and background queue v1`
+- [ ] Test it: `/test notification and background queue v1`
+- [ ] Review it (fresh model): `/check review notification and background queue v1`
+- [ ] Document it: `/document notification and background queue v1`
+
+Spec [0004](../specs/0004-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
+
+## Slice 5: Settlement and Payment
+
+### 5. Debt and VietQR payment v1 · planned · needs a decision
+
+Provide debt tracking across group members, VietQR generation with embedded NAPAS 247 reference codes, payment proof submission, creditor manual confirmation or rejection, and debt reminder jobs.
+
+**Done when:** debt balances calculate accurately across multiple bills, payment QR encodes valid banking and reference data, payment proofs transition debt statuses safely without auto-settlement, and stalled payment rules notify both parties.
+
+- [ ] Design it (spec): `/architect debt and VietQR payment v1`
 
 ## Deferred
 

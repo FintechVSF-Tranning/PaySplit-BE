@@ -171,3 +171,18 @@ Module dành riêng cho người vận hành để kiểm soát nền tảng và
 - **`PUT /api/admin/accounts/{id}/status`**: Cập nhật trạng thái tài khoản (đình chỉ, khóa, kích hoạt lại) (4.1.22).
 
 - **`GET /api/health`** & **`GET /api/metrics`**: Giám sát tình trạng hệ thống, hàng đợi job (River queue) và hiệu suất API (4.1.23).
+
+### Module 6: Notification & Background Queue (Thông báo & Hàng đợi ngầm)
+
+Quản lý thông báo in-app, push notification qua Firebase Cloud Messaging (FCM), và xử lý tác vụ nền bất đồng bộ với River Queue.
+
+- **`PUT /api/v1/users/me/fcm-token`**: Cập nhật FCM token thiết bị cho phiên đăng nhập hiện tại.
+
+- **`GET /api/v1/notifications`**: Lấy danh sách thông báo in-app của người dùng có phân trang.
+
+- **`GET /api/v1/notifications/unread-count`**: Đếm số lượng thông báo chưa đọc.
+
+- **`PATCH /api/v1/notifications/{id}/read`**: Đánh dấu 1 thông báo cụ thể là đã đọc.
+
+- **`PATCH /api/v1/notifications/read-all`**: Đánh dấu tất cả thông báo của người dùng là đã đọc.
+
