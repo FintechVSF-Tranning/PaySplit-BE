@@ -1,10 +1,12 @@
+-- +goose Up
+
 -- ============================================================================
 -- PaySplit — PostgreSQL Schema (DDL)
 -- Hệ thống chia tiền thông minh (Group Expense-Splitting Prototype)
 -- Kiến trúc: Tinh gọn (No Ledger), Theo dõi hoạt động (Activity Tracking)
 --
 -- Nguyên tắc thiết kế:
---   * Mọi UUID do tầng ứng dụng sinh (UUID v7) để đảm bảo thứ tự theo thời gian.
+--   * Mọi khóa chính UUID do PostgreSQL 18 sinh bằng uuidv7().
 --   * Mọi bảng thuộc phạm vi nhóm đều mang group_id và dùng khóa ngoại tổ hợp
 --     (id, group_id) để DB tự chặn dữ liệu trỏ chéo nhóm.
 --   * Tiền tệ lưu bằng BIGINT (đơn vị VND, không có phần thập phân).
@@ -33,12 +35,12 @@ DO $$ BEGIN CREATE TYPE activity_type    AS ENUM ('created_bill', 'updated_bill'
 
 -- Bảng users: Lưu trữ thông tin cá nhân và cấu hình tài khoản ngân hàng.
 CREATE TABLE IF NOT EXISTS users (
-    id                          UUID PRIMARY KEY,       -- UUID v7 do ứng dụng sinh
+    id                          UUID PRIMARY KEY DEFAULT uuidv7(),
     email                       CITEXT NOT NULL UNIQUE, -- Email đăng nhập (không phân biệt hoa/thường)
     password_hash               TEXT NOT NULL,          -- Mật khẩu đã mã hóa (Bắt buộc vì chỉ dùng đăng nhập thường)
     display_name                TEXT NOT NULL,          -- Tên hiển thị trong nhóm
     avatar_object_key           TEXT,                   -- Đường dẫn lưu ảnh đại diện (trên S3/Object Storage)
-    phone_number                TEXT,                   -- Số điện thoại liên hệ
+    phone_number                TEXT NOT NULL UNIQUE,   -- Số điện thoại E.164, chưa dùng để đăng nhập trong v1
     default_bank_code           TEXT,                   -- Mã ngân hàng NAPAS (VD: VCB, TCB) để tạo VietQR
     default_bank_account_number TEXT,                   -- Số tài khoản ngân hàng mặc định nhận tiền
     default_bank_account_holder TEXT,                   -- Tên chủ tài khoản
@@ -47,33 +49,106 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified_at           TIMESTAMPTZ,            -- Thời điểm xác thực email
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (display_name <> '')
+    failed_login_count          INT NOT NULL DEFAULT 0,
+    failed_login_window_started_at TIMESTAMPTZ,
+    login_blocked_until         TIMESTAMPTZ,
+    CONSTRAINT users_email_length CHECK (octet_length(email::text) BETWEEN 3 AND 254),
+    CONSTRAINT users_display_name_length CHECK (char_length(btrim(display_name)) BETWEEN 1 AND 100),
+    CONSTRAINT users_phone_e164 CHECK (phone_number ~ '^\+[1-9][0-9]{1,14}$' AND char_length(phone_number) <= 16),
+    CONSTRAINT users_failed_login_count_nonnegative CHECK (failed_login_count >= 0),
+    CONSTRAINT users_bank_group_complete CHECK (
+        (default_bank_code IS NULL AND default_bank_account_number IS NULL AND default_bank_account_holder IS NULL)
+        OR
+        (default_bank_code IS NOT NULL AND default_bank_account_number IS NOT NULL AND default_bank_account_holder IS NOT NULL)
+    ),
+    CONSTRAINT users_bank_account_number_format CHECK (
+        default_bank_account_number IS NULL OR default_bank_account_number ~ '^[0-9]{6,19}$'
+    ),
+    CONSTRAINT users_bank_account_holder_length CHECK (
+        default_bank_account_holder IS NULL OR char_length(btrim(default_bank_account_holder)) BETWEEN 1 AND 100
+    )
 );
 
 -- Bảng sessions: Quản lý các phiên đăng nhập để hỗ trợ tính năng đăng xuất (Revoke Refresh Token).
 CREATE TABLE IF NOT EXISTS sessions (
-    id                  UUID PRIMARY KEY,
+    id                  UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    device_id           TEXT NOT NULL,          -- ID thiết bị của người dùng
-    refresh_token_hash  TEXT NOT NULL,          -- Mã hóa của Refresh Token
+    device_id           UUID NOT NULL,          -- UUID do app sinh một lần cho mỗi lần cài đặt
+    device_name         TEXT,
     issued_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at          TIMESTAMPTZ NOT NULL,   -- Hạn sử dụng của token
-    revoked_at          TIMESTAMPTZ             -- Thời điểm token bị thu hồi (đăng xuất)
+    expires_at          TIMESTAMPTZ NOT NULL,
+    revoked_at          TIMESTAMPTZ,
+    revoked_reason      TEXT,
+    CONSTRAINT sessions_device_name_length CHECK (device_name IS NULL OR char_length(btrim(device_name)) BETWEEN 1 AND 120),
+    CONSTRAINT sessions_expiry_after_issue CHECK (expires_at > issued_at),
+    CONSTRAINT sessions_revocation_pair CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL))
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_active_by_user ON sessions(user_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_one_active_per_user ON sessions(user_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS session_refresh_tokens (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
+    session_id  UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    token_hash  BYTEA NOT NULL UNIQUE,
+    issued_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used_at     TIMESTAMPTZ,
+    revoked_at  TIMESTAMPTZ,
+    CONSTRAINT session_refresh_token_hash_size CHECK (octet_length(token_hash) = 32),
+    CONSTRAINT session_refresh_token_expiry_after_issue CHECK (expires_at > issued_at)
+);
+CREATE INDEX IF NOT EXISTS idx_session_refresh_tokens_session_id ON session_refresh_tokens(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_refresh_tokens_live_lookup ON session_refresh_tokens(token_hash) WHERE used_at IS NULL AND revoked_at IS NULL;
 
 -- Bảng user_tokens: Gộp chung các loại token xác thực dùng 1 lần (quên mật khẩu, xác minh email)
 CREATE TABLE IF NOT EXISTS user_tokens (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type        token_type NOT NULL,    -- Phân loại: 'email_verification' hoặc 'password_reset'
-    token_hash  TEXT NOT NULL UNIQUE,   -- Chuỗi mã hóa của token
+    token_hash  BYTEA NOT NULL UNIQUE,  -- SHA-256 của token, không lưu token gốc
     expires_at  TIMESTAMPTZ NOT NULL,   -- Hạn sử dụng của token
-    used_at     TIMESTAMPTZ,            -- Đánh dấu thời điểm đã sử dụng (NULL = chưa dùng)
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    used_at     TIMESTAMPTZ,
+    superseded_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT user_token_hash_size CHECK (octet_length(token_hash) = 32),
+    CONSTRAINT user_token_expiry_after_create CHECK (expires_at > created_at),
+    CONSTRAINT user_token_terminal_state CHECK (used_at IS NULL OR superseded_at IS NULL)
 );
--- Tra cứu token còn hiệu lực của 1 user (dùng khi resend email xác thực / reset mật khẩu)
-CREATE INDEX IF NOT EXISTS idx_user_tokens_pending ON user_tokens(user_id, type) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_user_tokens_user_id ON user_tokens(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_tokens_one_active_per_type
+    ON user_tokens(user_id, type) WHERE used_at IS NULL AND superseded_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS auth_rate_limit_events (
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
+    action      TEXT NOT NULL,
+    dimension   TEXT NOT NULL,
+    key_hash    BYTEA NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT auth_rate_limit_action CHECK (action IN ('sign_up','resend_verification','forgot_password')),
+    CONSTRAINT auth_rate_limit_dimension CHECK (dimension IN ('email','ip')),
+    CONSTRAINT auth_rate_limit_key_hash_size CHECK (octet_length(key_hash) = 32)
+);
+CREATE INDEX IF NOT EXISTS idx_auth_rate_limit_events_lookup
+    ON auth_rate_limit_events(action, dimension, key_hash, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_cleanup_jobs (
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
+    provider        TEXT NOT NULL,
+    object_key      TEXT NOT NULL,
+    attempt_count   INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_error_code TEXT,
+    completed_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT media_cleanup_provider CHECK (provider IN ('cloudinary')),
+    CONSTRAINT media_cleanup_attempt_count CHECK (attempt_count BETWEEN 0 AND 10),
+    CONSTRAINT media_cleanup_object_key_nonempty CHECK (btrim(object_key) <> '')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_media_cleanup_jobs_open_object
+    ON media_cleanup_jobs(provider, object_key) WHERE completed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_cleanup_jobs_due
+    ON media_cleanup_jobs(next_attempt_at, id) WHERE completed_at IS NULL AND attempt_count < 10;
 
 -- ---------------------------------------------------------------------------
 -- 3. GROUPS (Quản lý Nhóm chi tiêu)
@@ -81,7 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_user_tokens_pending ON user_tokens(user_id, type)
 
 -- Bảng groups: Lưu trữ thông tin cơ bản của nhóm chi tiêu.
 CREATE TABLE IF NOT EXISTS groups (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     name        TEXT NOT NULL,                          -- Tên nhóm (VD: Du lịch Đà Lạt)
     currency    TEXT NOT NULL DEFAULT 'VND',            -- Tiền tệ sử dụng
     created_by  UUID NOT NULL REFERENCES users(id),
@@ -99,7 +174,7 @@ CREATE TABLE IF NOT EXISTS groups (
 --   UPDATE group_members SET status='active', left_at=NULL WHERE group_id=? AND user_id=?
 -- Cách này cố ý giữ nguyên member_id cũ để lịch sử hóa đơn và công nợ không bị đứt gãy.
 CREATE TABLE IF NOT EXISTS group_members (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id    UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     user_id     UUID NOT NULL REFERENCES users(id),
     role        group_role NOT NULL DEFAULT 'member',   -- Vai trò (captain hoặc member)
@@ -118,7 +193,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_group_members_active_captain
 
 -- Bảng group_invites: Quản lý các link/mã mời để người khác tham gia nhóm.
 CREATE TABLE IF NOT EXISTS group_invites (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id    UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     code        TEXT NOT NULL UNIQUE,                   -- Mã mời (chuỗi ngẫu nhiên)
     created_by  UUID NOT NULL,                          -- Captain đã tạo mã mời
@@ -138,7 +213,7 @@ CREATE INDEX IF NOT EXISTS idx_group_invites_active ON group_invites(group_id) W
 
 -- Bảng bills: Thông tin chung của một hóa đơn.
 CREATE TABLE IF NOT EXISTS bills (
-    id                  UUID PRIMARY KEY,
+    id                  UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id            UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     creditor_member_id  UUID NOT NULL,                              -- Người đã ứng tiền trả hóa đơn này
     status              bill_status NOT NULL DEFAULT 'draft',       -- 'draft' (đang nháp) hoặc 'finalized' (đã chốt)
@@ -167,7 +242,7 @@ CREATE INDEX IF NOT EXISTS idx_bills_group_status ON bills(group_id, status);
 -- thường có giảm giá theo từng món. Sai lệch giữa chi tiết và tổng được đánh dấu
 -- bằng bills.mismatch_warning để người dùng tự đối chiếu (theo FR 4.1.12).
 CREATE TABLE IF NOT EXISTS bill_items (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     bill_id     UUID NOT NULL,
     group_id    UUID NOT NULL,
     name        TEXT NOT NULL,                          -- Tên món
@@ -185,7 +260,7 @@ CREATE INDEX IF NOT EXISTS idx_bill_items_bill ON bill_items(bill_id);
 -- Bảng bill_item_assignments: Ghi nhận thành viên nào gánh món nào.
 -- Đây là nguồn truy vết chi tiết ở mức từng món (thay cho bảng debt_sources đã lược bỏ).
 CREATE TABLE IF NOT EXISTS bill_item_assignments (
-    id            UUID PRIMARY KEY,
+    id            UUID PRIMARY KEY DEFAULT uuidv7(),
     bill_item_id  UUID NOT NULL,
     group_id      UUID NOT NULL,
     member_id     UUID NOT NULL,
@@ -204,7 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_assignments_member ON bill_item_assignments(membe
 
 -- Bảng group_activities: Lưu mọi biến động (Thêm/Sửa/Xóa hóa đơn, Trả nợ) để đối chiếu
 CREATE TABLE IF NOT EXISTS group_activities (
-    id              UUID PRIMARY KEY,
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id        UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     actor_member_id UUID NOT NULL,                              -- Người thực hiện (phải thuộc đúng nhóm này)
     action_type     activity_type NOT NULL,
@@ -222,7 +297,7 @@ CREATE INDEX IF NOT EXISTS idx_group_activities_timeline ON group_activities(gro
 
 -- Bảng ocr_jobs: Theo dõi trạng thái công việc gửi ảnh cho AI đọc.
 CREATE TABLE IF NOT EXISTS ocr_jobs (
-    id             UUID PRIMARY KEY,
+    id             UUID PRIMARY KEY DEFAULT uuidv7(),
     bill_id        UUID NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
     status         ocr_job_status NOT NULL DEFAULT 'queued',
     provider       TEXT NOT NULL DEFAULT 'gemini-flash',
@@ -263,7 +338,7 @@ CREATE INDEX IF NOT EXISTS idx_ocr_jobs_pending ON ocr_jobs(status) WHERE status
 
 -- Bảng payments: Đại diện cho MỘT LẦN CHUYỂN KHOẢN (1 mã QR + 1 bằng chứng).
 CREATE TABLE IF NOT EXISTS payments (
-    id                  UUID PRIMARY KEY,
+    id                  UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id            UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     debtor_member_id    UUID NOT NULL,                          -- Người chuyển tiền
     creditor_member_id  UUID NOT NULL,                          -- Người nhận tiền
@@ -294,7 +369,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_debtor ON payments(debtor_member_id);
 
 -- Bảng debts: Công nợ chi tiết theo từng hóa đơn.
 CREATE TABLE IF NOT EXISTS debts (
-    id                  UUID PRIMARY KEY,
+    id                  UUID PRIMARY KEY DEFAULT uuidv7(),
     group_id            UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
     bill_id             UUID NOT NULL,                          -- Nợ này phát sinh từ hóa đơn nào
     debtor_member_id    UUID NOT NULL,                          -- Người phải trả
@@ -335,7 +410,7 @@ CREATE INDEX IF NOT EXISTS idx_debts_payment ON debts(payment_id);
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS notifications (
-    id          UUID PRIMARY KEY,
+    id          UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     type        TEXT NOT NULL,
     payload     JSONB,
@@ -345,7 +420,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id) WHERE read_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS admin_audit_logs (
-    id              UUID PRIMARY KEY,
+    id              UUID PRIMARY KEY DEFAULT uuidv7(),
     admin_id        UUID NOT NULL REFERENCES users(id),
     target_user_id  UUID NOT NULL REFERENCES users(id),
     action          admin_action NOT NULL,
@@ -360,6 +435,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_target ON admin_audit_logs(target_use
 -- ---------------------------------------------------------------------------
 
 -- Dùng chung cho mọi bảng có cột updated_at.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -367,16 +443,19 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 DO $$
 DECLARE t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['users','bills','bill_items','ocr_jobs','debts','payments'] LOOP
+    FOREACH t IN ARRAY ARRAY['users','bills','bill_items','ocr_jobs','debts','payments','media_cleanup_jobs'] LOOP
         EXECUTE format('DROP TRIGGER IF EXISTS trg_%1$s_set_updated_at ON %1$s', t);
         EXECUTE format('CREATE TRIGGER trg_%1$s_set_updated_at BEFORE UPDATE ON %1$s
                         FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t);
     END LOOP;
 END $$;
+-- +goose StatementEnd
 
 -- ---------------------------------------------------------------------------
 -- 10. HELPER VIEW (Số dư của nhóm — tính khi đọc, không lưu sổ cái)
@@ -393,3 +472,41 @@ LEFT JOIN (SELECT creditor_member_id AS mid, SUM(amount) AS total
            FROM debts WHERE status <> 'settled' GROUP BY 1) cr ON cr.mid = m.id
 LEFT JOIN (SELECT debtor_member_id AS mid, SUM(amount) AS total
            FROM debts WHERE status <> 'settled' GROUP BY 1) dr ON dr.mid = m.id;
+
+-- +goose Down
+
+DROP VIEW IF EXISTS v_member_balances;
+
+DROP TABLE IF EXISTS admin_audit_logs;
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS debts;
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS ocr_jobs;
+DROP TABLE IF EXISTS group_activities;
+DROP TABLE IF EXISTS bill_item_assignments;
+DROP TABLE IF EXISTS bill_items;
+DROP TABLE IF EXISTS bills;
+DROP TABLE IF EXISTS group_invites;
+DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS media_cleanup_jobs;
+DROP TABLE IF EXISTS auth_rate_limit_events;
+DROP TABLE IF EXISTS user_tokens;
+DROP TABLE IF EXISTS session_refresh_tokens;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
+
+DROP FUNCTION IF EXISTS set_updated_at();
+
+DROP TYPE IF EXISTS activity_type;
+DROP TYPE IF EXISTS user_role;
+DROP TYPE IF EXISTS token_type;
+DROP TYPE IF EXISTS admin_action;
+DROP TYPE IF EXISTS debt_status;
+DROP TYPE IF EXISTS ocr_job_status;
+DROP TYPE IF EXISTS bill_status;
+DROP TYPE IF EXISTS member_status;
+DROP TYPE IF EXISTS group_role;
+DROP TYPE IF EXISTS account_status;
+
+DROP EXTENSION IF EXISTS citext;

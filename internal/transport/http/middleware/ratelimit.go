@@ -53,7 +53,7 @@ func RateLimit(limit int, window time.Duration) func(http.Handler) http.Handler 
 					retryAfter = 1
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				_ = helpers.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				_ = helpers.WriteAPIError(w, http.StatusTooManyRequests, "RATE_LIMITED", "rate limit exceeded", nil)
 				return
 			}
 

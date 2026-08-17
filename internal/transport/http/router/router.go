@@ -35,10 +35,14 @@ func New(appConfig config.AppConfig) chi.Router {
 	router.Get("/health", health)
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusNotFound, "route not found")
+		if err := helpers.WriteAPIError(w, http.StatusNotFound, "ROUTE_NOT_FOUND", "route not found", nil); err != nil {
+			log.Printf("event=response_write_failed")
+		}
 	})
 	router.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		if err := helpers.WriteAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", nil); err != nil {
+			log.Printf("event=response_write_failed")
+		}
 	})
 
 	return router
@@ -59,11 +63,5 @@ func health(w http.ResponseWriter, _ *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	if err := helpers.WriteJSON(w, status, data); err != nil {
 		log.Printf("failed to write router response: %v", err)
-	}
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	if err := helpers.WriteError(w, status, message); err != nil {
-		log.Printf("failed to write router error response: %v", err)
 	}
 }

@@ -5,76 +5,98 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
+	"paysplit-backend/internal/modules/auth/domain"
 	"paysplit-backend/internal/transport/http/helpers"
 )
 
 type contextKey string
 
-const userIDContextKey contextKey = "authenticated-user-id"
-const userRoleContextKey contextKey = "authenticated-user-role"
+const (
+	userIDContextKey    contextKey = "authenticated-user-id"
+	userRoleContextKey  contextKey = "authenticated-user-role"
+	sessionIDContextKey contextKey = "authenticated-session-id"
+)
 
-// TokenVerifier is implemented by the JWT platform service. Verify must
-// validate the token signature and registered claims before returning its user ID.
 type TokenVerifier interface {
-	Verify(token string) (userID string, role string, err error)
+	Verify(token string) (userID, role, sessionID string, err error)
 }
 
-// Auth requires a valid Bearer token and stores its user ID in the request context.
-func Auth(verifier TokenVerifier) func(http.Handler) http.Handler {
-	if verifier == nil {
-		panic("middleware: token verifier must not be nil")
-	}
+type SessionValidator interface {
+	ValidateSession(context.Context, string, string, time.Time) (*domain.SessionIdentity, error)
+}
 
+func Auth(verifier TokenVerifier, sessions SessionValidator) func(http.Handler) http.Handler {
+	return authenticate(verifier, sessions, true)
+}
+
+func TokenAuth(verifier TokenVerifier) func(http.Handler) http.Handler {
+	return authenticate(verifier, nil, false)
+}
+
+func authenticate(verifier TokenVerifier, sessions SessionValidator, requireLive bool) func(http.Handler) http.Handler {
+	if verifier == nil || (requireLive && sessions == nil) {
+		panic("middleware: auth dependencies must not be nil")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := bearerToken(r.Header.Get("Authorization"))
+			raw, err := bearerToken(r.Header.Get("Authorization"))
 			if err != nil {
-				_ = helpers.WriteError(w, http.StatusUnauthorized, "authentication required")
+				writeAuthError(w)
 				return
 			}
-
-			userID, role, err := verifier.Verify(token)
-			if err != nil || userID == "" {
-				_ = helpers.WriteError(w, http.StatusUnauthorized, "invalid or expired access token")
+			userID, role, sessionID, err := verifier.Verify(raw)
+			if err != nil {
+				writeAuthError(w)
 				return
 			}
-
+			if requireLive {
+				identity, err := sessions.ValidateSession(r.Context(), userID, sessionID, time.Now())
+				if err != nil || identity.Role != role {
+					writeAuthError(w)
+					return
+				}
+			}
 			ctx := context.WithValue(r.Context(), userIDContextKey, userID)
 			ctx = context.WithValue(ctx, userRoleContextKey, role)
+			ctx = context.WithValue(ctx, sessionIDContextKey, sessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// UserID returns the authenticated user ID stored by Auth.
+func writeAuthError(w http.ResponseWriter) {
+	_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED", "authentication required", nil)
+}
+
 func UserID(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value(userIDContextKey).(string)
-	return userID, ok
+	v, ok := ctx.Value(userIDContextKey).(string)
+	return v, ok
 }
-
-// UserRole returns the authenticated user's role stored by Auth.
 func UserRole(ctx context.Context) (string, bool) {
-	role, ok := ctx.Value(userRoleContextKey).(string)
-	return role, ok
+	v, ok := ctx.Value(userRoleContextKey).(string)
+	return v, ok
+}
+func SessionID(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(sessionIDContextKey).(string)
+	return v, ok
 }
 
-// RequireRole permits only authenticated users with one of the supplied roles.
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, role := range roles {
 		allowed[role] = struct{}{}
 	}
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			role, ok := UserRole(r.Context())
 			if !ok {
-				_ = helpers.WriteError(w, http.StatusUnauthorized, "authentication required")
+				writeAuthError(w)
 				return
 			}
-			if _, ok := allowed[role]; !ok {
-				_ = helpers.WriteError(w, http.StatusForbidden, "insufficient permissions")
+			if _, ok = allowed[role]; !ok {
+				_ = helpers.WriteAPIError(w, http.StatusForbidden, "INSUFFICIENT_PERMISSIONS", "insufficient permissions", nil)
 				return
 			}
 			next.ServeHTTP(w, r)

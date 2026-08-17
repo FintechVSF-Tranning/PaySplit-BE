@@ -1,0 +1,276 @@
+{
+  "source": "https://vietqr.app/banks.json",
+  "updatedAt": null,
+  "data": [
+    {
+      "code": "ICB",
+      "bin": "970415",
+      "supported": true
+    },
+    {
+      "code": "VCB",
+      "bin": "970436",
+      "supported": true
+    },
+    {
+      "code": "MB",
+      "bin": "970422",
+      "supported": true
+    },
+    {
+      "code": "ACB",
+      "bin": "970416",
+      "supported": true
+    },
+    {
+      "code": "VPB",
+      "bin": "970432",
+      "supported": true
+    },
+    {
+      "code": "TPB",
+      "bin": "970423",
+      "supported": true
+    },
+    {
+      "code": "MSB",
+      "bin": "970426",
+      "supported": true
+    },
+    {
+      "code": "NAB",
+      "bin": "970428",
+      "supported": false
+    },
+    {
+      "code": "LPB",
+      "bin": "970449",
+      "supported": true
+    },
+    {
+      "code": "VCCB",
+      "bin": "970454",
+      "supported": true
+    },
+    {
+      "code": "BIDV",
+      "bin": "970418",
+      "supported": true
+    },
+    {
+      "code": "STB",
+      "bin": "970403",
+      "supported": true
+    },
+    {
+      "code": "VIB",
+      "bin": "970441",
+      "supported": true
+    },
+    {
+      "code": "HDB",
+      "bin": "970437",
+      "supported": true
+    },
+    {
+      "code": "SEAB",
+      "bin": "970440",
+      "supported": true
+    },
+    {
+      "code": "GPB",
+      "bin": "970408",
+      "supported": false
+    },
+    {
+      "code": "PVCB",
+      "bin": "970412",
+      "supported": false
+    },
+    {
+      "code": "PVCBP",
+      "bin": "971133",
+      "supported": false
+    },
+    {
+      "code": "NCB",
+      "bin": "970419",
+      "supported": false
+    },
+    {
+      "code": "SHBVN",
+      "bin": "970424",
+      "supported": true
+    },
+    {
+      "code": "SCB",
+      "bin": "970429",
+      "supported": false
+    },
+    {
+      "code": "PGB",
+      "bin": "970430",
+      "supported": false
+    },
+    {
+      "code": "VBA",
+      "bin": "970405",
+      "supported": true
+    },
+    {
+      "code": "TCB",
+      "bin": "970407",
+      "supported": true
+    },
+    {
+      "code": "SGICB",
+      "bin": "970400",
+      "supported": false
+    },
+    {
+      "code": "DOB",
+      "bin": "970406",
+      "supported": false
+    },
+    {
+      "code": "BAB",
+      "bin": "970409",
+      "supported": true
+    },
+    {
+      "code": "SCVN",
+      "bin": "970410",
+      "supported": false
+    },
+    {
+      "code": "OCEANBANK",
+      "bin": "970414",
+      "supported": false
+    },
+    {
+      "code": "VRB",
+      "bin": "970421",
+      "supported": false
+    },
+    {
+      "code": "ABB",
+      "bin": "970425",
+      "supported": true
+    },
+    {
+      "code": "VAB",
+      "bin": "970427",
+      "supported": false
+    },
+    {
+      "code": "EIB",
+      "bin": "970431",
+      "supported": true
+    },
+    {
+      "code": "VIETBANK",
+      "bin": "970433",
+      "supported": false
+    },
+    {
+      "code": "IVB",
+      "bin": "970434",
+      "supported": false
+    },
+    {
+      "code": "BVB",
+      "bin": "970438",
+      "supported": false
+    },
+    {
+      "code": "PBVN",
+      "bin": "970439",
+      "supported": true
+    },
+    {
+      "code": "SHB",
+      "bin": "970443",
+      "supported": false
+    },
+    {
+      "code": "CBB",
+      "bin": "970444",
+      "supported": false
+    },
+    {
+      "code": "OCB",
+      "bin": "970448",
+      "supported": true
+    },
+    {
+      "code": "KLB",
+      "bin": "970452",
+      "supported": true
+    },
+    {
+      "code": "CIMB",
+      "bin": "422589",
+      "supported": false
+    },
+    {
+      "code": "HSBC",
+      "bin": "458761",
+      "supported": false
+    },
+    {
+      "code": "DBS",
+      "bin": "796500",
+      "supported": false
+    },
+    {
+      "code": "NHBHN",
+      "bin": "801011",
+      "supported": false
+    },
+    {
+      "code": "HLBVN",
+      "bin": "970442",
+      "supported": false
+    },
+    {
+      "code": "IBKHN",
+      "bin": "970455",
+      "supported": false
+    },
+    {
+      "code": "IBKHCM",
+      "bin": "970456",
+      "supported": false
+    },
+    {
+      "code": "WVN",
+      "bin": "970457",
+      "supported": false
+    },
+    {
+      "code": "UOB",
+      "bin": "970458",
+      "supported": false
+    },
+    {
+      "code": "KBHN",
+      "bin": "970462",
+      "supported": false
+    },
+    {
+      "code": "KBHCM",
+      "bin": "970463",
+      "supported": false
+    },
+    {
+      "code": "COOPBANK",
+      "bin": "970446",
+      "supported": false
+    },
+    {
+      "code": "MOMO",
+      "bin": "971025",
+      "supported": false
+    }
+  ]
+}

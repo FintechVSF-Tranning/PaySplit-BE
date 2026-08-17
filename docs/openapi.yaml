@@ -1,20 +1,338 @@
 openapi: 3.0.3
 info:
   title: PaySplit Backend API
-  version: 0.1.0
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
 paths:
   /health:
     get:
+      operationId: health
       responses:
-        "200":
-          description: Service is healthy
-  /api/v1/auth/register:
+        "200": {description: Healthy}
+  /api/v1/auth/sign-up:
     post:
+      operationId: signUp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SignUpRequest"}
       responses:
         "201":
-          description: User registered
-  /api/v1/auth/login:
+          description: Account created pending email verification
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignUpResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/auth/verify-email:
     post:
+      operationId: verifyEmail
+      requestBody: {$ref: "#/components/requestBodies/Token"}
       responses:
         "200":
-          description: User authenticated
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties: {status: {type: string, enum: [active]}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/auth/resend-verification:
+    post:
+      operationId: resendVerification
+      requestBody: {$ref: "#/components/requestBodies/Email"}
+      responses:
+        "202": {$ref: "#/components/responses/EmailAccepted"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/auth/sign-in:
+    post:
+      operationId: signIn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SignInRequest"}
+      responses:
+        "200":
+          description: Signed in and prior device revoked
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignInResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/auth/refresh:
+    post:
+      operationId: refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token, device_id]
+              additionalProperties: false
+              properties:
+                refresh_token: {type: string, maxLength: 128}
+                device_id: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Token pair rotated
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TokenPair"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/auth/sign-out:
+    post:
+      operationId: signOut
+      security: [{bearerAuth: []}]
+      responses:
+        "204": {description: Session revoked}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/auth/forgot-password:
+    post:
+      operationId: forgotPassword
+      requestBody: {$ref: "#/components/requestBodies/Email"}
+      responses:
+        "202": {$ref: "#/components/responses/EmailAccepted"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/auth/reset-password:
+    post:
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              additionalProperties: false
+              properties:
+                token: {type: string, maxLength: 128}
+                new_password: {$ref: "#/components/schemas/Password"}
+      responses:
+        "204": {description: Password reset and all sessions revoked}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/users/me:
+    get:
+      operationId: getMyProfile
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Safe current user profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties: {user: {$ref: "#/components/schemas/User"}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    patch:
+      operationId: patchMyProfile
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ProfilePatch"}
+      responses:
+        "200":
+          description: Updated safe profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties: {user: {$ref: "#/components/schemas/User"}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/users/me/password:
+    put:
+      operationId: changeMyPassword
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              additionalProperties: false
+              properties:
+                current_password: {type: string, maxLength: 72}
+                new_password: {$ref: "#/components/schemas/Password"}
+      responses:
+        "204": {description: Password changed, current session retained}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/users/me/avatar:
+    put:
+      operationId: uploadMyAvatar
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              additionalProperties: false
+              properties: {avatar: {type: string, format: binary}}
+      responses:
+        "200":
+          description: WebP avatar stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [avatar_url]
+                properties: {avatar_url: {type: string, format: uri}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "413": {$ref: "#/components/responses/BadRequest"}
+        "502": {$ref: "#/components/responses/BadRequest"}
+    delete:
+      operationId: deleteMyAvatar
+      security: [{bearerAuth: []}]
+      responses:
+        "204": {description: Avatar reference cleared}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  requestBodies:
+    Token:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [token]
+            additionalProperties: false
+            properties: {token: {type: string, maxLength: 128}}
+    Email:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email]
+            additionalProperties: false
+            properties: {email: {type: string, format: email, maxLength: 254}}
+  responses:
+    BadRequest:
+      description: Validation or invalid token error
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Unauthorized:
+      description: Authentication or session error
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Forbidden:
+      description: Account is not eligible
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Conflict:
+      description: Unique email or phone conflict
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    RateLimited:
+      description: Rolling limit exceeded
+      headers:
+        Retry-After: {schema: {type: integer}, description: Seconds until retry}
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    EmailAccepted:
+      description: Generic response that does not reveal account existence
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [message]
+            properties: {message: {type: string}}
+  schemas:
+    Password:
+      type: string
+      minLength: 8
+      maxLength: 72
+      description: 8 to 72 bytes with lowercase, uppercase, and a digit
+    SignUpRequest:
+      type: object
+      required: [email, phone_number, display_name, password]
+      additionalProperties: false
+      properties:
+        email: {type: string, format: email, maxLength: 254}
+        phone_number: {type: string, description: Vietnamese local input or E.164}
+        display_name: {type: string, minLength: 1, maxLength: 100}
+        password: {$ref: "#/components/schemas/Password"}
+    SignInRequest:
+      type: object
+      required: [email, password, device_id]
+      additionalProperties: false
+      properties:
+        email: {type: string, format: email, maxLength: 254}
+        password: {type: string, maxLength: 72}
+        device_id: {type: string, format: uuid}
+        device_name: {type: string, maxLength: 120}
+    User:
+      type: object
+      required: [id, email, phone_number, display_name, role, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        phone_number: {type: string}
+        display_name: {type: string}
+        role: {type: string, enum: [user, admin]}
+        status: {type: string, enum: [pending_verification, active, suspended, locked]}
+        email_verified_at: {type: string, format: date-time, nullable: true}
+        bank_code: {type: string, nullable: true}
+        bank_account_number: {type: string, nullable: true}
+        bank_account_holder: {type: string, nullable: true}
+        avatar_url: {type: string, format: uri, nullable: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    SignUpResponse:
+      type: object
+      required: [user, verification_email_sent, verification_expires_at]
+      properties:
+        user: {$ref: "#/components/schemas/User"}
+        verification_email_sent: {type: boolean}
+        verification_expires_at: {type: string, format: date-time}
+    TokenPair:
+      type: object
+      required: [token_type, access_token, access_token_expires_at, refresh_token, refresh_token_expires_at]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_token_expires_at: {type: string, format: date-time}
+        refresh_token: {type: string}
+        refresh_token_expires_at: {type: string, format: date-time}
+    SignInResponse:
+      allOf:
+        - {$ref: "#/components/schemas/TokenPair"}
+        - type: object
+          required: [user]
+          properties: {user: {$ref: "#/components/schemas/User"}}
+    ProfilePatch:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name: {type: string, minLength: 1, maxLength: 100}
+        phone_number: {type: string}
+        bank_code: {type: string, nullable: true}
+        bank_account_number: {type: string, pattern: "^[0-9]{6,19}$", nullable: true}
+        bank_account_holder: {type: string, minLength: 1, maxLength: 100, nullable: true}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            fields: {type: object, additionalProperties: {type: string}}

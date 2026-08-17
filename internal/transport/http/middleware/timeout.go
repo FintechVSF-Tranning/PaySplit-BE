@@ -29,7 +29,7 @@ func (w timeoutResponseWriter) Unwrap() http.ResponseWriter {
 // their resources promptly.
 func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		const timeoutBody = `{"error":"request timeout"}` + "\n"
+		const timeoutBody = `{"error":{"code":"REQUEST_TIMEOUT","message":"request timeout"}}` + "\n"
 		timeoutHandler := http.TimeoutHandler(next, duration, timeoutBody)
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

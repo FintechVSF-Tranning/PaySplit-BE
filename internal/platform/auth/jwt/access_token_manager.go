@@ -10,7 +10,8 @@ import (
 )
 
 // AccessTokenManager tạo và xác thực access token JWT bằng thuật toán HS256.
-// Cùng một secret được dùng cho cả quá trình ký và xác thực token.
+// Nó triển khai cổng phát hành token của auth usecase và cổng xác thực token của
+// HTTP middleware; quyết định đăng nhập vẫn thuộc về usecase.
 type AccessTokenManager struct {
 	secret []byte        // Khóa bí mật dùng để ký và xác thực chữ ký.
 	issuer string        // Đơn vị phát hành token, được lưu trong claim "iss".
@@ -26,7 +27,8 @@ const (
 // claims định nghĩa dữ liệu mà PaySplit lưu trong payload của JWT.
 // RegisteredClaims cung cấp các claim tiêu chuẩn như iss, sub, iat và exp.
 type claims struct {
-	Role string `json:"role"`
+	Role      string `json:"role"`
+	SessionID string `json:"sid"`
 	jwtv5.RegisteredClaims
 }
 
@@ -50,40 +52,41 @@ func NewAccessTokenManager(secret, issuer string, ttl time.Duration) (*AccessTok
 
 // Issue phát hành access token có role mặc định là user và trả về token cùng
 // thời gian hiệu lực tính bằng giây. Dùng IssueWithRole khi cần chỉ định role.
-func (i *AccessTokenManager) Issue(userID string) (string, int64, error) {
-	return i.IssueWithRole(userID, RoleUser)
-}
-
-// IssueWithRole phát hành access token chứa ID và role của người dùng.
-func (i *AccessTokenManager) IssueWithRole(userID, role string) (string, int64, error) {
+// Issue phát hành access token chứa ID người dùng, role và ID phiên đăng nhập.
+func (i *AccessTokenManager) Issue(userID, role, sessionID string) (string, time.Time, error) {
 	if strings.TrimSpace(userID) == "" {
-		return "", 0, errors.New("user ID must not be empty")
+		return "", time.Time{}, errors.New("user ID must not be empty")
 	}
 	if !validRole(role) {
-		return "", 0, errors.New("invalid user role")
+		return "", time.Time{}, errors.New("invalid user role")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return "", time.Time{}, errors.New("session ID must not be empty")
 	}
 
 	now := time.Now()
+	expiresAt := now.Add(i.ttl)
 	token := jwtv5.NewWithClaims(jwtv5.SigningMethodHS256, claims{
-		Role: role,
+		Role:      role,
+		SessionID: sessionID,
 		RegisteredClaims: jwtv5.RegisteredClaims{
 			Issuer:    i.issuer,
 			Subject:   userID,
 			IssuedAt:  jwtv5.NewNumericDate(now),
-			ExpiresAt: jwtv5.NewNumericDate(now.Add(i.ttl)),
+			ExpiresAt: jwtv5.NewNumericDate(expiresAt),
 		},
 	})
 
 	signed, err := token.SignedString(i.secret)
 	if err != nil {
-		return "", 0, fmt.Errorf("sign access token: %w", err)
+		return "", time.Time{}, fmt.Errorf("sign access token: %w", err)
 	}
-	return signed, int64(i.ttl.Seconds()), nil
+	return signed, expiresAt, nil
 }
 
 // Verify kiểm tra chữ ký, thuật toán, đơn vị phát hành, hạn sử dụng và dữ liệu
 // nghiệp vụ của token; nếu hợp lệ, hàm trả về ID cùng role của người dùng.
-func (i *AccessTokenManager) Verify(token string) (string, string, error) {
+func (i *AccessTokenManager) Verify(token string) (string, string, string, error) {
 	parsedClaims := &claims{}
 	parsed, err := jwtv5.ParseWithClaims(
 		token,
@@ -99,17 +102,21 @@ func (i *AccessTokenManager) Verify(token string) (string, string, error) {
 		jwtv5.WithExpirationRequired(),
 	)
 	if err != nil || parsed == nil || !parsed.Valid {
-		return "", "", errors.New("invalid access token")
+		return "", "", "", errors.New("invalid access token")
 	}
 
 	userID := strings.TrimSpace(parsedClaims.Subject)
 	if userID == "" {
-		return "", "", errors.New("invalid access token subject")
+		return "", "", "", errors.New("invalid access token subject")
 	}
 	if !validRole(parsedClaims.Role) {
-		return "", "", errors.New("invalid access token role")
+		return "", "", "", errors.New("invalid access token role")
 	}
-	return userID, parsedClaims.Role, nil
+	sessionID := strings.TrimSpace(parsedClaims.SessionID)
+	if sessionID == "" {
+		return "", "", "", errors.New("invalid access token session")
+	}
+	return userID, parsedClaims.Role, sessionID, nil
 }
 
 func validRole(role string) bool {
