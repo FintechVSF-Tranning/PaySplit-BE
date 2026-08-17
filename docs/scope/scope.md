@@ -14,6 +14,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | done |
 | 3 | Bill and OCR v1 | Slice 3 | in-progress |
+| 4 | Split and settlement v1 | Slice 4 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -80,6 +81,29 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
 - [ ] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
+
+## Slice 4: Split and settlement
+
+### 4. Split and settlement v1 · in-progress
+
+Provide personal allocated expense breakdown, group debt matrix and cursor listing, multi bill debt aggregation for VietQR payment generation, transfer proof image upload, creditor manual confirmation and rejection, manual debt reminders, and automated River workers for debt reminders and stalled confirmation alerts.
+
+**Done when:** all twelve acceptance criteria in spec 0004 pass against PostgreSQL 18, payments strictly coordinate peer to peer transfers without fund custody, dynamic bank lookups and immutable proof snapshots operate reliably, strict lock ordering eliminates race conditions with bill voiding, and River background jobs process reminder and stalled alerts.
+
+- [x] Design it (spec): `/architect split and settlement v1`
+- [ ] Build it: `/develop split and settlement v1`
+  - [ ] Personal expense breakdown and group debt matrix query slice (satisfies AC-1, AC-2)
+  - [ ] VietQR payment generation and dynamic bank profile lookup slice (satisfies AC-3, AC-4, AC-5, AC-11)
+  - [ ] Transfer proof submission and Cloudinary private asset slice (satisfies AC-6, AC-11, AC-12)
+  - [ ] Creditor confirmation and rejection all or nothing settlement slice (satisfies AC-7, AC-8, AC-11)
+  - [ ] Manual debt reminder and River scheduled background jobs slice (satisfies AC-9, AC-10)
+  - [ ] Operational hardening, metrics, structured redaction, and end to end verification (satisfies AC-1 through AC-12)
+- [ ] Verify it: `/check verify split and settlement v1`
+- [ ] Test it: `/test split and settlement v1`
+- [ ] Review it (fresh model): `/check review split and settlement v1`
+- [ ] Document it: `/document split and settlement v1`
+
+Spec [0004](../specs/0004-split-settlement-v1/index.md) · planned code in `internal/modules/settlement/`, `internal/platform/vietqr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
 ## Deferred
 
