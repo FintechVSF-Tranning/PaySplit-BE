@@ -8,7 +8,9 @@ import (
 	"sync"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"paysplit-backend/internal/config"
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
@@ -16,6 +18,7 @@ import (
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	"paysplit-backend/internal/modules/auth/usecase"
 	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
+	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
 	"paysplit-backend/internal/platform/auth/jwt"
@@ -24,6 +27,7 @@ import (
 	"paysplit-backend/internal/platform/email/gmail"
 	avatarimage "paysplit-backend/internal/platform/image/avatar"
 	"paysplit-backend/internal/platform/notification/fcm"
+	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
 	transportmw "paysplit-backend/internal/transport/http/middleware"
@@ -31,10 +35,11 @@ import (
 )
 
 // App đại diện cho ứng dụng API đã được khởi tạo và sở hữu HTTP server cùng
-// database pool; các tài nguyên này phải được giải phóng khi ứng dụng dừng.
+// database pool và job queue; các tài nguyên này phải được giải phóng khi ứng dụng dừng.
 type App struct {
 	server        *http.Server
 	db            *pgxpool.Pool
+	riverClient   *river.Client[pgx.Tx]
 	cancelWorkers context.CancelFunc
 	workers       sync.WaitGroup
 }
@@ -54,8 +59,6 @@ func New(ctx context.Context) (*App, error) {
 
 	tokens, err := jwt.NewAccessTokenManager(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.AccessTokenTTL)
 	if err != nil {
-		// New sở hữu pool sau khi tạo, vì vậy phải giải phóng nếu bước kết nối
-		// dependency tiếp theo thất bại.
 		db.Close()
 		return nil, fmt.Errorf("create JWT issuer: %w", err)
 	}
@@ -89,6 +92,20 @@ func New(ctx context.Context) (*App, error) {
 	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier)
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
+	// Khởi tạo River Queue & Worker
+	_ = riverpkg.AutoMigrate(ctx, db)
+	riverWorkers := river.NewWorkers()
+	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationService))
+
+	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: 20})
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create river client: %w", err)
+	}
+
+	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
+	notificationService.SetEnqueuer(notificationEnqueuer)
+
 	appRouter := router.New(cfg.App)
 	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
 	// chỉ cần mount tại đây, không phải thêm tham số vào router.New.
@@ -99,11 +116,19 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 	})
 	notificationHandler.RegisterRoutes(appRouter, liveAuth)
+
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	if err := riverClient.Start(workerCtx); err != nil {
+		cancelWorkers()
+		db.Close()
+		return nil, fmt.Errorf("start river client: %w", err)
+	}
+
 	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
 
 	app := &App{
 		db:            db,
+		riverClient:   riverClient,
 		cancelWorkers: cancelWorkers,
 		server: &http.Server{
 			Addr:    cfg.App.Address,
@@ -133,6 +158,9 @@ func (a *App) Start() error {
 // database pool dùng chung; ctx giới hạn thời gian chờ quá trình này.
 func (a *App) Shutdown(ctx context.Context) error {
 	a.cancelWorkers()
+	if a.riverClient != nil {
+		_ = a.riverClient.Stop(ctx)
+	}
 	if err := a.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}

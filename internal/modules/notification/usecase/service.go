@@ -19,9 +19,15 @@ type PushNotifier interface {
 	SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error
 }
 
+// JobEnqueuer là interface đại diện cho hàng đợi bất đồng bộ (River Queue)
+type JobEnqueuer interface {
+	EnqueueNotification(ctx context.Context, userID string, msg fcm.PushMessage) error
+}
+
 type Service struct {
 	repo         repository.Repository
 	pushNotifier PushNotifier
+	enqueuer     JobEnqueuer
 }
 
 func NewService(repo repository.Repository, pushNotifier PushNotifier) *Service {
@@ -31,9 +37,14 @@ func NewService(repo repository.Repository, pushNotifier PushNotifier) *Service 
 	}
 }
 
+// SetEnqueuer thiết lập Queue Enqueuer cho Service
+func (s *Service) SetEnqueuer(enqueuer JobEnqueuer) {
+	s.enqueuer = enqueuer
+}
+
 // SendToUser thực hiện 2 việc:
 // 1. Lưu thông báo vào Database (In-App notification)
-// 2. Lấy FCM token của user và gửi Push Notification ngầm ra màn hình khóa
+// 2. Đẩy job gửi Push Notification vào River Queue (hoặc fallback goroutine)
 func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMessage) error {
 	if userID == "" {
 		return errors.New("user ID must not be empty")
@@ -65,24 +76,44 @@ func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMes
 		return fmt.Errorf("create in-app notification: %w", err)
 	}
 
-	// 2. Bắn Push Notification ngầm qua Firebase (không block request chính)
+	// 2. Đẩy job gửi Push Notification vào Queue (được đảm bảo độ tin cậy và retry)
+	if s.enqueuer != nil {
+		if err := s.enqueuer.EnqueueNotification(ctx, userID, msg); err == nil {
+			return nil
+		}
+	}
+
+	// Fallback: Nếu chưa bật queue thì chạy ngầm qua goroutine như cũ
 	if s.pushNotifier != nil {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-
-			token, err := s.repo.GetActiveFCMTokenByUserID(bgCtx, userID)
-			if err != nil || token == "" {
-				return
-			}
-
-			if sendErr := s.pushNotifier.SendToDevice(bgCtx, token, msg); sendErr != nil {
-				// Nếu token không còn hợp lệ (user gỡ app) -> Tự động xóa khỏi DB
-				if fcm.IsInvalidTokenError(sendErr) {
-					_ = s.repo.ClearFCMToken(bgCtx, token)
-				}
-			}
+			_ = s.ProcessNotificationJob(bgCtx, userID, msg)
 		}()
+	}
+
+	return nil
+}
+
+// ProcessNotificationJob xử lý công việc gửi push notification từ River Worker
+func (s *Service) ProcessNotificationJob(ctx context.Context, userID string, msg fcm.PushMessage) error {
+	if s.pushNotifier == nil || userID == "" {
+		return nil
+	}
+
+	token, err := s.repo.GetActiveFCMTokenByUserID(ctx, userID)
+	if err != nil || token == "" {
+		return nil
+	}
+
+	if sendErr := s.pushNotifier.SendToDevice(ctx, token, msg); sendErr != nil {
+		// Nếu token không còn hợp lệ (user gỡ app) -> Xóa khỏi DB và kết thúc job
+		if fcm.IsInvalidTokenError(sendErr) {
+			_ = s.repo.ClearFCMToken(ctx, token)
+			return nil
+		}
+		// Trả về lỗi để River Queue tự động retry với exponential backoff
+		return sendErr
 	}
 
 	return nil

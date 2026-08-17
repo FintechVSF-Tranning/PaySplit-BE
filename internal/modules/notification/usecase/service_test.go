@@ -80,7 +80,41 @@ func (m *mockPushNotifier) SendToAllUsers(ctx context.Context, msg fcm.PushMessa
 	return m.errToSend
 }
 
-func TestSendToUser_SavesDBAndCallsFCM(t *testing.T) {
+type mockJobEnqueuer struct {
+	enqueuedUserID string
+	enqueuedMsg    fcm.PushMessage
+}
+
+func (m *mockJobEnqueuer) EnqueueNotification(ctx context.Context, userID string, msg fcm.PushMessage) error {
+	m.enqueuedUserID = userID
+	m.enqueuedMsg = msg
+	return nil
+}
+
+func TestSendToUser_WithJobEnqueuer(t *testing.T) {
+	repo := &mockRepo{}
+	notifier := &mockPushNotifier{}
+	service := NewService(repo, notifier)
+	enqueuer := &mockJobEnqueuer{}
+	service.SetEnqueuer(enqueuer)
+
+	ctx := context.Background()
+	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+
+	err := service.SendToUser(ctx, "user-1", msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if repo.createdNotif == nil {
+		t.Fatalf("expected notification to be saved to DB")
+	}
+	if enqueuer.enqueuedUserID != "user-1" {
+		t.Errorf("expected job enqueued for user-1, got %s", enqueuer.enqueuedUserID)
+	}
+}
+
+func TestSendToUser_FallbackGoroutine(t *testing.T) {
 	repo := &mockRepo{activeToken: "device-token-123"}
 	notifier := &mockPushNotifier{}
 	service := NewService(repo, notifier)
@@ -96,11 +130,7 @@ func TestSendToUser_SavesDBAndCallsFCM(t *testing.T) {
 	if repo.createdNotif == nil {
 		t.Fatalf("expected notification to be saved to DB")
 	}
-	if repo.createdNotif.UserID != "user-1" {
-		t.Errorf("expected user-1, got %s", repo.createdNotif.UserID)
-	}
 
-	// Chờ 50ms cho async goroutine chạy
 	time.Sleep(50 * time.Millisecond)
 
 	if notifier.sentToken != "device-token-123" {
@@ -108,7 +138,7 @@ func TestSendToUser_SavesDBAndCallsFCM(t *testing.T) {
 	}
 }
 
-func TestSendToUser_ClearsInvalidToken(t *testing.T) {
+func TestProcessNotificationJob_ClearsInvalidToken(t *testing.T) {
 	repo := &mockRepo{activeToken: "dead-token"}
 	notifier := &mockPushNotifier{errToSend: fcm.ErrInvalidToken}
 	service := NewService(repo, notifier)
@@ -116,9 +146,10 @@ func TestSendToUser_ClearsInvalidToken(t *testing.T) {
 	ctx := context.Background()
 	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
 
-	_ = service.SendToUser(ctx, "user-1", msg)
-
-	time.Sleep(50 * time.Millisecond)
+	err := service.ProcessNotificationJob(ctx, "user-1", msg)
+	if err != nil {
+		t.Errorf("expected nil error when invalid token is cleared, got %v", err)
+	}
 
 	if repo.clearedToken != "dead-token" {
 		t.Errorf("expected dead-token to be cleared from DB, got %s", repo.clearedToken)
