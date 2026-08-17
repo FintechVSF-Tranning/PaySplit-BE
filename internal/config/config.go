@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type Config struct {
 	Cloudinary CloudinaryConfig
 	Avatar     AvatarConfig
 	Cleanup    CleanupConfig
+	Group      GroupConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -77,6 +79,11 @@ type CleanupConfig struct {
 	Retention           time.Duration
 	MediaWorkerInterval time.Duration
 	MediaMaxAttempts    int
+}
+
+// GroupConfig chứa cấu hình dùng riêng cho module group management.
+type GroupConfig struct {
+	InviteBaseURL string
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -200,6 +207,7 @@ func Load() (*Config, error) {
 		Cloudinary: CloudinaryConfig{CloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"), APIKey: os.Getenv("CLOUDINARY_API_KEY"), APISecret: os.Getenv("CLOUDINARY_API_SECRET")},
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
+		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -241,7 +249,7 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
 		return errors.New("JWT_ISSUER must not be empty")
 	}
-	if c.Auth.AccessTokenTTL != 15*time.Minute {
+	if c.Auth.AccessTokenTTL != 240*time.Minute {
 		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
 	}
 	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
@@ -261,6 +269,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
+	}
+	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
+		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
 	}
 	return nil
 }

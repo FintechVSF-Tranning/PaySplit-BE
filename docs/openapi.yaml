@@ -205,6 +205,225 @@ paths:
       responses:
         "204": {description: Avatar reference cleared}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/groups:
+    post:
+      operationId: createGroup
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateGroupRequest"}
+      responses:
+        "201":
+          description: Group created with the caller as its active Captain
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreateGroupResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    get:
+      operationId: listGroups
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: cursor
+          in: query
+          schema: {type: string}
+          description: Opaque cursor from a prior response's next_cursor
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        "200":
+          description: Groups where the caller is an active member, newest first
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GroupListResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/groups/{id}:
+    get:
+      operationId: getGroupDetail
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Group, active members, balances, and the caller's role
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GroupDetailResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/groups/{id}/invites:
+    post:
+      operationId: createGroupInvite
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateInviteRequest"}
+      responses:
+        "201":
+          description: A new invite was created
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InviteResponse"}
+        "200":
+          description: The group's one available invite was reused
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InviteResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+  /api/v1/groups/{id}/invites/{inviteId}:
+    delete:
+      operationId: revokeGroupInvite
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: inviteId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: Invite revoked, idempotent on retry}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/groups/invites/{code}:
+    get:
+      operationId: previewGroupInvite
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: Group name, active member count, and Captain display name
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvitePreviewResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "410": {$ref: "#/components/responses/InviteUnavailable"}
+  /api/v1/groups/join:
+    post:
+      operationId: joinGroup
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/JoinGroupRequest"}
+      responses:
+        "200":
+          description: Joined, reactivated, or already an active member
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JoinGroupResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/GroupMemberLimitReached"}
+        "410": {$ref: "#/components/responses/InviteUnavailable"}
+  /api/v1/groups/{id}/members/{memberId}:
+    delete:
+      operationId: leaveOrRemoveMember
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: memberId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: Membership marked inactive, idempotent on retry}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409":
+          description: Target has unsettled debts (GROUP_MEMBER_HAS_OPEN_DEBTS), or is the active Captain and must transfer the role first (CAPTAIN_TRANSFER_REQUIRED)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/OpenDebtsError"}
+                  - {$ref: "#/components/schemas/Error"}
+  /api/v1/groups/{id}/members/{memberId}/role:
+    put:
+      operationId: transferCaptain
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: memberId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TransferRoleRequest"}
+      responses:
+        "200":
+          description: Captain role transferred to the target member
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CaptainTransferResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: The group lock for this transfer could not be acquired immediately
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+  /api/v1/groups/{id}/activities:
+    get:
+      operationId: listGroupActivities
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: cursor
+          in: query
+          schema: {type: string}
+          description: Opaque cursor from a prior response's next_cursor
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        "200":
+          description: The group's activity timeline, newest first
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ActivityListResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -239,6 +458,18 @@ components:
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     Conflict:
       description: Unique email or phone conflict
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    NotFound:
+      description: Resource missing, or the caller is not authorized to see it
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    CaptainRequired:
+      description: Caller is not the group's active Captain
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    InviteUnavailable:
+      description: Invite is expired, revoked, or exhausted (one public code for all three)
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    GroupMemberLimitReached:
+      description: Group already has 50 active members
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     RateLimited:
       description: Rolling limit exceeded
@@ -336,3 +567,187 @@ components:
             code: {type: string}
             message: {type: string}
             fields: {type: object, additionalProperties: {type: string}}
+    OpenDebtsError:
+      description: Error variant for GROUP_MEMBER_HAS_OPEN_DEBTS, carrying the target's outstanding amounts
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, fields]
+          properties:
+            code: {type: string, enum: [GROUP_MEMBER_HAS_OPEN_DEBTS]}
+            message: {type: string}
+            fields:
+              type: object
+              required: [payable_amount, receivable_amount]
+              properties:
+                payable_amount: {type: string, description: Decimal VND string the target still owes others}
+                receivable_amount: {type: string, description: Decimal VND string others still owe the target}
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100, description: Trimmed to 1-100 Unicode code points}
+        currency: {type: string, enum: [VND], description: Optional; only VND is accepted in v1}
+    Group:
+      type: object
+      required: [id, name, currency, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        currency: {type: string, enum: [VND]}
+        created_at: {type: string, format: date-time}
+    Membership:
+      type: object
+      required: [id, group_id, user_id, role, status, joined_at, left_at]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        role: {type: string, enum: [captain, member]}
+        status: {type: string, enum: [active, inactive]}
+        joined_at: {type: string, format: date-time}
+        left_at: {type: string, format: date-time, nullable: true}
+    Member:
+      type: object
+      required: [membership_id, user_id, display_name, avatar_url, role, joined_at]
+      properties:
+        membership_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        display_name: {type: string}
+        avatar_url: {type: string, format: uri, nullable: true}
+        role: {type: string, enum: [captain, member]}
+        joined_at: {type: string, format: date-time}
+    Balance:
+      type: object
+      required: [member_id, net_balance]
+      properties:
+        member_id: {type: string, format: uuid}
+        net_balance: {type: string, description: Decimal VND string; positive means the member is owed}
+    GroupListItem:
+      type: object
+      required: [group, caller_membership_id, caller_role, active_member_count]
+      properties:
+        group: {$ref: "#/components/schemas/Group"}
+        caller_membership_id: {type: string, format: uuid}
+        caller_role: {type: string, enum: [captain, member]}
+        active_member_count: {type: integer}
+    CreateGroupResponse:
+      type: object
+      required: [group, membership]
+      properties:
+        group: {$ref: "#/components/schemas/Group"}
+        membership: {$ref: "#/components/schemas/Membership"}
+    GroupListResponse:
+      type: object
+      required: [groups, next_cursor]
+      properties:
+        groups: {type: array, items: {$ref: "#/components/schemas/GroupListItem"}}
+        next_cursor: {type: string, nullable: true}
+    GroupDetailResponse:
+      type: object
+      required: [group, members, balances, caller_role]
+      properties:
+        group: {$ref: "#/components/schemas/Group"}
+        members: {type: array, items: {$ref: "#/components/schemas/Member"}}
+        balances: {type: array, items: {$ref: "#/components/schemas/Balance"}}
+        caller_role: {type: string, enum: [captain, member]}
+    CreateInviteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expires_in_hours: {type: integer, minimum: 1, maximum: 168, default: 24}
+        max_uses: {type: integer, minimum: 1, maximum: 50, nullable: true, description: Optional; unlimited when omitted}
+        regenerate: {type: boolean, default: false, description: Revoke every available invite first and create one new one}
+    Invite:
+      type: object
+      required: [id, code, invite_url, expires_at, max_uses, use_count]
+      properties:
+        id: {type: string, format: uuid}
+        code: {type: string, description: Sensitive; only ever returned by create or reuse}
+        invite_url: {type: string, description: APP_INVITE_BASE_URL plus the encoded invite code}
+        expires_at: {type: string, format: date-time}
+        max_uses: {type: integer, nullable: true}
+        use_count: {type: integer}
+    InviteResponse:
+      type: object
+      required: [invite]
+      properties:
+        invite: {$ref: "#/components/schemas/Invite"}
+    InvitePreview:
+      type: object
+      required: [group_name, active_member_count, captain_display_name]
+      properties:
+        group_name: {type: string}
+        active_member_count: {type: integer}
+        captain_display_name: {type: string}
+    InvitePreviewResponse:
+      type: object
+      required: [preview]
+      properties:
+        preview: {$ref: "#/components/schemas/InvitePreview"}
+    JoinGroupRequest:
+      type: object
+      required: [code]
+      additionalProperties: false
+      properties:
+        code: {type: string}
+    JoinResult:
+      type: object
+      required: [group_id, membership_id, role, status, result]
+      properties:
+        group_id: {type: string, format: uuid}
+        membership_id: {type: string, format: uuid}
+        role: {type: string, enum: [captain, member]}
+        status: {type: string, enum: [active, inactive]}
+        result: {type: string, enum: [joined, reactivated, already_active]}
+    JoinGroupResponse:
+      type: object
+      required: [join]
+      properties:
+        join: {$ref: "#/components/schemas/JoinResult"}
+    TransferRoleRequest:
+      type: object
+      required: [role]
+      additionalProperties: false
+      properties:
+        role: {type: string, enum: [captain]}
+    CaptainTransfer:
+      type: object
+      required: [previous_captain_member_id, current_captain_member_id]
+      properties:
+        previous_captain_member_id: {type: string, format: uuid}
+        current_captain_member_id: {type: string, format: uuid}
+    CaptainTransferResponse:
+      type: object
+      required: [transfer]
+      properties:
+        transfer: {$ref: "#/components/schemas/CaptainTransfer"}
+    ActivityActor:
+      type: object
+      required: [member_id, user_id, display_name, avatar_url]
+      properties:
+        member_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        display_name: {type: string}
+        avatar_url: {type: string, format: uri, nullable: true}
+    Activity:
+      type: object
+      required: [id, action_type, description, actor, metadata, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        action_type:
+          type: string
+          enum: [group_created, invite_created, invite_revoked, member_joined, member_reactivated, member_left, member_removed, captain_transferred]
+        description: {type: string}
+        actor: {$ref: "#/components/schemas/ActivityActor"}
+        metadata: {type: object, description: "Exact keys per action_type; never includes an invite code"}
+        created_at: {type: string, format: date-time}
+    ActivityListResponse:
+      type: object
+      required: [activities, next_cursor]
+      properties:
+        activities: {type: array, items: {$ref: "#/components/schemas/Activity"}}
+        next_cursor: {type: string, nullable: true}

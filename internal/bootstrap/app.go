@@ -14,7 +14,10 @@ import (
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
-	"paysplit-backend/internal/modules/auth/usecase"
+	authusecase "paysplit-backend/internal/modules/auth/usecase"
+	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
+	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
+	groupusecase "paysplit-backend/internal/modules/group/usecase"
 	"paysplit-backend/internal/platform/auth/jwt"
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/database"
@@ -72,8 +75,12 @@ func New(ctx context.Context) (*App, error) {
 		return nil, err
 	}
 	imageProcessor := avatarimage.NewProcessor(cfg.Avatar.ProcessingTimeout, cfg.Avatar.MaxConcurrentConversions)
-	authService := usecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, usecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
+	authService := authusecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
 	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
+
+	groupRepo := grouppostgres.New(db)
+	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
+	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
 
 	appRouter := router.New(cfg.App)
 	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
@@ -83,6 +90,7 @@ func New(ctx context.Context) (*App, error) {
 	appRouter.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
+		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
 	})
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
