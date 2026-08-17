@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"paysplit-backend/internal/modules/notification/domain"
 	"paysplit-backend/internal/modules/notification/repository"
@@ -29,21 +28,20 @@ type Service struct {
 	enqueuer     JobEnqueuer
 }
 
-func NewService(repo repository.Repository, pushNotifier PushNotifier) *Service {
+func NewService(repo repository.Repository, pushNotifier PushNotifier, enqueuer JobEnqueuer) *Service {
+	if repo == nil {
+		panic("notification repository must not be nil")
+	}
 	return &Service{
 		repo:         repo,
 		pushNotifier: pushNotifier,
+		enqueuer:     enqueuer,
 	}
-}
-
-// SetEnqueuer thiết lập Queue Enqueuer cho Service
-func (s *Service) SetEnqueuer(enqueuer JobEnqueuer) {
-	s.enqueuer = enqueuer
 }
 
 // SendToUser thực hiện 2 việc:
 // 1. Lưu thông báo vào Database (In-App notification)
-// 2. Đẩy job gửi Push Notification vào River Queue (hoặc fallback goroutine)
+// 2. Đẩy job gửi Push Notification vào River Queue (hoặc gửi trực tiếp nếu không có queue)
 func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMessage) error {
 	if userID == "" {
 		return domain.ErrInvalidInput
@@ -77,45 +75,18 @@ func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMes
 
 	// 2. Đẩy job gửi Push Notification vào Queue (được đảm bảo độ tin cậy và retry)
 	if s.enqueuer != nil {
-		if err := s.enqueuer.EnqueueNotification(ctx, userID, msg); err == nil {
-			return nil
+		if err := s.enqueuer.EnqueueNotification(ctx, userID, msg); err != nil {
+			return fmt.Errorf("enqueue notification: %w", err)
 		}
+		return nil
 	}
 
-	// Fallback: Nếu chưa bật queue thì chạy ngầm qua goroutine như cũ
+	// Fallback gửi trực tiếp nếu enqueuer không được cấu hình (ví dụ trong môi trường test)
 	if s.pushNotifier != nil {
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = s.ProcessNotificationJob(bgCtx, userID, msg)
-		}()
-	}
-
-	return nil
-}
-
-// ProcessNotificationJob xử lý công việc gửi push notification từ River Worker
-func (s *Service) ProcessNotificationJob(ctx context.Context, userID string, msg fcm.PushMessage) error {
-	if s.pushNotifier == nil || userID == "" {
-		return nil
-	}
-
-	token, err := s.repo.GetActiveFCMTokenByUserID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("get active FCM token: %w", err)
-	}
-	if token == "" {
-		return nil
-	}
-
-	if sendErr := s.pushNotifier.SendToDevice(ctx, token, msg); sendErr != nil {
-		// Nếu token không còn hợp lệ (user gỡ app) -> Xóa khỏi DB và kết thúc job
-		if fcm.IsInvalidTokenError(sendErr) {
-			_ = s.repo.ClearFCMToken(ctx, token)
-			return nil
+		token, err := s.repo.GetActiveFCMTokenByUserID(ctx, userID)
+		if err == nil && token != "" {
+			_ = s.pushNotifier.SendToDevice(ctx, token, msg)
 		}
-		// Trả về lỗi để River Queue tự động retry với exponential backoff
-		return sendErr
 	}
 
 	return nil

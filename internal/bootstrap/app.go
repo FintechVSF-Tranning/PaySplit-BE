@@ -16,12 +16,11 @@ import (
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
-	"paysplit-backend/internal/modules/auth/usecase"
+	authusecase "paysplit-backend/internal/modules/auth/usecase"
 	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
 	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
-	authusecase "paysplit-backend/internal/modules/auth/usecase"
 	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
 	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
 	groupusecase "paysplit-backend/internal/modules/group/usecase"
@@ -93,8 +92,6 @@ func New(ctx context.Context) (*App, error) {
 	}
 
 	notificationRepo := notificationpostgres.New(db)
-	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier)
-	notificationHandler := notificationhttp.NewHandler(notificationService)
 
 	// Khởi tạo River Queue & Worker
 	if err := riverpkg.AutoMigrate(ctx, db); err != nil {
@@ -102,7 +99,7 @@ func New(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("auto-migrate river: %w", err)
 	}
 	riverWorkers := river.NewWorkers()
-	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationService))
+	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, fcmNotifier))
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: 20})
 	if err != nil {
@@ -111,7 +108,9 @@ func New(ctx context.Context) (*App, error) {
 	}
 
 	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
-	notificationService.SetEnqueuer(notificationEnqueuer)
+	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
+	notificationHandler := notificationhttp.NewHandler(notificationService)
+
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)

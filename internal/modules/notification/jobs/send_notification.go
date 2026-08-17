@@ -10,9 +10,15 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// NotificationProcessor là interface tiếp nhận job thông báo từ Worker để thực thi
-type NotificationProcessor interface {
-	ProcessNotificationJob(ctx context.Context, userID string, msg fcm.PushMessage) error
+// Repository định nghĩa các thao tác lưu trữ mà NotificationWorker cần
+type Repository interface {
+	GetActiveFCMTokenByUserID(ctx context.Context, userID string) (string, error)
+	ClearFCMToken(ctx context.Context, fcmToken string) error
+}
+
+// PushNotifier định nghĩa cổng gửi push notification
+type PushNotifier interface {
+	SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error
 }
 
 // NotificationJobArgs định nghĩa payload công việc gửi thông báo được lưu vào River Queue
@@ -27,22 +33,42 @@ func (NotificationJobArgs) Kind() string { return "send_notification" }
 // NotificationWorker là worker của River Queue chịu trách nhiệm bốc và xử lý job gửi thông báo
 type NotificationWorker struct {
 	river.WorkerDefaults[NotificationJobArgs]
-	processor NotificationProcessor
+	repo         Repository
+	pushNotifier PushNotifier
 }
 
-func NewNotificationWorker(processor NotificationProcessor) *NotificationWorker {
+func NewNotificationWorker(repo Repository, pushNotifier PushNotifier) *NotificationWorker {
 	return &NotificationWorker{
-		processor: processor,
+		repo:         repo,
+		pushNotifier: pushNotifier,
 	}
 }
 
 // Work được River Queue gọi tự động mỗi khi bốc được một NotificationJobArgs từ hàng đợi
 func (w *NotificationWorker) Work(ctx context.Context, job *river.Job[NotificationJobArgs]) error {
-	if w.processor == nil {
-		return fmt.Errorf("notification processor is not configured")
+	if w.pushNotifier == nil || job.Args.UserID == "" {
+		return nil
 	}
 
-	return w.processor.ProcessNotificationJob(ctx, job.Args.UserID, job.Args.Message)
+	token, err := w.repo.GetActiveFCMTokenByUserID(ctx, job.Args.UserID)
+	if err != nil {
+		return fmt.Errorf("get active FCM token: %w", err)
+	}
+	if token == "" {
+		return nil
+	}
+
+	if sendErr := w.pushNotifier.SendToDevice(ctx, token, job.Args.Message); sendErr != nil {
+		// Nếu token không còn hợp lệ (user gỡ app) -> Xóa khỏi DB và kết thúc job
+		if fcm.IsInvalidTokenError(sendErr) {
+			_ = w.repo.ClearFCMToken(ctx, token)
+			return nil
+		}
+		// Trả về lỗi để River Queue tự động retry với exponential backoff
+		return sendErr
+	}
+
+	return nil
 }
 
 // Enqueuer hỗ trợ đẩy công việc gửi thông báo vào River Queue

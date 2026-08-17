@@ -64,7 +64,7 @@ func fakeAuthMiddleware(userID, sessionID string) func(http.Handler) http.Handle
 
 func TestListNotificationsEndpoint(t *testing.T) {
 	repo := &mockRepo{}
-	svc := usecase.NewService(repo, nil)
+	svc := usecase.NewService(repo, nil, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
@@ -84,7 +84,7 @@ func TestListNotificationsEndpoint(t *testing.T) {
 
 func TestGetUnreadCountEndpoint(t *testing.T) {
 	repo := &mockRepo{unreadCount: 7}
-	svc := usecase.NewService(repo, nil)
+	svc := usecase.NewService(repo, nil, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
@@ -110,7 +110,7 @@ func TestGetUnreadCountEndpoint(t *testing.T) {
 
 func TestMarkAsReadEndpoint(t *testing.T) {
 	repo := &mockRepo{}
-	svc := usecase.NewService(repo, nil)
+	svc := usecase.NewService(repo, nil, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
@@ -133,7 +133,7 @@ func TestMarkAsReadEndpoint(t *testing.T) {
 
 func TestMarkAsReadEndpoint_NotFound(t *testing.T) {
 	repo := &mockRepo{markReadErr: domain.ErrNotificationNotFound}
-	svc := usecase.NewService(repo, nil)
+	svc := usecase.NewService(repo, nil, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
@@ -153,7 +153,7 @@ func TestMarkAsReadEndpoint_NotFound(t *testing.T) {
 
 func TestMarkAllAsReadEndpoint(t *testing.T) {
 	repo := &mockRepo{}
-	svc := usecase.NewService(repo, nil)
+	svc := usecase.NewService(repo, nil, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()

@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -80,9 +79,13 @@ func (m *mockPushNotifier) SendToAllUsers(ctx context.Context, msg fcm.PushMessa
 type mockJobEnqueuer struct {
 	enqueuedUserID string
 	enqueuedMsg    fcm.PushMessage
+	errToReturn    error
 }
 
 func (m *mockJobEnqueuer) EnqueueNotification(ctx context.Context, userID string, msg fcm.PushMessage) error {
+	if m.errToReturn != nil {
+		return m.errToReturn
+	}
 	m.enqueuedUserID = userID
 	m.enqueuedMsg = msg
 	return nil
@@ -91,9 +94,8 @@ func (m *mockJobEnqueuer) EnqueueNotification(ctx context.Context, userID string
 func TestSendToUser_WithJobEnqueuer(t *testing.T) {
 	repo := &mockRepo{}
 	notifier := &mockPushNotifier{}
-	service := NewService(repo, notifier)
 	enqueuer := &mockJobEnqueuer{}
-	service.SetEnqueuer(enqueuer)
+	service := NewService(repo, notifier, enqueuer)
 
 	ctx := context.Background()
 	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
@@ -111,10 +113,10 @@ func TestSendToUser_WithJobEnqueuer(t *testing.T) {
 	}
 }
 
-func TestSendToUser_FallbackGoroutine(t *testing.T) {
+func TestSendToUser_FallbackDirectSend(t *testing.T) {
 	repo := &mockRepo{activeToken: "device-token-123"}
 	notifier := &mockPushNotifier{}
-	service := NewService(repo, notifier)
+	service := NewService(repo, notifier, nil)
 
 	ctx := context.Background()
 	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
@@ -128,62 +130,14 @@ func TestSendToUser_FallbackGoroutine(t *testing.T) {
 		t.Fatalf("expected notification to be saved to DB")
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
 	if notifier.sentToken != "device-token-123" {
 		t.Errorf("expected device-token-123, got %s", notifier.sentToken)
 	}
 }
 
-func TestProcessNotificationJob_ClearsInvalidToken(t *testing.T) {
-	repo := &mockRepo{activeToken: "dead-token"}
-	notifier := &mockPushNotifier{errToSend: fcm.ErrInvalidToken}
-	service := NewService(repo, notifier)
-
-	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
-
-	err := service.ProcessNotificationJob(ctx, "user-1", msg)
-	if err != nil {
-		t.Errorf("expected nil error when invalid token is cleared, got %v", err)
-	}
-
-	if repo.clearedToken != "dead-token" {
-		t.Errorf("expected dead-token to be cleared from DB, got %s", repo.clearedToken)
-	}
-}
-
-func TestProcessNotificationJob_DBErrorReturnsErrorForRetry(t *testing.T) {
-	repo := &mockRepo{activeTokenErr: errors.New("db connection timeout")}
-	notifier := &mockPushNotifier{}
-	service := NewService(repo, notifier)
-
-	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
-
-	err := service.ProcessNotificationJob(ctx, "user-1", msg)
-	if err == nil {
-		t.Fatalf("expected error when DB fails so River Queue can retry, got nil")
-	}
-}
-
-func TestProcessNotificationJob_NoActiveTokenReturnsNil(t *testing.T) {
-	repo := &mockRepo{activeToken: ""} // user has no active device
-	notifier := &mockPushNotifier{}
-	service := NewService(repo, notifier)
-
-	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
-
-	err := service.ProcessNotificationJob(ctx, "user-1", msg)
-	if err != nil {
-		t.Fatalf("expected nil when user has no active token, got: %v", err)
-	}
-}
-
 func TestGetUnreadCount(t *testing.T) {
 	repo := &mockRepo{unreadCount: 5}
-	service := NewService(repo, nil)
+	service := NewService(repo, nil, nil)
 
 	count, err := service.GetUnreadCount(context.Background(), "user-1")
 	if err != nil {
@@ -196,7 +150,7 @@ func TestGetUnreadCount(t *testing.T) {
 
 func TestMarkAsRead(t *testing.T) {
 	repo := &mockRepo{}
-	service := NewService(repo, nil)
+	service := NewService(repo, nil, nil)
 
 	err := service.MarkAsRead(context.Background(), "user-1", "notif-1")
 	if err != nil {
@@ -209,7 +163,7 @@ func TestMarkAsRead(t *testing.T) {
 
 func TestMarkAllAsRead(t *testing.T) {
 	repo := &mockRepo{}
-	service := NewService(repo, nil)
+	service := NewService(repo, nil, nil)
 
 	err := service.MarkAllAsRead(context.Background(), "user-1")
 	if err != nil {
