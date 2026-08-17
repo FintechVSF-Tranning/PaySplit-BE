@@ -26,4 +26,3 @@ func (h *Handler) RegisterUserRoutes(router chi.Router, liveAuth func(http.Handl
 		protected.Put("/me/fcm-token", h.UpdateFCMToken)
 	})
 }
-

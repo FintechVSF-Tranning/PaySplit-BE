@@ -64,4 +64,3 @@ type patchProfileRequest struct {
 type updateFCMTokenRequest struct {
 	FCMToken string `json:"fcm_token"`
 }
-

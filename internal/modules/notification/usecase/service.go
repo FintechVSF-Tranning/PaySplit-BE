@@ -3,7 +3,6 @@ package usecase
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -47,7 +46,7 @@ func (s *Service) SetEnqueuer(enqueuer JobEnqueuer) {
 // 2. Đẩy job gửi Push Notification vào River Queue (hoặc fallback goroutine)
 func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMessage) error {
 	if userID == "" {
-		return errors.New("user ID must not be empty")
+		return domain.ErrInvalidInput
 	}
 
 	// 1. Lưu bản ghi vào bảng notifications
@@ -133,7 +132,7 @@ func (s *Service) SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error
 // ListNotifications lấy danh sách thông báo của user có phân trang
 func (s *Service) ListNotifications(ctx context.Context, userID string, pager pagination.OffsetPager) (pagination.Page[domain.Notification], error) {
 	if userID == "" {
-		return pagination.Page[domain.Notification]{}, errors.New("user ID must not be empty")
+		return pagination.Page[domain.Notification]{}, domain.ErrInvalidInput
 	}
 	return s.repo.ListByUserID(ctx, userID, pager)
 }
@@ -141,7 +140,7 @@ func (s *Service) ListNotifications(ctx context.Context, userID string, pager pa
 // GetUnreadCount đếm số lượng thông báo chưa đọc của user
 func (s *Service) GetUnreadCount(ctx context.Context, userID string) (int64, error) {
 	if userID == "" {
-		return 0, errors.New("user ID must not be empty")
+		return 0, domain.ErrInvalidInput
 	}
 	return s.repo.CountUnread(ctx, userID)
 }
@@ -149,7 +148,7 @@ func (s *Service) GetUnreadCount(ctx context.Context, userID string) (int64, err
 // MarkAsRead đánh dấu 1 thông báo cụ thể là đã đọc
 func (s *Service) MarkAsRead(ctx context.Context, userID, notificationID string) error {
 	if userID == "" || notificationID == "" {
-		return errors.New("user ID and notification ID must not be empty")
+		return domain.ErrInvalidInput
 	}
 	return s.repo.MarkAsRead(ctx, userID, notificationID)
 }
@@ -157,7 +156,7 @@ func (s *Service) MarkAsRead(ctx context.Context, userID, notificationID string)
 // MarkAllAsRead đánh dấu tất cả thông báo của user là đã đọc
 func (s *Service) MarkAllAsRead(ctx context.Context, userID string) error {
 	if userID == "" {
-		return errors.New("user ID must not be empty")
+		return domain.ErrInvalidInput
 	}
 	return s.repo.MarkAllAsRead(ctx, userID)
 }

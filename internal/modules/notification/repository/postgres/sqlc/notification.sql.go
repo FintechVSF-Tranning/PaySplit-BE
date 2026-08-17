@@ -22,6 +22,19 @@ func (q *Queries) ClearFCMToken(ctx context.Context, fcmToken pgtype.Text) error
 	return err
 }
 
+const countNotificationsByUserID = `-- name: CountNotificationsByUserID :one
+SELECT COUNT(*)
+FROM notifications
+WHERE user_id = $1
+`
+
+func (q *Queries) CountNotificationsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countNotificationsByUserID, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnreadNotifications = `-- name: CountUnreadNotifications :one
 SELECT COUNT(*)
 FROM notifications

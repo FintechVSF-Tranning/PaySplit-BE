@@ -10,6 +10,11 @@ WHERE user_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: CountNotificationsByUserID :one
+SELECT COUNT(*)
+FROM notifications
+WHERE user_id = $1;
+
 -- name: CountUnreadNotifications :one
 SELECT COUNT(*)
 FROM notifications
@@ -36,4 +41,5 @@ LIMIT 1;
 UPDATE sessions
 SET fcm_token = NULL
 WHERE fcm_token = $1;
+
 

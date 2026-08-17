@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	ClearFCMToken(ctx context.Context, fcmToken pgtype.Text) error
+	CountNotificationsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (pgtype.Text, error)

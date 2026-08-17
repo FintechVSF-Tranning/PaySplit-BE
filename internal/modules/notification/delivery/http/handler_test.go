@@ -19,6 +19,7 @@ import (
 type mockRepo struct {
 	unreadCount   int64
 	markedReadID  string
+	markReadErr   error
 	allMarkedRead bool
 }
 
@@ -35,6 +36,9 @@ func (m *mockRepo) CountUnread(ctx context.Context, userID string) (int64, error
 	return m.unreadCount, nil
 }
 func (m *mockRepo) MarkAsRead(ctx context.Context, userID, notificationID string) error {
+	if m.markReadErr != nil {
+		return m.markReadErr
+	}
 	m.markedReadID = notificationID
 	return nil
 }
@@ -124,6 +128,26 @@ func TestMarkAsReadEndpoint(t *testing.T) {
 	}
 	if repo.markedReadID != "notif-99" {
 		t.Errorf("expected notif-99, got %s", repo.markedReadID)
+	}
+}
+
+func TestMarkAsReadEndpoint_NotFound(t *testing.T) {
+	repo := &mockRepo{markReadErr: domain.ErrNotificationNotFound}
+	svc := usecase.NewService(repo, nil)
+	handler := NewHandler(svc)
+
+	r := chi.NewRouter()
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/notifications/notif-not-exist/read", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

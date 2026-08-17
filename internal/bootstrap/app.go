@@ -180,4 +180,3 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.db.Close()
 	return nil
 }
-

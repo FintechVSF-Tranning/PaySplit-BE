@@ -13,13 +13,13 @@ import (
 )
 
 type mockRepo struct {
-	createdNotif      *domain.Notification
-	activeToken       string
-	activeTokenErr    error
-	clearedToken      string
-	unreadCount       int64
+	createdNotif       *domain.Notification
+	activeToken        string
+	activeTokenErr     error
+	clearedToken       string
+	unreadCount        int64
 	readNotificationID string
-	allMarkedRead     bool
+	allMarkedRead      bool
 }
 
 func (m *mockRepo) CreateNotification(ctx context.Context, notif *domain.Notification) error {
@@ -60,10 +60,10 @@ func (m *mockRepo) ClearFCMToken(ctx context.Context, fcmToken string) error {
 }
 
 type mockPushNotifier struct {
-	sentToken string
-	sentMsg   fcm.PushMessage
+	sentToken    string
+	sentMsg      fcm.PushMessage
 	broadcastMsg fcm.PushMessage
-	errToSend error
+	errToSend    error
 }
 
 func (m *mockPushNotifier) SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error {

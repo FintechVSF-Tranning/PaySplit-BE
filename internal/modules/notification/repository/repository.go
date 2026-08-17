@@ -30,4 +30,3 @@ type Repository interface {
 	// ClearFCMToken xóa FCM token chết khỏi database khi nhận diện token không còn hợp lệ
 	ClearFCMToken(ctx context.Context, fcmToken string) error
 }
-
