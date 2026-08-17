@@ -1,6 +1,6 @@
 # Scope: PaySplit Backend
 
-PaySplit Backend provides the account, group expense, settlement, and notification APIs used by the PaySplit mobile application. This scope currently tracks the authentication and account slice, and the group management slice.
+PaySplit Backend provides the account, group expense, settlement, and notification APIs used by the PaySplit mobile application. This scope currently tracks authentication and account, group management, and bill processing with OCR.
 
 **Build approach:** Tracer Bullet (build a narrow real path through database, usecase, API, and provider adapters before adding breadth).
 **Workflow:** GA (`/check verify`, `/test`, fresh model `/check review`, then `/document` after `/develop`). The project default level of rigor. `/architect` remains the recommended first stop whenever a feature has an unresolved decision.
@@ -13,6 +13,9 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 |---|---|---|---|
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | in-progress |
+| 3 | Bill and OCR v1 | Slice 3 | in-progress |
+| 4 | Notification and background queue v1 | Slice 4 | in-progress |
+| 5 | Debt and VietQR payment v1 | Slice 5 | planned |
 
 ## Slice 1: Identity and account
 
@@ -57,6 +60,60 @@ Provide group creation, Captain controlled invites, idempotent invite redemption
 - [ ] Document it: `/document group management v1`
 
 Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/modules/group/` and `internal/bootstrap/`
+
+## Slice 3: Bill and OCR
+
+### 3. Bill and OCR v1 · in-progress
+
+Provide manual and multi image bill drafts, private receipt storage, durable LlamaExtract OCR, versioned correction, ratio based item allocation, explicit review, exact Hamilton calculation, transactional finalization into immutable shares and debts, and safe void with replacement history.
+
+**Done when:** all fourteen acceptance criteria in spec 0003 pass against PostgreSQL 18, OCR retries never overwrite user edits, preview and finalized amounts reconcile exactly, concurrent mutations preserve one reviewed version, and every storage, queue, financial, authorization, cleanup, SSE, and observability contract is verified.
+
+- [x] Design it (spec): `/architect bill and OCR v1`
+- [ ] Build it: `/develop bill and OCR v1`
+  - [ ] Manual and private image draft thread with idempotency, list, detail, full replacement, signed reads, and durable cleanup (satisfies AC-1, AC-5, AC-8, AC-12, AC-13, AC-14)
+  - [ ] River and LlamaExtract OCR thread with retry, schema normalization, candidate application, stale protection, SSE, and raw response cleanup (satisfies AC-2, AC-3, AC-4, AC-12, AC-14)
+  - [ ] Ratio allocation and explicit review thread with reconciliation, Hamilton preview, limits, and concurrency coverage (satisfies AC-5, AC-6, AC-7, AC-8, AC-10, AC-14)
+  - [ ] Transactional finalize thread with immutable member shares, debts, activity, notifications, bank eligibility, and idempotent replay (satisfies AC-7, AC-9, AC-10, AC-14)
+  - [ ] Safe void and replacement history, payment race protection, OpenAPI, module documentation, metrics, redaction, and end to end verification (satisfies AC-11, AC-12, AC-13, AC-14)
+- [ ] Verify it: `/check verify bill and OCR v1`
+- [ ] Test it: `/test bill and OCR v1`
+- [ ] Review it (fresh model): `/check review bill and OCR v1`
+- [ ] Document it: `/document bill and OCR v1`
+
+Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
+
+## Slice 4: Notification and background queue
+
+### 4. Notification and background queue v1 · in-progress
+
+Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed River Queue job processing, device token session binding, dead token pruning, and in-app notification center.
+
+**Done when:** all seven acceptance criteria in spec 0004 pass against PostgreSQL 18, background jobs run reliably through River with exponential backoff on transient errors, dead FCM tokens are pruned automatically, in-app notifications support unread count and pagination, and graceful shutdown drains queue workers cleanly.
+
+- [x] Design it (spec): `/architect notification and background queue v1`
+- [ ] Build it: `/develop notification and background queue v1`
+  - [ ] PostgreSQL schema migration for session FCM token and notification records (satisfies AC-1, AC-3)
+  - [ ] River Queue platform adapter, worker registry, and graceful lifecycle wiring (satisfies AC-2, AC-7)
+  - [ ] FCM push notification client, payload builders, and dead token pruning (satisfies AC-4, AC-5)
+  - [ ] In-app notification repository, usecase, and River enqueuer (satisfies AC-3, AC-4, AC-6)
+  - [ ] HTTP delivery handlers, routes registration, and unit/integration tests (satisfies AC-1, AC-6)
+- [ ] Verify it: `/check verify notification and background queue v1`
+- [ ] Test it: `/test notification and background queue v1`
+- [ ] Review it (fresh model): `/check review notification and background queue v1`
+- [ ] Document it: `/document notification and background queue v1`
+
+Spec [0004](../specs/0004-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
+
+## Slice 5: Settlement and Payment
+
+### 5. Debt and VietQR payment v1 · planned · needs a decision
+
+Provide debt tracking across group members, VietQR generation with embedded NAPAS 247 reference codes, payment proof submission, creditor manual confirmation or rejection, and debt reminder jobs.
+
+**Done when:** debt balances calculate accurately across multiple bills, payment QR encodes valid banking and reference data, payment proofs transition debt statuses safely without auto-settlement, and stalled payment rules notify both parties.
+
+- [ ] Design it (spec): `/architect debt and VietQR payment v1`
 
 ## Deferred
 
