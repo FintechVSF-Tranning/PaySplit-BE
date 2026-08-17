@@ -52,20 +52,94 @@ PaySplit coordinates payments directly between debtor and creditor bank accounts
 | Entity | Required fields | Nullable fields | Relations and constraints |
 |---|---|---|---|
 | `debts` | `id uuid`, `group_id uuid`, `bill_id uuid`, `debtor_member_id uuid`, `creditor_member_id uuid`, `amount bigint`, `status debt_status`, `reminder_count int`, `created_at`, `updated_at` | `payment_id uuid`, `settled_at timestamptz`, `voided_at timestamptz` | Unique `(id, group_id)`. Unique `(bill_id, debtor_member_id, creditor_member_id)`. Foreign keys to `groups`, `bills`, `group_members`, and `payments`. `amount > 0`. Statuses: `awaiting`, `pending_confirmation`, `settled`, `voided`. |
-| `payments` | `id uuid`, `group_id uuid`, `debtor_member_id uuid`, `creditor_member_id uuid`, `amount bigint`, `reference_code text`, `status payment_status`, `created_at`, `updated_at` | `qr_payload text`, `recipient_bank_code text`, `recipient_bank_name text`, `recipient_account_number text`, `recipient_account_holder text`, `image_object_key text`, `note text`, `rejection_reason text`, `submitted_at timestamptz`, `confirmed_at timestamptz`, `rejected_at timestamptz` | Unique `(id, group_id)`. Unique `reference_code`. Foreign keys to `groups` and `group_members`. Statuses: `pending_proof`, `pending_confirmation`, `confirmed`, `rejected`. Check constraints enforce status consistency with timestamps and rejection reason. |
-| `group_activities` | `id uuid`, `group_id uuid`, `actor_member_id uuid`, `action_type activity_type`, `description text`, `metadata jsonb`, `created_at timestamptz` | none | Composite foreign keys to `groups` and `group_members`. Action types include `payment_created`, `payment_submitted`, `payment_confirmed`, `payment_rejected`, `debt_reminded`. |
+| `payments` | `id uuid`, `group_id uuid`, `debtor_member_id uuid`, `creditor_member_id uuid`, `amount bigint`, `reference_code text`, `status payment_status`, `created_at`, `updated_at` | `qr_payload text`, `recipient_bank_code text`, `recipient_bank_name text`, `recipient_account_number text`, `recipient_account_holder text`, `image_object_key text`, `note text`, `rejection_reason text`, `submitted_at timestamptz`, `confirmed_at timestamptz`, `rejected_at timestamptz` | Unique `(id, group_id)`. Unique `reference_code`. Foreign keys to `groups` and `group_members`. Statuses: `pending_proof`, `pending_confirmation`, `confirmed`, `rejected`, `superseded` (an unsubmitted payment automatically retired when the Payer regenerates a QR for a different debt set, AC-4). Check constraints enforce status consistency with timestamps, the four bank snapshot columns arriving together, and rejection reason. |
+| `group_activities` | `id uuid`, `group_id uuid`, `actor_member_id uuid`, `action_type activity_type`, `description text`, `metadata jsonb`, `created_at timestamptz` | none | Composite foreign keys to `groups` and `group_members`. Action types include `payment_created`, `payment_submitted`, `payment_confirmed`, `payment_rejected`, `debt_reminded`, `payment_stalled_confirmation`. `description` is a server generated Vietnamese sentence built from `action_type` plus the actor and target display names, matching the pattern already used by the `group` and `bill` modules. |
 | `payment_idempotency_keys` | `actor_user_id uuid`, `operation text`, `key_hash text`, `canonical_request_hash text`, `operation_id uuid`, `state idempotency_state`, `expires_at timestamptz`, `created_at timestamptz` | `response_code int`, `response_body jsonb`, `retry_after timestamptz` | Unique `(actor_user_id, operation, key_hash)`. 24 hour time to live for payment operations. |
 | `v_member_balances` | `group_id uuid`, `member_id uuid`, `net_balance bigint` | none | Derived PostgreSQL view aggregating unsettled debts where `status NOT IN ('settled', 'voided')`. |
 
-The schema requires extending the `debt_status`, `payment_status`, and `activity_type` enums, and adding query indexes for debt filtering and payment lookup:
+The `payments` and `debts` tables already exist from the initial schema migration (`000001_init_schema.up.sql`), so this feature extends them rather than creating them fresh. `payments` currently has no `status` column (state is inferred from `submitted_at`/`confirmed_at`/`rejected_at`) and none of the four `recipient_bank_*` snapshot columns AC-6 needs. `debt_status` already carries two legacy values, `stalled_confirmation` and `rejected`, that predate this design; they stay in the enum unused (Postgres cannot cheaply drop an enum value) rather than being removed. `debt_status` also needs the `voided` value, which spec 0003 owns and must land before this feature's migration runs. `activity_type` already carries payment related values under different names (`submitted_proof`, `confirmed_payment`, `rejected_payment`, `stalled_payment_reminder`); this feature renames them to the names this spec's Activity contract uses, since no code has written a row under the old names yet. The schema change adds the new `payment_status` type and query indexes for debt filtering and payment lookup:
+
+This feature's migration must run strictly after spec 0003's migration that adds `voided` to `debt_status` (a separate, already committed file). Postgres forbids using an enum value in the same transaction that added it, and goose runs one migration file per transaction, so the `v_member_balances` redefinition below (which references `'voided'`) cannot be folded into the same file that adds the value; it must be its own later file, or 0003's migration must already be applied first.
 
 ```sql
+-- Extend the existing payments table with explicit status and the creditor
+-- bank snapshot columns AC-6 requires (see rationale.md for why the column
+-- is explicit rather than derived from the timestamp columns).
 CREATE TYPE payment_status AS ENUM (
     'pending_proof',
     'pending_confirmation',
     'confirmed',
-    'rejected'
+    'rejected',
+    'superseded'
 );
+
+ALTER TABLE payments ADD COLUMN status payment_status NOT NULL DEFAULT 'pending_proof';
+ALTER TABLE payments ADD COLUMN recipient_bank_code TEXT;
+ALTER TABLE payments ADD COLUMN recipient_bank_name TEXT;
+ALTER TABLE payments ADD COLUMN recipient_account_number TEXT;
+ALTER TABLE payments ADD COLUMN recipient_account_holder TEXT;
+
+-- All four snapshot columns arrive together or not at all, matching the
+-- users.bank_* all-or-none convention in 000001_init_schema.up.sql.
+ALTER TABLE payments ADD CONSTRAINT chk_payments_snapshot_with_submission
+    CHECK ((submitted_at IS NULL) = (recipient_bank_code IS NULL)
+       AND (submitted_at IS NULL) = (recipient_bank_name IS NULL)
+       AND (submitted_at IS NULL) = (recipient_account_number IS NULL)
+       AND (submitted_at IS NULL) = (recipient_account_holder IS NULL))
+    NOT VALID;
+ALTER TABLE payments VALIDATE CONSTRAINT chk_payments_snapshot_with_submission;
+
+-- Ties the new explicit status column to the existing timestamp columns, the
+-- same pairing 000001_init_schema.up.sql already enforces for rejection.
+ALTER TABLE payments ADD CONSTRAINT chk_payments_status_confirmed_at
+    CHECK ((status = 'confirmed') = (confirmed_at IS NOT NULL)) NOT VALID;
+ALTER TABLE payments VALIDATE CONSTRAINT chk_payments_status_confirmed_at;
+ALTER TABLE payments ADD CONSTRAINT chk_payments_status_rejected_at
+    CHECK ((status = 'rejected') = (rejected_at IS NOT NULL)) NOT VALID;
+ALTER TABLE payments VALIDATE CONSTRAINT chk_payments_status_rejected_at;
+
+-- Rename the payment related activity_type values already in the enum to the
+-- names this feature's Activity contract uses, and add the two new ones.
+-- Safe in one transaction: renames touch existing catalog rows, they do not
+-- add new ones, and the two newly added values are never referenced below.
+ALTER TYPE activity_type RENAME VALUE 'submitted_proof' TO 'payment_submitted';
+ALTER TYPE activity_type RENAME VALUE 'confirmed_payment' TO 'payment_confirmed';
+ALTER TYPE activity_type RENAME VALUE 'rejected_payment' TO 'payment_rejected';
+ALTER TYPE activity_type RENAME VALUE 'stalled_payment_reminder' TO 'payment_stalled_confirmation';
+DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'payment_created'; EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'debt_reminded'; EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+CREATE TYPE idempotency_state AS ENUM ('in_progress', 'completed');
+
+CREATE TABLE payment_idempotency_keys (
+    actor_user_id           UUID NOT NULL REFERENCES users(id),
+    operation                TEXT NOT NULL,
+    key_hash                 TEXT NOT NULL,
+    canonical_request_hash   TEXT NOT NULL,
+    operation_id              UUID,
+    state                     idempotency_state NOT NULL DEFAULT 'in_progress',
+    response_code             INT,
+    response_body             JSONB,
+    retry_after                TIMESTAMPTZ,
+    expires_at                 TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours'),
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (actor_user_id, operation, key_hash)
+);
+CREATE INDEX idx_payment_idempotency_keys_expiry ON payment_idempotency_keys(expires_at);
+
+-- Run this statement in its own migration, after spec 0003's migration that
+-- adds 'voided' to debt_status has already been applied (see note above).
+-- Keeps the net balance view accurate: a voided debt must stop counting as
+-- still owed.
+CREATE OR REPLACE VIEW v_member_balances AS
+SELECT m.group_id,
+       m.id AS member_id,
+       COALESCE(cr.total, 0) - COALESCE(dr.total, 0) AS net_balance
+FROM group_members m
+LEFT JOIN (SELECT creditor_member_id AS mid, SUM(amount) AS total
+           FROM debts WHERE status NOT IN ('settled', 'voided') GROUP BY 1) cr ON cr.mid = m.id
+LEFT JOIN (SELECT debtor_member_id AS mid, SUM(amount) AS total
+           FROM debts WHERE status NOT IN ('settled', 'voided') GROUP BY 1) dr ON dr.mid = m.id;
 
 CREATE INDEX idx_debts_group_status
     ON debts(group_id, status, created_at DESC, id DESC);
@@ -103,7 +177,7 @@ payments lifecycle:
 pending_proof -> pending_confirmation (on proof image upload)
 pending_confirmation -> confirmed (on creditor confirmation)
 pending_confirmation -> rejected (on creditor rejection)
-pending_proof -> rejected/superseded (when payer recreates QR with different debts)
+pending_proof -> superseded (when the Payer regenerates a QR for a different debt set before submitting proof)
 ```
 
 ### API surface
@@ -130,7 +204,7 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 | `expense_summary` | `total_owed`: string, `total_settled`: string, `total_receivable`: string, `net_balance`: string |
 | `expense_item` | `bill_id`: UUID, `bill_date`: string, `merchant_name`: string, `item_name`: string, `quantity`: string, `unit_price`: string, `line_total`: string, `share_ratio`: string, `item_share`: string, `service_charge_share`: string, `vat_share`: string, `discount_share`: string, `rounding_adjustment`: string, `final_amount`: string, `creditor_member_id`: UUID, `creditor_display_name`: string, `debt_status`: string |
 | `debt_item` | `id`: UUID, `bill_id`: UUID, `bill_date`: string, `merchant_name`: string, `debtor_member_id`: UUID, `debtor_display_name`: string, `debtor_avatar_url`: string or null, `creditor_member_id`: UUID, `creditor_display_name`: string, `creditor_avatar_url`: string or null, `amount`: string, `status`: string, `reminder_count`: int, `payment_id`: UUID or null, `created_at`: string, `settled_at`: string or null |
-| `debt_matrix_entry` | `debtor_member_id`: UUID, `creditor_member_id`: UUID, `total_amount`: string, `debt_count`: int |
+| `debt_matrix_entry` | `debtor_member_id`: UUID, `creditor_member_id`: UUID, `total_amount`: string, `debt_count`: int. One entry per unordered member pair with any unsettled debt between them, netted to the direction that currently owes; a pair that nets to zero is omitted. |
 | `recipient_bank_info` | `bank_code`: string, `bank_name`: string, `account_number`: string, `account_holder`: string |
 | `payment_detail` | `id`: UUID, `group_id`: UUID, `debtor_member_id`: UUID, `creditor_member_id`: UUID, `amount`: string, `reference_code`: string, `status`: string, `qr_payload`: string, `qr_image_url`: string, `recipient`: `recipient_bank_info`, `image_url`: string or null, `note`: string or null, `rejection_reason`: string or null, `covered_debt_ids`: UUID array, `created_at`: string, `submitted_at`: string or null, `confirmed_at`: string or null, `rejected_at`: string or null |
 
@@ -151,7 +225,7 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 |---|---|---|
 | Get my expenses | Breakdown amounts, ratios, rounding | Joined `bill_item_assignments`, `bill_items`, `bill_member_shares`, `bills`, and `debts` rows |
 | List debts | Individual debts and aggregate matrix | `debts` rows filtered by query params, combined with `users` profiles via `group_members` |
-| Generate QR | Payment ID, reference code | PostgreSQL UUID v7 and cryptographically random base32 string prefixed with `PAY` |
+| Generate QR | Payment ID, reference code | PostgreSQL UUID v7, and a reference code built from `PAY` plus 8 cryptographically random characters drawn from the uppercase alphanumeric set with `0`, `O`, `1`, `I` excluded (avoids misreads when a Creditor searches their bank statement) |
 | Generate QR | Grouped payment amount | Sum of `debts.amount` for all targeted awaiting debts |
 | Generate QR | Recipient bank details | Active Creditor profile bank fields verified against the embedded VietQR directory |
 | Generate QR | QR image URL | `https://vietqr.app/img` format configured with Creditor bank code, account number, amount, reference code, holder name, and compact template |
@@ -161,6 +235,8 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 | Confirm payment | Settled timestamp and activity | PostgreSQL `now()`, authenticated creditor member ID, and `payment_confirmed` activity |
 | Reject payment | Rejection timestamp and reason | PostgreSQL `now()`, validated request text reason, and `payment_rejected` activity |
 | Remind debt | Incremented count and notification | PostgreSQL `reminder_count + 1`, rate limit timestamp, and River notification insert |
+| Stalled confirmation alert | Hours pending and notification | `now() - payments.submitted_at`, floored to whole hours, and River notification insert to the Creditor |
+| Any notification insert | `notifications.type` literal | A fixed string per action, one per new `activity_type` value added by this feature (`payment_created`, `payment_submitted`, `payment_confirmed`, `payment_rejected`, `debt_reminded`, `payment_stalled_confirmation`), matching the existing convention of reusing the activity type name as the notification type |
 
 ### Key invariants
 
@@ -172,6 +248,8 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 6. A bill cannot be voided if any of its debts have entered `pending_confirmation` or `settled` status.
 7. Manual reminders are throttled to at most once per 24 hours per debt. Automated reminders stop immediately once a debt enters `pending_confirmation`.
 8. Payment proof images are private assets. Mobile clients receive only five minute signed URLs.
+9. `debt_status` retains two legacy values, `stalled_confirmation` and `rejected`, left over from the initial schema scaffold. This feature never assigns them to a `debts` row; a payment's own submitted or declined state lives on `payments.status`, not `debts.status`.
+10. This feature depends on spec 0003 relaxing the existing `debts` check constraint `CHECK ((status = 'awaiting') = (payment_id IS NULL))` (`000001_init_schema.up.sql`) to also allow `voided` with a null `payment_id`; as written that constraint rejects a voided, unpaid debt. This spec does not own that fix, spec 0003 does, but `v_member_balances` and the debt list here assume it lands.
 
 ### Activity contract
 
@@ -181,7 +259,8 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 | `payment_submitted` | Payer | `payment_id`, `creditor_member_id`, `amount`, `has_note` |
 | `payment_confirmed` | Creditor | `payment_id`, `debtor_member_id`, `amount`, `settled_debt_count` |
 | `payment_rejected` | Creditor | `payment_id`, `debtor_member_id`, `amount`, `rejection_reason` |
-| `debt_reminded` | Creditor or Captain | `debt_id`, `debtor_member_id`, `amount`, `reminder_count` |
+| `debt_reminded` | Creditor or Captain (manual), or the River scheduled worker (automated) | `debt_id`, `debtor_member_id`, `amount`, `reminder_count` |
+| `payment_stalled_confirmation` | River scheduled worker | `payment_id`, `creditor_member_id`, `debtor_member_id`, `hours_pending` |
 
 ### Security model
 
@@ -222,11 +301,11 @@ All money values are represented as base 10 JSON strings in VND. Lists default t
 
 The project uses Tracer Bullet. Each slice crosses database schema, SQLC queries, repository, usecase, HTTP handler, integration tests, and OpenAPI documentation before the next slice begins.
 
-1. Build the expense and debt query slice. Add query indexes, SQLC queries for personal expense breakdown and group debt matrix, cursor pagination, usecase logic, HTTP endpoints `GET /expenses/me` and `GET /debts`, and real PostgreSQL coverage, satisfies **AC-1** and **AC-2**.
-2. Build the VietQR payment generation slice. Add the `payments` table migrations, cryptographic reference code generator, VietQR URL builder and EMVCo payload generator, bank account validation, dynamic profile lookup, idempotency keys, and `POST /payments/qr` endpoint, satisfies **AC-3**, **AC-4**, **AC-5**, and **AC-11**.
+1. Build the expense and debt query slice. Add query indexes, redefine `v_member_balances` to exclude `voided` debts (requires spec 0003's `debt_status` migration to have landed first), SQLC queries for personal expense breakdown and group debt matrix, cursor pagination, usecase logic, HTTP endpoints `GET /expenses/me` and `GET /debts`, and real PostgreSQL coverage, satisfies **AC-1** and **AC-2**.
+2. Build the VietQR payment generation slice. Extend the existing `payments` table (`000001_init_schema.up.sql`) with the `status` column, the four `recipient_bank_*` snapshot columns, and the renamed/added `activity_type` values, plus cryptographic reference code generator, VietQR URL builder and EMVCo payload generator, bank account validation, dynamic profile lookup, idempotency keys, and `POST /payments/qr` endpoint, satisfies **AC-3**, **AC-4**, **AC-5**, and **AC-11**.
 3. Build the transfer proof submission slice. Add multipart image upload handling, Cloudinary private asset adapter with signed URL generation, bank snapshot persistence, atomic state transition to `pending_confirmation`, notification enqueueing, and `POST /payments/{paymentId}/proof`, satisfies **AC-6**, **AC-11**, and **AC-12**.
 4. Build the creditor confirmation and rejection slice. Add creditor authorization, atomic all or nothing settlement transaction, rejection handling with debt reset, activity logging, notifications, and endpoints `POST /confirm` and `POST /reject`, satisfies **AC-7**, **AC-8**, and **AC-11**.
-5. Build the debt reminder and background job slice. Add manual reminder rate limiting, `POST /debts/{debtId}/remind`, River workers for 72h automated reminders and 48h stalled confirmation alerts, satisfies **AC-9** and **AC-10**.
+5. Build the debt reminder and background job slice. Add manual reminder rate limiting, `POST /debts/{debtId}/remind`, and River workers for 72h automated reminders (writing `debt_reminded`) and 48h stalled confirmation alerts (writing `payment_stalled_confirmation`), satisfies **AC-9** and **AC-10**.
 6. Complete operational hardening and end to end verification. Add metrics, structured redaction, concurrency and lock contention tests against PostgreSQL, OpenAPI spec updates, and module documentation, satisfies **AC-1** through **AC-12**.
 
 ## Consequences
@@ -253,7 +332,10 @@ The project uses Tracer Bullet. Each slice crosses database schema, SQLC queries
 
 - [ ] Add `supabase-postgres-best-practices` to the root or database area `AGENTS.md` context file.
 - [ ] Align mobile application deep link handling for VietQR app opening when payer scans on a single device.
-- [ ] Reconcile the Split and Settlement feature row in `docs/scope/scope.md` once spec review is complete.
+- [x] Reconcile the Split and Settlement feature row in `docs/scope/scope.md` once spec review is complete (already tracked as in-progress row 4).
+- [ ] This feature's migration must run strictly after spec 0003's `debt_status` migration that adds `voided` (both are still unbuilt). Postgres cannot use a freshly added enum value in the same transaction that added it, so the `v_member_balances` redefinition here cannot be folded into 0003's migration file; keep them as two sequenced files, 0003 first.
+- [ ] Spec 0003 also needs to relax `debts`' existing check constraint `CHECK ((status = 'awaiting') = (payment_id IS NULL))` so a `voided` debt with a null `payment_id` is allowed; flag this to whoever builds 0003.
+- [ ] The `activity_type` renames (`submitted_proof` to `payment_submitted`, `confirmed_payment` to `payment_confirmed`, `rejected_payment` to `payment_rejected`, `stalled_payment_reminder` to `payment_stalled_confirmation`) touch enum values already defined in `000001_init_schema.up.sql`. Confirm no other in-flight branch has started writing rows under the old names before this migration merges.
 
 ## References
 

@@ -12,6 +12,18 @@ This architectural decision introduces several key technical challenges:
 3. Concurrent group actions, such as a Captain voiding an unpaid bill while a debtor is submitting payment proof for that bill debt, can cause data inconsistencies or deadlocks if lock ordering is not strictly enforced.
 4. Without automated reminders and stalled payment alerts, pending debts and confirmations can stall indefinitely.
 
+## Schema baseline and drift found during cross check
+
+The `payments` and `debts` tables, plus the `debt_status` and `activity_type` enums, already exist from the very first schema migration (`000001_init_schema.up.sql`), written before this spec, as scaffolding for a Module 4 that was not yet designed. A cross check against that live schema (2026-08-17) found three places where it drifts from this design, each resolved below and reflected in `index.md`.
+
+**Payments table shape.** The live `payments` table has no `status` column (state was meant to be read off `submitted_at`/`confirmed_at`/`rejected_at`) and none of the four bank snapshot columns AC-6 needs. Deriving status from three nullable timestamps works but hides the state machine in application logic instead of the schema, and gives no place to store the bank snapshot at all. Decision: add an explicit `status payment_status` column and the four `recipient_bank_*` columns via `ALTER TABLE`, keeping the existing timestamp columns for their audit value. This is an additive migration; the table is not yet written to by any code, so there is no backfill risk.
+
+**`debt_status` legacy values.** The live enum already carries `stalled_confirmation` and `rejected`, values from before this design that this feature's state machine (`awaiting`, `pending_confirmation`, `settled`, plus `voided` from spec 0003) does not use; a debt's stalled or rejected state belongs to its payment, not the debt itself. Postgres cannot drop an enum value without rebuilding the type, which is disproportionate for two unused values on an otherwise empty table. Decision: leave them in the enum, unused, and say so explicitly (`index.md`, Key invariants) so a future reader does not assume they are load bearing.
+
+**`activity_type` naming collision.** The live enum already carries `submitted_proof`, `confirmed_payment`, `rejected_payment`, and `stalled_payment_reminder`, the same events this spec's Activity contract names differently (`payment_submitted`, `payment_confirmed`, `payment_rejected`, and the newly added `payment_stalled_confirmation`). Two options: add the new names alongside the old ones (leaving four unused legacy values permanently), or rename the existing values to match. Renaming was chosen because the table is unbuilt and unwritten, so there is no historical row whose meaning a rename would corrupt; adding parallel values would leave dead enum entries with no way to remove them later. `payment_created` and `debt_reminded` are genuinely new events with no prior value to rename.
+
+**`v_member_balances` view.** The live view sums `status <> 'settled'`, so once spec 0003 lands the `voided` debt status, a voided debt would still count toward a member's net balance, silently disagreeing with this spec's own data model table (`status NOT IN ('settled', 'voided')`) and with 0002's member exit invariant. Decision: redefine the view in this feature's migration to exclude `voided` explicitly, sequenced after spec 0003's migration adds that enum value.
+
 ## Options considered
 
 ### Option 1: Direct single bill debt settlement without aggregation
