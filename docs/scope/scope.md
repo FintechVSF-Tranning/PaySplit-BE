@@ -40,18 +40,17 @@ Spec [0001](../specs/0001-auth-account-v1/index.md) · code in `internal/modules
 
 ### 2. Group management v1 · in-progress
 
-Provide group creation, membership management, invite code generation, invite redemption, group preview, activity logging, and safe member removal enforcing zero net balance.
+Provide group creation, Captain controlled invites, idempotent invite redemption, group preview, membership management, Captain transfer, activity logging, and safe member exit with no open debtor or creditor obligations.
 
-**Done when:** all eight acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, invite codes function correctly, member removal enforces net zero balance, and activity logs capture key events.
+**Done when:** all eight acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, concurrent invite and Captain operations preserve their limits and invariants, member exit rejects every open debtor or creditor obligation, and key group mutations write activities atomically.
 
 - [x] Design it (spec): `/architect group management v1`
 - [ ] Build it: `/develop group management v1`
-  - [ ] SQLC queries for groups, group_members, group_invites, group_activities, and v_member_balances (satisfies AC-1 through AC-8)
-  - [ ] Group domain models, repository ports, and domain errors in `internal/modules/group/domain/` (satisfies AC-1, AC-6, AC-7)
-  - [ ] Postgres repository implementation translating SQLC models in `internal/modules/group/repository/postgres/` (satisfies AC-1 through AC-8)
-  - [ ] Group usecase service enforcing RBAC, balance checks, and invite links in `internal/modules/group/usecase/` (satisfies AC-1 through AC-8)
-  - [ ] Group HTTP handlers, DTOs, authorization middleware, and routes in `internal/modules/group/delivery/http/` (satisfies AC-1 through AC-8)
-  - [ ] App bootstrap integration and module wiring in `internal/bootstrap/app.go` (satisfies AC-1, AC-2)
+  - [ ] Create, list, and detail vertical slice with exact validation, DTOs, privacy preserving authorization, cursor reads, and PostgreSQL coverage (satisfies AC-1, AC-2)
+  - [ ] Captain invite vertical slice with one available invite, reuse, regeneration, revocation, redaction, and atomic activities (satisfies AC-3, AC-8)
+  - [ ] Preview and redemption vertical slice with idempotent join, capacity limits, membership reactivation, and concurrency coverage (satisfies AC-4, AC-5, AC-8)
+  - [ ] Member exit and Captain transfer vertical slice with open obligation checks, ordered locks, atomic role transfer, and stable conflicts (satisfies AC-6, AC-7, AC-8)
+  - [ ] Activity timeline, shared error mapping, OpenAPI, module documentation, and end to end verification (satisfies AC-1 through AC-8)
 - [ ] Verify it: `/check verify group management v1`
 - [ ] Test it: `/test group management v1`
 - [ ] Review it (fresh model): `/check review group management v1`
@@ -62,6 +61,14 @@ Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/mod
 ## Deferred
 
 The remaining PaySplit capabilities stay in the PRD until a later scope pass enrolls them.
+
+### Group lifecycle closure · deferred · from spec 0002
+
+Define group archive or deletion behavior so the sole Captain can close or leave a group without breaking history.
+
+### Active group quota policy · deferred · from spec 0002
+
+Choose a concrete per user active group limit before adding quota enforcement.
 
 - **Phone verification and phone sign in**: versioned follow up from spec 0001, needs a decision
 - **Production PII encryption and transactional email**: production hardening follow up from spec 0001, needs a decision
