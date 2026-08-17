@@ -102,7 +102,10 @@ func (s *Service) ProcessNotificationJob(ctx context.Context, userID string, msg
 	}
 
 	token, err := s.repo.GetActiveFCMTokenByUserID(ctx, userID)
-	if err != nil || token == "" {
+	if err != nil {
+		return fmt.Errorf("get active FCM token: %w", err)
+	}
+	if token == "" {
 		return nil
 	}
 

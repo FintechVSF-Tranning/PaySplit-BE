@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 type mockRepo struct {
 	createdNotif      *domain.Notification
 	activeToken       string
+	activeTokenErr    error
 	clearedToken      string
 	updatedSessionID  string
 	updatedFCMToken   string
@@ -48,6 +50,9 @@ func (m *mockRepo) MarkAllAsRead(ctx context.Context, userID string) error {
 }
 
 func (m *mockRepo) GetActiveFCMTokenByUserID(ctx context.Context, userID string) (string, error) {
+	if m.activeTokenErr != nil {
+		return "", m.activeTokenErr
+	}
 	return m.activeToken, nil
 }
 
@@ -153,6 +158,34 @@ func TestProcessNotificationJob_ClearsInvalidToken(t *testing.T) {
 
 	if repo.clearedToken != "dead-token" {
 		t.Errorf("expected dead-token to be cleared from DB, got %s", repo.clearedToken)
+	}
+}
+
+func TestProcessNotificationJob_DBErrorReturnsErrorForRetry(t *testing.T) {
+	repo := &mockRepo{activeTokenErr: errors.New("db connection timeout")}
+	notifier := &mockPushNotifier{}
+	service := NewService(repo, notifier)
+
+	ctx := context.Background()
+	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+
+	err := service.ProcessNotificationJob(ctx, "user-1", msg)
+	if err == nil {
+		t.Fatalf("expected error when DB fails so River Queue can retry, got nil")
+	}
+}
+
+func TestProcessNotificationJob_NoActiveTokenReturnsNil(t *testing.T) {
+	repo := &mockRepo{activeToken: ""} // user has no active device
+	notifier := &mockPushNotifier{}
+	service := NewService(repo, notifier)
+
+	ctx := context.Background()
+	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+
+	err := service.ProcessNotificationJob(ctx, "user-1", msg)
+	if err != nil {
+		t.Fatalf("expected nil when user has no active token, got: %v", err)
 	}
 }
 
