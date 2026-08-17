@@ -14,6 +14,8 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/nyaruka/phonenumbers v1.8.1
+	github.com/riverqueue/river v0.43.0
+	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.43.0
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/wneessen/go-mail v0.8.1
 	golang.org/x/crypto v0.54.0
@@ -55,9 +57,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
-	github.com/riverqueue/river v0.43.0 // indirect
 	github.com/riverqueue/river/riverdriver v0.43.0 // indirect
-	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.43.0 // indirect
 	github.com/riverqueue/river/rivershared v0.43.0 // indirect
 	github.com/riverqueue/river/rivertype v0.43.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
