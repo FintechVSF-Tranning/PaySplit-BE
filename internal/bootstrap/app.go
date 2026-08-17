@@ -21,6 +21,10 @@ import (
 	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
+	authusecase "paysplit-backend/internal/modules/auth/usecase"
+	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
+	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
+	groupusecase "paysplit-backend/internal/modules/group/usecase"
 	"paysplit-backend/internal/platform/auth/jwt"
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/database"
@@ -79,7 +83,7 @@ func New(ctx context.Context) (*App, error) {
 		return nil, err
 	}
 	imageProcessor := avatarimage.NewProcessor(cfg.Avatar.ProcessingTimeout, cfg.Avatar.MaxConcurrentConversions)
-	authService := usecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, usecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
+	authService := authusecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
 	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
 
 	fcmNotifier, err := fcm.New(ctx, cfg.Firebase.CredentialsFile, cfg.Firebase.CredentialsJSON, cfg.Firebase.Timeout)
@@ -108,6 +112,9 @@ func New(ctx context.Context) (*App, error) {
 
 	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
 	notificationService.SetEnqueuer(notificationEnqueuer)
+	groupRepo := grouppostgres.New(db)
+	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
+	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
 
 	appRouter := router.New(cfg.App)
 	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
@@ -118,6 +125,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
+		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
 	})
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)

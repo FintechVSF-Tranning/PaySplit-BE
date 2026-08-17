@@ -24,7 +24,7 @@ func New(appConfig config.AppConfig) chi.Router {
 	router.Use(
 		chiMiddleware.RequestID,
 		chiMiddleware.ClientIPFromRemoteAddr,
-		chiMiddleware.Logger,
+		middleware.RequestLogger,
 		chiMiddleware.Recoverer,
 		middleware.CORS(appConfig.CORSAllowedOrigins...),
 		middleware.RateLimit(appConfig.RateLimitRequestsPerMinute, time.Minute),

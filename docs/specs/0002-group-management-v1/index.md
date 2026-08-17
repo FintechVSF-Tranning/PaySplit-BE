@@ -1,7 +1,7 @@
 # 0002. Group management v1
 
 **Date**: 2026-08-17
-**Status**: Proposed
+**Status**: Accepted
 
 ## Summary
 
@@ -246,11 +246,11 @@ Every activity description is a snapshot written in the mutation transaction. Ti
 
 The project uses Tracer Bullet, so each slice crosses schema, SQLC, repository, usecase, HTTP, integration tests, and API documentation before the next slice begins.
 
-1. Build the create, list, and detail slice. Add the exact group validation and query indexes, public response DTOs, group and Captain creation transaction, privacy preserving detail authorization, cursor reads, routes, and real PostgreSQL coverage, satisfies **AC-1** and **AC-2**.
-2. Build the Captain invite slice. Add invite SQLC queries, cryptographic code generation, configured invite URL construction, single available invite behavior, regeneration, idempotent revocation, authorization, redacted access logs, and activity writes, satisfies **AC-3** and **AC-8**.
-3. Build the preview and redemption slice. Add authenticated preview, locked invite redemption, group capacity enforcement, atomic membership upsert, usage increment, and concurrent integration coverage, satisfies **AC-4**, **AC-5**, and **AC-8**.
-4. Build the membership exit and Captain transfer slice. Add separate open debt totals, self and Captain permission checks, idempotent inactivation, ordered locking, nonblocking transfer lock, atomic role transfer, and stable conflict mapping, satisfies **AC-6**, **AC-7**, and **AC-8**.
-5. Complete the activity timeline and delivery contract. Extend `activity_type`, add the stable timeline index and cursor query, finish shared error mapping, OpenAPI, module documentation, and end to end verification of all eight criteria, satisfies **AC-1** through **AC-8**.
+1. [x] Build the create, list, and detail slice. Add the exact group validation and query indexes, public response DTOs, group and Captain creation transaction, privacy preserving detail authorization, cursor reads, routes, and real PostgreSQL coverage, satisfies **AC-1** and **AC-2**.
+2. [x] Build the Captain invite slice. Add invite SQLC queries, cryptographic code generation, configured invite URL construction, single available invite behavior, regeneration, idempotent revocation, authorization, redacted access logs, and activity writes, satisfies **AC-3** and **AC-8**.
+3. [x] Build the preview and redemption slice. Add authenticated preview, locked invite redemption, group capacity enforcement, atomic membership upsert, usage increment, and concurrent integration coverage, satisfies **AC-4**, **AC-5**, and **AC-8**.
+4. [x] Build the membership exit and Captain transfer slice. Add separate open debt totals, self and Captain permission checks, idempotent inactivation, ordered locking, nonblocking transfer lock, atomic role transfer, and stable conflict mapping, satisfies **AC-6**, **AC-7**, and **AC-8**.
+5. [x] Complete the activity timeline and delivery contract. Extend `activity_type`, add the stable timeline index and cursor query, finish shared error mapping, OpenAPI, module documentation, and end to end verification of all eight criteria, satisfies **AC-1** through **AC-8**.
 
 ## Consequences
 

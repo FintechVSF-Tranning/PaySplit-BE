@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ type Config struct {
 	Avatar     AvatarConfig
 	Cleanup    CleanupConfig
 	Firebase   FirebaseConfig
+	Group      GroupConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -83,6 +85,11 @@ type FirebaseConfig struct {
 	CredentialsFile string
 	CredentialsJSON string
 	Timeout         time.Duration
+}
+
+// GroupConfig chứa cấu hình dùng riêng cho module group management.
+type GroupConfig struct {
+	InviteBaseURL string
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -211,6 +218,7 @@ func Load() (*Config, error) {
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
+		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -272,6 +280,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
+	}
+	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
+		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
 	}
 	return nil
 }
