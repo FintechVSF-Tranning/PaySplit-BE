@@ -14,8 +14,9 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | done |
 | 3 | Bill and OCR v1 | Slice 3 | in-progress |
-| 4 | Notification and background queue v1 | Slice 4 | in-progress |
-| 5 | Debt and VietQR payment v1 | Slice 5 | planned |
+| 4 | Split and settlement v1 | Slice 4 | in-progress |
+| 5 | Admin v1 | Slice 5 | in-progress |
+| 6 | Notification and background queue v1 | Slice 6 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -83,13 +84,13 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
-## Slice 4: Notification and background queue
+## Slice 6: Notification and background queue
 
-### 4. Notification and background queue v1 · in-progress
+### 6. Notification and background queue v1 · in-progress
 
 Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed River Queue job processing, device token session binding, dead token pruning, and in-app notification center.
 
-**Done when:** all seven acceptance criteria in spec 0004 pass against PostgreSQL 18, background jobs run reliably through River with exponential backoff on transient errors, dead FCM tokens are pruned automatically, in-app notifications support unread count and pagination, and graceful shutdown drains queue workers cleanly.
+**Done when:** all seven acceptance criteria in spec 0006 pass against PostgreSQL 18, background jobs run reliably through River with exponential backoff on transient errors, dead FCM tokens are pruned automatically, in-app notifications support unread count and pagination, and graceful shutdown drains queue workers cleanly.
 
 - [x] Design it (spec): `/architect notification and background queue v1`
 - [ ] Build it: `/develop notification and background queue v1`
@@ -103,17 +104,7 @@ Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed R
 - [ ] Review it (fresh model): `/check review notification and background queue v1`
 - [ ] Document it: `/document notification and background queue v1`
 
-Spec [0004](../specs/0004-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
-
-## Slice 5: Settlement and Payment
-
-### 5. Debt and VietQR payment v1 · planned · needs a decision
-
-Provide debt tracking across group members, VietQR generation with embedded NAPAS 247 reference codes, payment proof submission, creditor manual confirmation or rejection, and debt reminder jobs.
-
-**Done when:** debt balances calculate accurately across multiple bills, payment QR encodes valid banking and reference data, payment proofs transition debt statuses safely without auto-settlement, and stalled payment rules notify both parties.
-
-- [ ] Design it (spec): `/architect debt and VietQR payment v1`
+Spec [0006](../specs/0006-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
 
 ## Deferred
 

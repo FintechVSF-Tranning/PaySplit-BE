@@ -1,4 +1,7 @@
 -- +goose Up
+-- ---------------------------------------------------------------------------
+-- Notification and background queue v1 (spec 0006 / Module 6)
+-- ---------------------------------------------------------------------------
 -- +goose StatementBegin
 -- 1. Thêm cột fcm_token vào bảng sessions
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS fcm_token TEXT;

@@ -1,4 +1,4 @@
-# 0004. Notification and background queue v1: Rationale
+# 0006. Notification and background queue v1: Rationale
 
 ## Context
 

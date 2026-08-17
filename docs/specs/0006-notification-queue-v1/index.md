@@ -1,4 +1,4 @@
-# 0004. Notification and background queue v1
+# 0006. Notification and background queue v1
 
 **Date**: 2026-08-17
 **Status**: Proposed

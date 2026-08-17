@@ -96,7 +96,7 @@ graph TD
 
 ## 3. Phân chia Module Backend & Danh sách API
 
-Dựa trên thiết kế kiến trúc phần mềm (High-Level Architecture) và thiết kế cơ sở dữ liệu (Database Schema), Backend được chia thành 5 module cốt lõi.
+Dựa trên thiết kế kiến trúc phần mềm (High-Level Architecture) và thiết kế cơ sở dữ liệu (Database Schema), Backend được chia thành 6 module cốt lõi.
 
 ### Module 1: Auth & User (Xác thực và Người dùng)
 
