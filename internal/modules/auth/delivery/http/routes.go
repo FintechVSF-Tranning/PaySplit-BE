@@ -23,5 +23,7 @@ func (h *Handler) RegisterUserRoutes(router chi.Router, liveAuth func(http.Handl
 		protected.Put("/me/password", h.ChangePassword)
 		protected.Put("/me/avatar", h.UploadAvatar)
 		protected.Delete("/me/avatar", h.DeleteAvatar)
+		protected.Put("/me/fcm-token", h.UpdateFCMToken)
 	})
 }
+

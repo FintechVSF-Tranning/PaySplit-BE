@@ -1,7 +1,6 @@
 package http
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -18,11 +17,9 @@ import (
 )
 
 type mockRepo struct {
-	updatedSessionID string
-	updatedFCMToken  string
-	unreadCount      int64
-	markedReadID     string
-	allMarkedRead    bool
+	unreadCount   int64
+	markedReadID  string
+	allMarkedRead bool
 }
 
 func (m *mockRepo) CreateNotification(ctx context.Context, notif *domain.Notification) error {
@@ -48,11 +45,6 @@ func (m *mockRepo) MarkAllAsRead(ctx context.Context, userID string) error {
 func (m *mockRepo) GetActiveFCMTokenByUserID(ctx context.Context, userID string) (string, error) {
 	return "", nil
 }
-func (m *mockRepo) UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error {
-	m.updatedSessionID = sessionID
-	m.updatedFCMToken = fcmToken
-	return nil
-}
 func (m *mockRepo) ClearFCMToken(ctx context.Context, fcmToken string) error {
 	return nil
 }
@@ -66,36 +58,15 @@ func fakeAuthMiddleware(userID, sessionID string) func(http.Handler) http.Handle
 	}
 }
 
-func TestUpdateFCMTokenEndpoint(t *testing.T) {
-	repo := &mockRepo{}
-	svc := usecase.NewService(repo, nil)
-	handler := NewHandler(svc)
-
-	r := chi.NewRouter()
-	handler.RegisterRoutes(r, fakeAuthMiddleware("user-1", "session-1"))
-
-	body, _ := json.Marshal(map[string]string{"fcm_token": "token-xyz"})
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/me/fcm-token", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if repo.updatedFCMToken != "token-xyz" || repo.updatedSessionID != "session-1" {
-		t.Errorf("token update mismatch")
-	}
-}
-
 func TestListNotificationsEndpoint(t *testing.T) {
 	repo := &mockRepo{}
 	svc := usecase.NewService(repo, nil)
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
-	handler.RegisterRoutes(r, fakeAuthMiddleware("user-1", "session-1"))
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications?page=1&page_size=10", nil)
 	w := httptest.NewRecorder()
@@ -113,7 +84,9 @@ func TestGetUnreadCountEndpoint(t *testing.T) {
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
-	handler.RegisterRoutes(r, fakeAuthMiddleware("user-1", "session-1"))
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications/unread-count", nil)
 	w := httptest.NewRecorder()
@@ -137,7 +110,9 @@ func TestMarkAsReadEndpoint(t *testing.T) {
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
-	handler.RegisterRoutes(r, fakeAuthMiddleware("user-1", "session-1"))
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/notifications/notif-99/read", nil)
 	w := httptest.NewRecorder()
@@ -158,7 +133,9 @@ func TestMarkAllAsReadEndpoint(t *testing.T) {
 	handler := NewHandler(svc)
 
 	r := chi.NewRouter()
-	handler.RegisterRoutes(r, fakeAuthMiddleware("user-1", "session-1"))
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/notifications/read-all", nil)
 	w := httptest.NewRecorder()

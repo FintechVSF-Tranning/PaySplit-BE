@@ -654,6 +654,22 @@ func mapGeneratedUser(u dbgen.User) *domain.User {
 
 func pgUUID(v uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: v, Valid: true} }
 
+func (r *postgresRepository) UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error {
+	query := `
+		UPDATE sessions
+		SET fcm_token = $2
+		WHERE id = $1 AND revoked_at IS NULL
+	`
+	res, err := r.pool.Exec(ctx, query, sessionID, fcmToken)
+	if err != nil {
+		return fmt.Errorf("update session fcm token: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return errors.New("session not found or revoked")
+	}
+	return nil
+}
+
 func mapWriteError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

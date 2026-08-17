@@ -130,18 +130,6 @@ func (s *Service) SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error
 	return s.pushNotifier.SendToAllUsers(ctx, msg)
 }
 
-// UpdateFCMToken cập nhật FCM Token của thiết bị cho phiên đăng nhập hiện tại
-func (s *Service) UpdateFCMToken(ctx context.Context, sessionID, fcmToken string) error {
-	if sessionID == "" {
-		return errors.New("session ID must not be empty")
-	}
-	if fcmToken == "" {
-		return errors.New("fcm token must not be empty")
-	}
-
-	return s.repo.UpdateSessionFCMToken(ctx, sessionID, fcmToken)
-}
-
 // ListNotifications lấy danh sách thông báo của user có phân trang
 func (s *Service) ListNotifications(ctx context.Context, userID string, pager pagination.OffsetPager) (pagination.Page[domain.Notification], error) {
 	if userID == "" {

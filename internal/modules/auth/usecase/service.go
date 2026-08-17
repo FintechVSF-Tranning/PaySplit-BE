@@ -440,6 +440,18 @@ func canonicalIP(value string) string {
 	}
 	return strings.ToLower(value)
 }
+func (s *Service) UpdateFCMToken(ctx context.Context, sessionID, fcmToken string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	fcmToken = strings.TrimSpace(fcmToken)
+	if sessionID == "" {
+		return errors.New("session ID must not be empty")
+	}
+	if fcmToken == "" {
+		return errors.New("fcm token must not be empty")
+	}
+	return s.repo.UpdateSessionFCMToken(ctx, sessionID, fcmToken)
+}
+
 func hashKey(value string) []byte     { sum := sha256.Sum256([]byte(value)); return sum[:] }
 func validRawToken(value string) bool { return len(value) > 0 && len(value) <= 128 }
 func validBankGroup(b *domain.BankProfile) bool {

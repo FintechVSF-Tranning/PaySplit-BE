@@ -18,37 +18,6 @@ func NewHandler(service *usecase.Service) *Handler {
 	return &Handler{service: service}
 }
 
-type updateFCMTokenRequest struct {
-	FCMToken string `json:"fcm_token"`
-}
-
-// UpdateFCMToken cập nhật FCM Token cho session hiện tại
-func (h *Handler) UpdateFCMToken(w http.ResponseWriter, r *http.Request) {
-	sessionID, ok := transportmw.SessionID(r.Context())
-	if !ok || sessionID == "" {
-		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication session required", nil)
-		return
-	}
-
-	var req updateFCMTokenRequest
-	if err := helpers.ReadJSON(w, r, &req); err != nil {
-		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body", map[string]string{"body": err.Error()})
-		return
-	}
-
-	if req.FCMToken == "" {
-		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "fcm_token is required", nil)
-		return
-	}
-
-	if err := h.service.UpdateFCMToken(r.Context(), sessionID, req.FCMToken); err != nil {
-		_ = helpers.WriteAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update FCM token", nil)
-		return
-	}
-
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]string{"message": "FCM token updated successfully"})
-}
-
 // ListNotifications lấy danh sách thông báo của user đang đăng nhập (có phân trang)
 func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 	userID, ok := transportmw.UserID(r.Context())

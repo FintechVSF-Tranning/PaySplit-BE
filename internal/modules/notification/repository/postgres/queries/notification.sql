@@ -32,12 +32,8 @@ WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() AND fcm_token I
 ORDER BY issued_at DESC
 LIMIT 1;
 
--- name: UpdateSessionFCMToken :execrows
-UPDATE sessions
-SET fcm_token = $2
-WHERE id = $1 AND revoked_at IS NULL;
-
 -- name: ClearFCMToken :exec
 UPDATE sessions
 SET fcm_token = NULL
 WHERE fcm_token = $1;
+

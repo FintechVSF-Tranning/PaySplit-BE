@@ -27,9 +27,7 @@ type Repository interface {
 	// GetActiveFCMTokenByUserID lấy FCM token của phiên đang hoạt động của user
 	GetActiveFCMTokenByUserID(ctx context.Context, userID string) (string, error)
 
-	// UpdateSessionFCMToken cập nhật FCM token cho session hiện tại
-	UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error
-
 	// ClearFCMToken xóa FCM token chết khỏi database khi nhận diện token không còn hợp lệ
 	ClearFCMToken(ctx context.Context, fcmToken string) error
 }
+

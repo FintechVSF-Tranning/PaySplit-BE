@@ -60,3 +60,8 @@ type patchProfileRequest struct {
 	BankAccountNumber optionalString `json:"bank_account_number"`
 	BankAccountHolder optionalString `json:"bank_account_holder"`
 }
+
+type updateFCMTokenRequest struct {
+	FCMToken string `json:"fcm_token"`
+}
+

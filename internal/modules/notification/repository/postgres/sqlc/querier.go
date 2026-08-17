@@ -18,7 +18,6 @@ type Querier interface {
 	ListNotificationsByUserID(ctx context.Context, arg ListNotificationsByUserIDParams) ([]Notification, error)
 	MarkAllNotificationsAsRead(ctx context.Context, userID pgtype.UUID) error
 	MarkNotificationAsRead(ctx context.Context, arg MarkNotificationAsReadParams) (int64, error)
-	UpdateSessionFCMToken(ctx context.Context, arg UpdateSessionFCMTokenParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

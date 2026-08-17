@@ -127,22 +127,6 @@ func (r *postgresRepository) GetActiveFCMTokenByUserID(ctx context.Context, user
 	return token, nil
 }
 
-func (r *postgresRepository) UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error {
-	query := `
-		UPDATE sessions
-		SET fcm_token = $2
-		WHERE id = $1 AND revoked_at IS NULL
-	`
-	res, err := r.db.Exec(ctx, query, sessionID, fcmToken)
-	if err != nil {
-		return fmt.Errorf("update session fcm token: %w", err)
-	}
-	if res.RowsAffected() == 0 {
-		return errors.New("session not found or revoked")
-	}
-	return nil
-}
-
 func (r *postgresRepository) ClearFCMToken(ctx context.Context, fcmToken string) error {
 	query := `UPDATE sessions SET fcm_token = NULL WHERE fcm_token = $1`
 	_, err := r.db.Exec(ctx, query, fcmToken)

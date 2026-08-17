@@ -17,8 +17,6 @@ type mockRepo struct {
 	activeToken       string
 	activeTokenErr    error
 	clearedToken      string
-	updatedSessionID  string
-	updatedFCMToken   string
 	unreadCount       int64
 	readNotificationID string
 	allMarkedRead     bool
@@ -54,12 +52,6 @@ func (m *mockRepo) GetActiveFCMTokenByUserID(ctx context.Context, userID string)
 		return "", m.activeTokenErr
 	}
 	return m.activeToken, nil
-}
-
-func (m *mockRepo) UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error {
-	m.updatedSessionID = sessionID
-	m.updatedFCMToken = fcmToken
-	return nil
 }
 
 func (m *mockRepo) ClearFCMToken(ctx context.Context, fcmToken string) error {
@@ -186,21 +178,6 @@ func TestProcessNotificationJob_NoActiveTokenReturnsNil(t *testing.T) {
 	err := service.ProcessNotificationJob(ctx, "user-1", msg)
 	if err != nil {
 		t.Fatalf("expected nil when user has no active token, got: %v", err)
-	}
-}
-
-func TestUpdateFCMToken(t *testing.T) {
-	repo := &mockRepo{}
-	service := NewService(repo, nil)
-
-	ctx := context.Background()
-	err := service.UpdateFCMToken(ctx, "session-1", "new-token-123")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if repo.updatedSessionID != "session-1" || repo.updatedFCMToken != "new-token-123" {
-		t.Errorf("token update mismatch")
 	}
 }
 

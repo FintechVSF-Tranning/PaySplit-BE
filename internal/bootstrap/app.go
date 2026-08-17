@@ -117,8 +117,8 @@ func New(ctx context.Context) (*App, error) {
 	appRouter.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
+		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 	})
-	notificationHandler.RegisterRoutes(appRouter, liveAuth)
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	if err := riverClient.Start(workerCtx); err != nil {

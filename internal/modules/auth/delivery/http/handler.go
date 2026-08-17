@@ -235,6 +235,31 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handler) UpdateFCMToken(w http.ResponseWriter, r *http.Request) {
+	sessionID, ok := authmw.SessionID(r.Context())
+	if !ok || sessionID == "" {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing session context", nil)
+		return
+	}
+
+	var req updateFCMTokenRequest
+	if !read(w, r, &req) {
+		return
+	}
+
+	if req.FCMToken == "" {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_FCM_TOKEN", "fcm_token must not be empty", nil)
+		return
+	}
+
+	if err := h.service.UpdateFCMToken(r.Context(), sessionID, req.FCMToken); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update fcm token", nil)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func read(w http.ResponseWriter, r *http.Request, d any) bool {
 	if err := helpers.ReadJSON(w, r, d); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
