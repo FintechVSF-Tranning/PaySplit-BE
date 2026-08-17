@@ -158,17 +158,18 @@ func (a *App) Start() error {
 }
 
 // Shutdown chờ HTTP server xử lý xong các request đang chạy trước khi đóng
-// database pool dùng chung; ctx giới hạn thời gian chờ quá trình này.
+// River queue, workers và database pool dùng chung; ctx giới hạn thời gian chờ quá trình này.
 func (a *App) Shutdown(ctx context.Context) error {
-	a.cancelWorkers()
-	if a.riverClient != nil {
-		_ = a.riverClient.Stop(ctx)
-	}
 	if err := a.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown HTTP server: %w", err)
 	}
+	if a.riverClient != nil {
+		_ = a.riverClient.Stop(ctx)
+	}
+	a.cancelWorkers()
 	a.workers.Wait()
 	// Giữ pool hoạt động cho đến khi các handler đang xử lý request hoàn tất.
 	a.db.Close()
 	return nil
 }
+
