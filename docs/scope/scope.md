@@ -15,6 +15,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 2 | Group management v1 | Slice 2 | done |
 | 3 | Bill and OCR v1 | Slice 3 | in-progress |
 | 4 | Split and settlement v1 | Slice 4 | in-progress |
+| 5 | Admin v1 | Slice 5 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -104,6 +105,28 @@ Provide personal allocated expense breakdown, group debt matrix and cursor listi
 - [ ] Document it: `/document split and settlement v1`
 
 Spec [0004](../specs/0004-split-settlement-v1/index.md) · planned code in `internal/modules/settlement/`, `internal/platform/vietqr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
+
+## Slice 5: Admin and monitoring
+
+### 5. Admin v1 · in-progress
+
+Provide account search, filtering, and pagination, account detail inspection with masked bank credentials, status mutations (suspend, lock, reactivate) with atomic session revocation and audit logging, system health probes, and Prometheus metrics monitoring.
+
+**Done when:** all eight acceptance criteria in spec 0005 pass against PostgreSQL 18, administrative routes strictly require live admin sessions, account status transitions immediately revoke all active sessions and refresh tokens, audit logs record every mutation reason, and health/metrics endpoints operate reliably.
+
+- [x] Design it (spec): `/architect admin v1`
+- [ ] Build it: `/develop admin v1`
+  - [ ] PostgreSQL 18 schema queries, admin repository adapter, and bank detail masking (satisfies AC-1, AC-2, AC-3, AC-4)
+  - [ ] Admin usecase service, self protection guard, admin role guard, and atomic session revocation (satisfies AC-1, AC-2, AC-3, AC-4)
+  - [ ] Admin HTTP delivery handlers, DTO validation, and route registration with liveAuth (satisfies AC-1, AC-2, AC-3, AC-4, AC-5, AC-7)
+  - [ ] Health liveness/readiness probes and Prometheus metrics exporter integration (satisfies AC-6, AC-7, AC-8)
+  - [ ] Operational verification, integration test coverage, and documentation (satisfies AC-1 through AC-8)
+- [ ] Verify it: `/check verify admin v1`
+- [ ] Test it: `/test admin v1`
+- [ ] Review it (fresh model): `/check review admin v1`
+- [ ] Document it: `/document admin v1`
+
+Spec [0005](../specs/0005-admin-v1/index.md) · planned code in `internal/modules/admin/`, `internal/transport/http/router/`, and `internal/bootstrap/`
 
 ## Deferred
 
