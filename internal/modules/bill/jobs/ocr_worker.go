@@ -188,10 +188,10 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
-			"job_id":    jobID,
-			"bill_id":   billID,
-			"status":    "succeeded",
-			"candidate": candidate,
+			"job_id":   jobID,
+			"bill_id":  billID,
+			"status":   "succeeded",
+			"warnings": candidate.Warnings,
 		})
 	}
 
@@ -261,10 +261,10 @@ func stitchReceiptImages(images [][]byte) ([]byte, error) {
 	maxWidth := 0
 	totalHeight := 0
 
-	for _, b := range images {
+	for i, b := range images {
 		img, _, err := image.Decode(bytes.NewReader(b))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("decode receipt image %d: %w", i, err)
 		}
 		decodedImages = append(decodedImages, img)
 		bnds := img.Bounds()

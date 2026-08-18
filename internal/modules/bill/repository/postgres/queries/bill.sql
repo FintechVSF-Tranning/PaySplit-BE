@@ -25,6 +25,10 @@ INSERT INTO bills (
 SELECT * FROM bills
 WHERE id = $1 AND group_id = $2;
 
+-- name: GetBillOnlyByID :one
+SELECT id, group_id, creditor_member_id, status, version FROM bills
+WHERE id = $1;
+
 -- name: GetBillByIDForUpdate :one
 SELECT * FROM bills
 WHERE id = $1 AND group_id = $2
@@ -35,6 +39,17 @@ SELECT * FROM bills
 WHERE group_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListBillsByGroupCursor :many
+SELECT * FROM bills
+WHERE group_id = $1
+  AND (
+    $2::timestamptz IS NULL 
+    OR created_at < $2 
+    OR (created_at = $2 AND id < $3)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4;
 
 -- name: UpdateDraftBill :one
 UPDATE bills
@@ -47,14 +62,19 @@ SET merchant_name = $3,
     total = $9,
     split_method = $10,
     mismatch_codes = $11,
+    status = 'draft',
+    reviewed_at = NULL,
+    reviewed_by_member_id = NULL,
     version = version + 1,
     updated_at = now()
-WHERE id = $1 AND group_id = $2 AND status = 'draft' AND version = $12
+WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $12
 RETURNING *;
 
 -- name: ReviewBill :one
 UPDATE bills
 SET status = 'reviewed',
+    reviewed_at = now(),
+    reviewed_by_member_id = $4,
     version = version + 1,
     updated_at = now()
 WHERE id = $1 AND group_id = $2 AND status = 'draft' AND version = $3
@@ -78,7 +98,7 @@ SET status = 'voided',
 WHERE id = $1 AND group_id = $2 AND status = 'finalized' AND version = $3
 RETURNING *;
 
--- name: DeleteDraftBill :exec
+-- name: DeleteDraftBill :execrows
 DELETE FROM bills
 WHERE id = $1 AND group_id = $2 AND status = 'draft';
 
@@ -260,6 +280,12 @@ SELECT id, group_id, user_id, role, status, joined_at, left_at
 FROM group_members
 WHERE group_id = $1 AND user_id = $2;
 
+-- name: GetGroupMemberUser :one
+SELECT gm.id, gm.group_id, gm.user_id, gm.role, gm.status, u.default_bank_code, u.default_bank_account_number, u.default_bank_account_holder
+FROM group_members gm
+JOIN users u ON gm.user_id = u.id
+WHERE gm.id = $1 AND gm.group_id = $2;
+
 -- name: ListActiveGroupMembers :many
 SELECT id, group_id, user_id, role, status, joined_at, left_at
 FROM group_members
@@ -281,9 +307,14 @@ INSERT INTO debts (
     $1, $2, $3, $4, $5, $6, 'awaiting', 0, now(), now()
 ) RETURNING *;
 
+-- name: CountNonAwaitingDebtsByBillID :one
+SELECT COUNT(*) FROM debts
+WHERE bill_id = $1 AND status != 'awaiting';
+
 -- name: VoidDebtsByBillID :exec
 UPDATE debts
 SET status = 'voided',
     voided_at = now(),
     updated_at = now()
 WHERE bill_id = $1 AND status = 'awaiting';
+

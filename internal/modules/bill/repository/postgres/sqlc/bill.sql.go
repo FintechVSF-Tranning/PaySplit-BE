@@ -28,6 +28,18 @@ func (q *Queries) CountManualOCRAttemptsInWindow(ctx context.Context, arg CountM
 	return count, err
 }
 
+const countNonAwaitingDebtsByBillID = `-- name: CountNonAwaitingDebtsByBillID :one
+SELECT COUNT(*) FROM debts
+WHERE bill_id = $1 AND status != 'awaiting'
+`
+
+func (q *Queries) CountNonAwaitingDebtsByBillID(ctx context.Context, billID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countNonAwaitingDebtsByBillID, billID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createBill = `-- name: CreateBill :one
 INSERT INTO bills (
     id,
@@ -49,7 +61,7 @@ INSERT INTO bills (
     updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, now(), now()
-) RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
+) RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 `
 
 type CreateBillParams struct {
@@ -109,6 +121,8 @@ func (q *Queries) CreateBill(ctx context.Context, arg CreateBillParams) (Bill, e
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }
@@ -455,7 +469,7 @@ func (q *Queries) DeleteBillShares(ctx context.Context, billID pgtype.UUID) erro
 	return err
 }
 
-const deleteDraftBill = `-- name: DeleteDraftBill :exec
+const deleteDraftBill = `-- name: DeleteDraftBill :execrows
 DELETE FROM bills
 WHERE id = $1 AND group_id = $2 AND status = 'draft'
 `
@@ -465,9 +479,12 @@ type DeleteDraftBillParams struct {
 	GroupID pgtype.UUID `json:"group_id"`
 }
 
-func (q *Queries) DeleteDraftBill(ctx context.Context, arg DeleteDraftBillParams) error {
-	_, err := q.db.Exec(ctx, deleteDraftBill, arg.ID, arg.GroupID)
-	return err
+func (q *Queries) DeleteDraftBill(ctx context.Context, arg DeleteDraftBillParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDraftBill, arg.ID, arg.GroupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const finalizeBill = `-- name: FinalizeBill :one
@@ -477,7 +494,7 @@ SET status = 'finalized',
     version = version + 1,
     updated_at = now()
 WHERE id = $1 AND group_id = $2 AND status = 'reviewed' AND version = $3
-RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
+RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 `
 
 type FinalizeBillParams struct {
@@ -511,6 +528,8 @@ func (q *Queries) FinalizeBill(ctx context.Context, arg FinalizeBillParams) (Bil
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }
@@ -542,7 +561,7 @@ func (q *Queries) GetActiveOCRJobByBillID(ctx context.Context, billID pgtype.UUI
 }
 
 const getBillByID = `-- name: GetBillByID :one
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes FROM bills
+SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id FROM bills
 WHERE id = $1 AND group_id = $2
 `
 
@@ -576,12 +595,14 @@ func (q *Queries) GetBillByID(ctx context.Context, arg GetBillByIDParams) (Bill,
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }
 
 const getBillByIDForUpdate = `-- name: GetBillByIDForUpdate :one
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes FROM bills
+SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id FROM bills
 WHERE id = $1 AND group_id = $2
 FOR UPDATE
 `
@@ -616,6 +637,34 @@ func (q *Queries) GetBillByIDForUpdate(ctx context.Context, arg GetBillByIDForUp
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
+	)
+	return i, err
+}
+
+const getBillOnlyByID = `-- name: GetBillOnlyByID :one
+SELECT id, group_id, creditor_member_id, status, version FROM bills
+WHERE id = $1
+`
+
+type GetBillOnlyByIDRow struct {
+	ID               pgtype.UUID `json:"id"`
+	GroupID          pgtype.UUID `json:"group_id"`
+	CreditorMemberID pgtype.UUID `json:"creditor_member_id"`
+	Status           interface{} `json:"status"`
+	Version          int32       `json:"version"`
+}
+
+func (q *Queries) GetBillOnlyByID(ctx context.Context, id pgtype.UUID) (GetBillOnlyByIDRow, error) {
+	row := q.db.QueryRow(ctx, getBillOnlyByID, id)
+	var i GetBillOnlyByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.GroupID,
+		&i.CreditorMemberID,
+		&i.Status,
+		&i.Version,
 	)
 	return i, err
 }
@@ -642,6 +691,45 @@ func (q *Queries) GetGroupMember(ctx context.Context, arg GetGroupMemberParams) 
 		&i.Status,
 		&i.JoinedAt,
 		&i.LeftAt,
+	)
+	return i, err
+}
+
+const getGroupMemberUser = `-- name: GetGroupMemberUser :one
+SELECT gm.id, gm.group_id, gm.user_id, gm.role, gm.status, u.default_bank_code, u.default_bank_account_number, u.default_bank_account_holder
+FROM group_members gm
+JOIN users u ON gm.user_id = u.id
+WHERE gm.id = $1 AND gm.group_id = $2
+`
+
+type GetGroupMemberUserParams struct {
+	ID      pgtype.UUID `json:"id"`
+	GroupID pgtype.UUID `json:"group_id"`
+}
+
+type GetGroupMemberUserRow struct {
+	ID                       pgtype.UUID `json:"id"`
+	GroupID                  pgtype.UUID `json:"group_id"`
+	UserID                   pgtype.UUID `json:"user_id"`
+	Role                     interface{} `json:"role"`
+	Status                   interface{} `json:"status"`
+	DefaultBankCode          pgtype.Text `json:"default_bank_code"`
+	DefaultBankAccountNumber pgtype.Text `json:"default_bank_account_number"`
+	DefaultBankAccountHolder pgtype.Text `json:"default_bank_account_holder"`
+}
+
+func (q *Queries) GetGroupMemberUser(ctx context.Context, arg GetGroupMemberUserParams) (GetGroupMemberUserRow, error) {
+	row := q.db.QueryRow(ctx, getGroupMemberUser, arg.ID, arg.GroupID)
+	var i GetGroupMemberUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.GroupID,
+		&i.UserID,
+		&i.Role,
+		&i.Status,
+		&i.DefaultBankCode,
+		&i.DefaultBankAccountNumber,
+		&i.DefaultBankAccountHolder,
 	)
 	return i, err
 }
@@ -901,7 +989,7 @@ func (q *Queries) ListBillShares(ctx context.Context, billID pgtype.UUID) ([]Bil
 }
 
 const listBillsByGroup = `-- name: ListBillsByGroup :many
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes FROM bills
+SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id FROM bills
 WHERE group_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
@@ -944,6 +1032,76 @@ func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupPara
 			&i.VoidedAt,
 			&i.SplitMethod,
 			&i.MismatchCodes,
+			&i.ReviewedAt,
+			&i.ReviewedByMemberID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBillsByGroupCursor = `-- name: ListBillsByGroupCursor :many
+SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id FROM bills
+WHERE group_id = $1
+  AND (
+    $2::timestamptz IS NULL 
+    OR created_at < $2 
+    OR (created_at = $2 AND id < $3)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListBillsByGroupCursorParams struct {
+	GroupID pgtype.UUID        `json:"group_id"`
+	Column2 pgtype.Timestamptz `json:"column_2"`
+	ID      pgtype.UUID        `json:"id"`
+	Limit   int32              `json:"limit"`
+}
+
+func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error) {
+	rows, err := q.db.Query(ctx, listBillsByGroupCursor,
+		arg.GroupID,
+		arg.Column2,
+		arg.ID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Bill
+	for rows.Next() {
+		var i Bill
+		if err := rows.Scan(
+			&i.ID,
+			&i.GroupID,
+			&i.CreditorMemberID,
+			&i.Status,
+			&i.MerchantName,
+			&i.BillDate,
+			&i.ImageObjectKey,
+			&i.Subtotal,
+			&i.ServiceCharge,
+			&i.Vat,
+			&i.Discount,
+			&i.Total,
+			&i.MismatchWarning,
+			&i.Version,
+			&i.CreatedAt,
+			&i.FinalizedAt,
+			&i.UpdatedAt,
+			&i.ReplacesBillID,
+			&i.VoidedAt,
+			&i.SplitMethod,
+			&i.MismatchCodes,
+			&i.ReviewedAt,
+			&i.ReviewedByMemberID,
 		); err != nil {
 			return nil, err
 		}
@@ -958,20 +1116,28 @@ func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupPara
 const reviewBill = `-- name: ReviewBill :one
 UPDATE bills
 SET status = 'reviewed',
+    reviewed_at = now(),
+    reviewed_by_member_id = $4,
     version = version + 1,
     updated_at = now()
 WHERE id = $1 AND group_id = $2 AND status = 'draft' AND version = $3
-RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
+RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 `
 
 type ReviewBillParams struct {
-	ID      pgtype.UUID `json:"id"`
-	GroupID pgtype.UUID `json:"group_id"`
-	Version int32       `json:"version"`
+	ID                 pgtype.UUID `json:"id"`
+	GroupID            pgtype.UUID `json:"group_id"`
+	Version            int32       `json:"version"`
+	ReviewedByMemberID pgtype.UUID `json:"reviewed_by_member_id"`
 }
 
 func (q *Queries) ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, error) {
-	row := q.db.QueryRow(ctx, reviewBill, arg.ID, arg.GroupID, arg.Version)
+	row := q.db.QueryRow(ctx, reviewBill,
+		arg.ID,
+		arg.GroupID,
+		arg.Version,
+		arg.ReviewedByMemberID,
+	)
 	var i Bill
 	err := row.Scan(
 		&i.ID,
@@ -995,6 +1161,8 @@ func (q *Queries) ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, e
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }
@@ -1010,10 +1178,13 @@ SET merchant_name = $3,
     total = $9,
     split_method = $10,
     mismatch_codes = $11,
+    status = 'draft',
+    reviewed_at = NULL,
+    reviewed_by_member_id = NULL,
     version = version + 1,
     updated_at = now()
-WHERE id = $1 AND group_id = $2 AND status = 'draft' AND version = $12
-RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
+WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $12
+RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 `
 
 type UpdateDraftBillParams struct {
@@ -1069,6 +1240,8 @@ func (q *Queries) UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }
@@ -1196,7 +1369,7 @@ SET status = 'voided',
     version = version + 1,
     updated_at = now()
 WHERE id = $1 AND group_id = $2 AND status = 'finalized' AND version = $3
-RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
+RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 `
 
 type VoidBillParams struct {
@@ -1230,6 +1403,8 @@ func (q *Queries) VoidBill(ctx context.Context, arg VoidBillParams) (Bill, error
 		&i.VoidedAt,
 		&i.SplitMethod,
 		&i.MismatchCodes,
+		&i.ReviewedAt,
+		&i.ReviewedByMemberID,
 	)
 	return i, err
 }

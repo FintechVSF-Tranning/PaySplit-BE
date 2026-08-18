@@ -78,6 +78,10 @@ func (s *BillStorage) SignedURL(publicID string, ttl time.Duration) (string, err
 		return "", errors.New("publicID must not be empty")
 	}
 
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+
 	asset, err := s.client.Image(publicID)
 	if err != nil {
 		return "", fmt.Errorf("build Cloudinary image asset: %w", err)
@@ -85,6 +89,7 @@ func (s *BillStorage) SignedURL(publicID string, ttl time.Duration) (string, err
 
 	asset.DeliveryType = api.Private
 	asset.Config.URL.SignURL = true
+	asset.Config.AuthToken.Duration = int64(ttl.Seconds())
 
 	urlStr, err := asset.String()
 	if err != nil {

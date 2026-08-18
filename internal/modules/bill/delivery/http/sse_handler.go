@@ -58,19 +58,40 @@ func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Kiểm tra quyền thành viên nhóm nếu có group_id (Spec 3 AC-8)
+	// Kiểm tra authentication và quyền thành viên nhóm bắt buộc (Spec 3 AC-8)
+	userIDStr, ok := authmw.UserID(r.Context())
+	if !ok {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		return
+	}
+	callerUserID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid user ID", nil)
+		return
+	}
+
+	var groupID uuid.UUID
 	if groupIDStr := r.URL.Query().Get("group_id"); groupIDStr != "" {
-		if groupID, err := uuid.Parse(groupIDStr); err == nil {
-			if userIDStr, ok := authmw.UserID(r.Context()); ok {
-				if callerUserID, err := uuid.Parse(userIDStr); err == nil {
-					member, err := h.repo.GetGroupMember(r.Context(), groupID, callerUserID)
-					if err != nil || member.Status != "active" {
-						_ = helpers.WriteAPIError(w, http.StatusForbidden, "FORBIDDEN", "caller is not an active member of this group", nil)
-						return
-					}
-				}
-			}
+		if gID, err := uuid.Parse(groupIDStr); err == nil {
+			groupID = gID
 		}
+	}
+
+	// Nếu group_id không truyền trong query, tra cứu từ bills table
+	if groupID == uuid.Nil {
+		bill, err := h.repo.GetBillOnlyByID(r.Context(), billID)
+		if err != nil {
+			_ = helpers.WriteAPIError(w, http.StatusNotFound, "BILL_NOT_FOUND", "bill not found", nil)
+			return
+		}
+		groupID = bill.GroupID
+	}
+
+	// Kiểm tra caller là active member của nhóm (Spec 3 AC-8)
+	member, err := h.repo.GetGroupMember(r.Context(), groupID, callerUserID)
+	if err != nil || member.Status != "active" {
+		_ = helpers.WriteAPIError(w, http.StatusForbidden, "FORBIDDEN", "caller is not an active member of this group", nil)
+		return
 	}
 
 	// 1. Thiết lập SSE Response Headers
@@ -85,17 +106,17 @@ func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
 	eventCh, unsubscribe := h.hub.Subscribe(billID)
 	defer unsubscribe()
 
-	// 3. Gửi Snapshot ban đầu (Current Snapshot on Connect)
+	// 3. Gửi Snapshot ban đầu (Current Snapshot on Connect - không lộ raw OCR hay item text)
 	latestJob, _ := h.repo.GetLatestOCRJobByBillID(r.Context(), billID)
 	snapshotData := map[string]any{
 		"bill_id": billID,
 	}
 	if latestJob != nil {
 		snapshotData["ocr_job"] = map[string]any{
-			"id":        latestJob.ID,
-			"status":    latestJob.Status,
-			"candidate": latestJob.Candidate,
-			"error":     latestJob.ErrorMessage,
+			"id":       latestJob.ID,
+			"status":   latestJob.Status,
+			"attempts": latestJob.Attempts,
+			"error":    latestJob.ErrorMessage,
 		}
 	}
 	_ = writeSSEEvent(w, flusher, "snapshot", snapshotData)

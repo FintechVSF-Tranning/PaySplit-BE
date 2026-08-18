@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"paysplit-backend/internal/modules/bill/domain"
 )
@@ -16,6 +17,18 @@ type GroupMember struct {
 	UserID  uuid.UUID
 	Role    string
 	Status  string
+}
+
+// GroupMemberWithUser đại diện cho thông tin thành viên kèm thông tin user/ngân hàng.
+type GroupMemberWithUser struct {
+	ID                    uuid.UUID
+	GroupID               uuid.UUID
+	UserID                uuid.UUID
+	Role                  string
+	Status                string
+	DefaultBankCode       *string
+	DefaultBankAccountNum *string
+	DefaultBankHolder     *string
 }
 
 // Debt đại diện cho một bản ghi công nợ sinh ra sau khi Finalize bill.
@@ -31,10 +44,24 @@ type Debt struct {
 
 // CreateBillParams chứa dữ liệu để tạo mới một hóa đơn (kèm ảnh, món ăn và job OCR nếu có) trong một transaction.
 type CreateBillParams struct {
-	Bill   *domain.Bill
-	Images []*domain.BillImage
-	Items  []*domain.BillItem
-	OCRJob *domain.OCRJob
+	Bill         *domain.Bill
+	Images       []*domain.BillImage
+	Items        []*domain.BillItem
+	OCRJob       *domain.OCRJob
+	BeforeCommit func(ctx context.Context, tx pgx.Tx) error
+}
+
+// ListBillsCursorParams chứa tham số phân trang cursor cho danh sách bill.
+type ListBillsCursorParams struct {
+	GroupID uuid.UUID
+	Cursor  *string
+	Limit   int32
+}
+
+// ListBillsCursorResult chứa kết quả phân trang cursor cho danh sách bill.
+type ListBillsCursorResult struct {
+	Bills      []*domain.Bill
+	NextCursor *string
 }
 
 // UpdateDraftParams chứa dữ liệu để cập nhật thông tin một hóa đơn nháp (kèm ghi đè danh sách món).
@@ -67,6 +94,7 @@ type VoidBillParams struct {
 type Repository interface {
 	// Group Members
 	GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*GroupMember, error)
+	GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*GroupMemberWithUser, error)
 	ListActiveGroupMembers(ctx context.Context, groupID uuid.UUID) ([]*GroupMember, error)
 
 	// CreateBill lưu hóa đơn mới (kèm danh sách ảnh, món ăn, phân bổ và ocr job nếu có) trong 1 database transaction.
@@ -75,17 +103,23 @@ type Repository interface {
 	// GetBillByID lấy thông tin chi tiết một hóa đơn (bao gồm cả images, items, assignments, shares).
 	GetBillByID(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error)
 
+	// GetBillOnlyByID lấy thông tin cơ bản của hóa đơn chỉ bằng billID (dùng cho auth resolution).
+	GetBillOnlyByID(ctx context.Context, id uuid.UUID) (*domain.Bill, error)
+
 	// GetBillByIDForUpdate lấy thông tin hóa đơn và khóa dòng với SELECT ... FOR UPDATE (chống race condition).
 	GetBillByIDForUpdate(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error)
 
-	// ListBillsByGroup lấy danh sách hóa đơn trong nhóm có phân trang (mới nhất trước).
+	// ListBillsByGroup lấy danh sách hóa đơn trong nhóm có phân trang offset (legacy).
 	ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error)
+
+	// ListBillsByGroupCursor lấy danh sách hóa đơn trong nhóm theo cursor pagination (created_at DESC, id DESC).
+	ListBillsByGroupCursor(ctx context.Context, params ListBillsCursorParams) (*ListBillsCursorResult, error)
 
 	// UpdateDraftBill cập nhật hóa đơn draft và ghi đè danh sách món ăn trong 1 transaction có kiểm tra version.
 	UpdateDraftBill(ctx context.Context, params UpdateDraftParams) (*domain.Bill, error)
 
 	// ReviewBill chuyển trạng thái hóa đơn từ draft sang reviewed (Spec 3 AC-7).
-	ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error)
+	ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error)
 
 	// FinalizeBill chuyển trạng thái hóa đơn sang finalized, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
 	FinalizeBill(ctx context.Context, params FinalizeBillParams) (*domain.Bill, error)

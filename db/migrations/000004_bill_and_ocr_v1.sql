@@ -8,12 +8,14 @@
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'reviewed' BEFORE 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'voided' AFTER 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 
--- 2. Cập nhật bảng bills: Bổ sung replaces_bill_id, voided_at, split_method, mismatch_codes
+-- 2. Cập nhật bảng bills: Bổ sung replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 ALTER TABLE bills 
     ADD COLUMN IF NOT EXISTS replaces_bill_id UUID REFERENCES bills(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS split_method TEXT NOT NULL DEFAULT 'even',
-    ADD COLUMN IF NOT EXISTS mismatch_codes TEXT[] NOT NULL DEFAULT '{}';
+    ADD COLUMN IF NOT EXISTS mismatch_codes TEXT[] NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS reviewed_by_member_id UUID REFERENCES group_members(id) ON DELETE SET NULL;
 
 -- Cập nhật ràng buộc trạng thái finalized/voided (thay thế bills_check1 cũ)
 ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_check1;
@@ -31,6 +33,7 @@ ALTER TABLE bills
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_bills_replacement ON bills(replaces_bill_id) WHERE replaces_bill_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bills_group_created ON bills(group_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bills_group_cursor ON bills(group_id, created_at DESC, id DESC);
 
 -- Cập nhật ràng buộc debts cho phép status 'voided'
 ALTER TABLE debts DROP CONSTRAINT IF EXISTS debts_check1;
@@ -101,11 +104,14 @@ ALTER TABLE bill_items DROP COLUMN IF EXISTS position;
 
 DROP TABLE IF EXISTS bill_images CASCADE;
 
+DROP INDEX IF EXISTS idx_bills_group_cursor;
 DROP INDEX IF EXISTS idx_bills_group_created;
 DROP INDEX IF EXISTS uq_bills_replacement;
 ALTER TABLE bills 
     DROP CONSTRAINT IF EXISTS bills_voided_check,
     DROP CONSTRAINT IF EXISTS bills_split_method_check,
+    DROP COLUMN IF EXISTS reviewed_by_member_id,
+    DROP COLUMN IF EXISTS reviewed_at,
     DROP COLUMN IF EXISTS mismatch_codes,
     DROP COLUMN IF EXISTS split_method,
     DROP COLUMN IF EXISTS voided_at,

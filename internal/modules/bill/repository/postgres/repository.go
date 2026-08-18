@@ -2,9 +2,11 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,6 +188,12 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		}
 	}
 
+	if p.BeforeCommit != nil {
+		if err := p.BeforeCommit(ctx, tx); err != nil {
+			return nil, fmt.Errorf("before commit hook: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit create bill tx: %w", err)
 	}
@@ -252,6 +260,27 @@ func (r *postgresRepository) GetBillByID(ctx context.Context, id, groupID uuid.U
 	return bill, nil
 }
 
+// GetBillOnlyByID lấy thông tin cơ bản của hóa đơn chỉ bằng billID (dùng cho auth resolution).
+func (r *postgresRepository) GetBillOnlyByID(ctx context.Context, id uuid.UUID) (*domain.Bill, error) {
+	q := sqlc.New(r.pool)
+	row, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrBillNotFound
+		}
+		return nil, fmt.Errorf("get bill only by id: %w", err)
+	}
+
+	statusStr := fmt.Sprintf("%v", row.Status)
+	return &domain.Bill{
+		ID:               uuid.UUID(row.ID.Bytes),
+		GroupID:          uuid.UUID(row.GroupID.Bytes),
+		CreditorMemberID: uuid.UUID(row.CreditorMemberID.Bytes),
+		Status:           domain.BillStatus(statusStr),
+		Version:          row.Version,
+	}, nil
+}
+
 // GetBillByIDForUpdate lấy thông tin hóa đơn và khóa dòng với SELECT ... FOR UPDATE.
 func (r *postgresRepository) GetBillByIDForUpdate(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error) {
 	q := sqlc.New(r.pool)
@@ -294,6 +323,61 @@ func (r *postgresRepository) ListBillsByGroup(ctx context.Context, groupID uuid.
 		results = append(results, toDomainBill(&row))
 	}
 	return results, nil
+}
+
+// ListBillsByGroupCursor lấy danh sách hóa đơn trong nhóm theo cursor pagination (created_at DESC, id DESC).
+func (r *postgresRepository) ListBillsByGroupCursor(ctx context.Context, p repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	var cursorCreatedAt pgtype.Timestamptz
+	var cursorID pgtype.UUID
+	if p.Cursor != nil && *p.Cursor != "" {
+		createdAt, id, err := decodeCursor(*p.Cursor)
+		if err != nil {
+			return nil, domain.ErrInvalidCursor
+		}
+		cursorCreatedAt = pgtype.Timestamptz{Time: createdAt, Valid: true}
+		cursorID = pgtype.UUID{Bytes: id, Valid: true}
+	}
+
+	q := sqlc.New(r.pool)
+	rows, err := q.ListBillsByGroupCursor(ctx, sqlc.ListBillsByGroupCursorParams{
+		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
+		Column2: cursorCreatedAt,
+		ID:      cursorID,
+		Limit:   limit + 1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list bills cursor: %w", err)
+	}
+
+	hasMore := len(rows) > int(limit)
+	if hasMore {
+		rows = rows[:limit]
+	}
+
+	bills := make([]*domain.Bill, 0, len(rows))
+	for _, row := range rows {
+		bills = append(bills, toDomainBill(&row))
+	}
+
+	var nextCursor *string
+	if hasMore && len(bills) > 0 {
+		last := bills[len(bills)-1]
+		c := encodeCursor(last.CreatedAt, last.ID.String())
+		nextCursor = &c
+	}
+
+	return &repository.ListBillsCursorResult{
+		Bills:      bills,
+		NextCursor: nextCursor,
+	}, nil
 }
 
 // UpdateDraftBill cập nhật hóa đơn draft và ghi đè danh sách món ăn trong 1 transaction có kiểm tra version.
@@ -411,13 +495,14 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 }
 
 // ReviewBill chuyển trạng thái hóa đơn từ draft sang reviewed (Spec 3 AC-7).
-func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
+func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
 	q := sqlc.New(r.pool)
 
 	dbBill, err := q.ReviewBill(ctx, sqlc.ReviewBillParams{
-		ID:      pgtype.UUID{Bytes: id, Valid: true},
-		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
-		Version: expectedVersion,
+		ID:                 pgtype.UUID{Bytes: id, Valid: true},
+		GroupID:            pgtype.UUID{Bytes: groupID, Valid: true},
+		Version:            expectedVersion,
+		ReviewedByMemberID: pgtype.UUID{Bytes: reviewerMemberID, Valid: true},
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -452,6 +537,46 @@ func (r *postgresRepository) GetGroupMember(ctx context.Context, groupID, userID
 		UserID:  uuid.UUID(m.UserID.Bytes),
 		Role:    roleStr,
 		Status:  statusStr,
+	}, nil
+}
+
+// GetGroupMemberUser lấy thông tin thành viên kèm thông tin user/tài khoản ngân hàng.
+func (r *postgresRepository) GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*repository.GroupMemberWithUser, error) {
+	q := sqlc.New(r.pool)
+	m, err := q.GetGroupMemberUser(ctx, sqlc.GetGroupMemberUserParams{
+		ID:      pgtype.UUID{Bytes: memberID, Valid: true},
+		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, fmt.Errorf("get group member user: %w", err)
+	}
+
+	roleStr := fmt.Sprintf("%v", m.Role)
+	statusStr := fmt.Sprintf("%v", m.Status)
+
+	var bankCode, bankAcc, bankHolder *string
+	if m.DefaultBankCode.Valid {
+		bankCode = &m.DefaultBankCode.String
+	}
+	if m.DefaultBankAccountNumber.Valid {
+		bankAcc = &m.DefaultBankAccountNumber.String
+	}
+	if m.DefaultBankAccountHolder.Valid {
+		bankHolder = &m.DefaultBankAccountHolder.String
+	}
+
+	return &repository.GroupMemberWithUser{
+		ID:                    uuid.UUID(m.ID.Bytes),
+		GroupID:               uuid.UUID(m.GroupID.Bytes),
+		UserID:                uuid.UUID(m.UserID.Bytes),
+		Role:                  roleStr,
+		Status:                statusStr,
+		DefaultBankCode:       bankCode,
+		DefaultBankAccountNum: bankAcc,
+		DefaultBankHolder:     bankHolder,
 	}, nil
 }
 
@@ -556,14 +681,16 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	}
 	defer tx.Rollback(ctx)
 
+	q := sqlc.New(tx)
+
 	// Kiểm tra xem có khoản nợ nào của bill đã chuyển trạng thái khác awaiting (đã bắt đầu thanh toán) không (Spec 3 AC-11)
-	var nonAwaitingCount int64
-	err = tx.QueryRow(ctx, "SELECT COUNT(*) FROM debts WHERE bill_id = $1 AND status != 'awaiting'", p.BillID).Scan(&nonAwaitingCount)
-	if err == nil && nonAwaitingCount > 0 {
+	nonAwaitingCount, err := q.CountNonAwaitingDebtsByBillID(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("count non awaiting debts: %w", err)
+	}
+	if nonAwaitingCount > 0 {
 		return nil, domain.ErrPaymentAlreadyStarted
 	}
-
-	q := sqlc.New(tx)
 
 	dbBill, err := q.VoidBill(ctx, sqlc.VoidBillParams{
 		ID:      pgtype.UUID{Bytes: p.BillID, Valid: true},
@@ -593,12 +720,15 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error {
 	q := sqlc.New(r.pool)
 
-	err := q.DeleteDraftBill(ctx, sqlc.DeleteDraftBillParams{
+	rowsAffected, err := q.DeleteDraftBill(ctx, sqlc.DeleteDraftBillParams{
 		ID:      pgtype.UUID{Bytes: id, Valid: true},
 		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("delete draft bill: %w", err)
+	}
+	if rowsAffected == 0 {
+		return domain.ErrBillNotFound
 	}
 	return nil
 }
@@ -806,28 +936,42 @@ func toDomainBill(b *sqlc.Bill) *domain.Bill {
 		voidedAt = &t
 	}
 
+	var reviewedAt *time.Time
+	if b.ReviewedAt.Valid {
+		t := b.ReviewedAt.Time
+		reviewedAt = &t
+	}
+
+	var reviewedByMemberID *uuid.UUID
+	if b.ReviewedByMemberID.Valid {
+		id := uuid.UUID(b.ReviewedByMemberID.Bytes)
+		reviewedByMemberID = &id
+	}
+
 	statusStr := fmt.Sprintf("%v", b.Status)
 
 	return &domain.Bill{
-		ID:               uuid.UUID(b.ID.Bytes),
-		GroupID:          uuid.UUID(b.GroupID.Bytes),
-		CreditorMemberID: uuid.UUID(b.CreditorMemberID.Bytes),
-		Status:           domain.BillStatus(statusStr),
-		MerchantName:     merchantName,
-		BillDate:         billDate,
-		Subtotal:         b.Subtotal,
-		ServiceCharge:    b.ServiceCharge,
-		VAT:              b.Vat,
-		Discount:         b.Discount,
-		Total:            b.Total,
-		SplitMethod:      domain.SplitMethod(b.SplitMethod),
-		MismatchCodes:    b.MismatchCodes,
-		ReplacesBillID:   replacesID,
-		Version:          b.Version,
-		FinalizedAt:      finalizedAt,
-		VoidedAt:         voidedAt,
-		CreatedAt:        b.CreatedAt.Time,
-		UpdatedAt:        b.UpdatedAt.Time,
+		ID:                 uuid.UUID(b.ID.Bytes),
+		GroupID:            uuid.UUID(b.GroupID.Bytes),
+		CreditorMemberID:   uuid.UUID(b.CreditorMemberID.Bytes),
+		Status:             domain.BillStatus(statusStr),
+		MerchantName:       merchantName,
+		BillDate:           billDate,
+		Subtotal:           b.Subtotal,
+		ServiceCharge:      b.ServiceCharge,
+		VAT:                b.Vat,
+		Discount:           b.Discount,
+		Total:              b.Total,
+		SplitMethod:        domain.SplitMethod(b.SplitMethod),
+		MismatchCodes:      b.MismatchCodes,
+		ReplacesBillID:     replacesID,
+		Version:            b.Version,
+		FinalizedAt:        finalizedAt,
+		VoidedAt:           voidedAt,
+		ReviewedAt:         reviewedAt,
+		ReviewedByMemberID: reviewedByMemberID,
+		CreatedAt:          b.CreatedAt.Time,
+		UpdatedAt:          b.UpdatedAt.Time,
 	}
 }
 
@@ -944,4 +1088,29 @@ func toDomainOCRJob(j *sqlc.OcrJob) (*domain.OCRJob, error) {
 		UpdatedAt:    j.UpdatedAt.Time,
 		CompletedAt:  completedAt,
 	}, nil
+}
+
+func encodeCursor(t time.Time, id string) string {
+	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeCursor(s string) (time.Time, uuid.UUID, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, err
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.UUID{}, errors.New("malformed cursor")
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, err
+	}
+	id, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, err
+	}
+	return t, id, nil
 }

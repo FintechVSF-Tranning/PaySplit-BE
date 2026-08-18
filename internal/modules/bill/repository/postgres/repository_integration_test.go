@@ -221,12 +221,15 @@ func TestIntegration_ReviewAndFinalizeBill(t *testing.T) {
 	}
 
 	// 1. Review Bill
-	reviewed, err := repo.ReviewBill(ctx, billID, groupID, 1)
+	reviewed, err := repo.ReviewBill(ctx, billID, groupID, 1, creditorID)
 	if err != nil {
 		t.Fatalf("ReviewBill() error = %v", err)
 	}
 	if reviewed.Status != domain.BillStatusReviewed || reviewed.Version != 2 {
 		t.Errorf("expected reviewed status with version 2, got %s (ver: %d)", reviewed.Status, reviewed.Version)
+	}
+	if reviewed.ReviewedAt == nil || reviewed.ReviewedByMemberID == nil || *reviewed.ReviewedByMemberID != creditorID {
+		t.Errorf("expected reviewed_at and reviewed_by_member_id to be set")
 	}
 
 	// 2. Finalize Bill với Shares

@@ -26,27 +26,29 @@ type AuthRateLimitEvent struct {
 }
 
 type Bill struct {
-	ID               pgtype.UUID        `json:"id"`
-	GroupID          pgtype.UUID        `json:"group_id"`
-	CreditorMemberID pgtype.UUID        `json:"creditor_member_id"`
-	Status           interface{}        `json:"status"`
-	MerchantName     pgtype.Text        `json:"merchant_name"`
-	BillDate         pgtype.Date        `json:"bill_date"`
-	ImageObjectKey   pgtype.Text        `json:"image_object_key"`
-	Subtotal         int64              `json:"subtotal"`
-	ServiceCharge    int64              `json:"service_charge"`
-	Vat              int64              `json:"vat"`
-	Discount         int64              `json:"discount"`
-	Total            int64              `json:"total"`
-	MismatchWarning  bool               `json:"mismatch_warning"`
-	Version          int32              `json:"version"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	FinalizedAt      pgtype.Timestamptz `json:"finalized_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	ReplacesBillID   pgtype.UUID        `json:"replaces_bill_id"`
-	VoidedAt         pgtype.Timestamptz `json:"voided_at"`
-	SplitMethod      string             `json:"split_method"`
-	MismatchCodes    []string           `json:"mismatch_codes"`
+	ID                 pgtype.UUID        `json:"id"`
+	GroupID            pgtype.UUID        `json:"group_id"`
+	CreditorMemberID   pgtype.UUID        `json:"creditor_member_id"`
+	Status             interface{}        `json:"status"`
+	MerchantName       pgtype.Text        `json:"merchant_name"`
+	BillDate           pgtype.Date        `json:"bill_date"`
+	ImageObjectKey     pgtype.Text        `json:"image_object_key"`
+	Subtotal           int64              `json:"subtotal"`
+	ServiceCharge      int64              `json:"service_charge"`
+	Vat                int64              `json:"vat"`
+	Discount           int64              `json:"discount"`
+	Total              int64              `json:"total"`
+	MismatchWarning    bool               `json:"mismatch_warning"`
+	Version            int32              `json:"version"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	FinalizedAt        pgtype.Timestamptz `json:"finalized_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ReplacesBillID     pgtype.UUID        `json:"replaces_bill_id"`
+	VoidedAt           pgtype.Timestamptz `json:"voided_at"`
+	SplitMethod        string             `json:"split_method"`
+	MismatchCodes      []string           `json:"mismatch_codes"`
+	ReviewedAt         pgtype.Timestamptz `json:"reviewed_at"`
+	ReviewedByMemberID pgtype.UUID        `json:"reviewed_by_member_id"`
 }
 
 type BillImage struct {

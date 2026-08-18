@@ -43,6 +43,11 @@ func (m *mockServiceRepo) CreateBill(ctx context.Context, params repository.Crea
 	m.createdBill = params.Bill
 	m.createdBill.Images = params.Images
 	m.createdBill.Items = params.Items
+	if params.BeforeCommit != nil {
+		if err := params.BeforeCommit(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
 	return m.createdBill, nil
 }
 
@@ -51,6 +56,38 @@ func (m *mockServiceRepo) GetBillByID(ctx context.Context, id, groupID uuid.UUID
 		return m.bill, nil
 	}
 	return nil, domain.ErrBillNotFound
+}
+
+func (m *mockServiceRepo) GetBillOnlyByID(ctx context.Context, id uuid.UUID) (*domain.Bill, error) {
+	if m.bill != nil {
+		return m.bill, nil
+	}
+	return nil, domain.ErrBillNotFound
+}
+
+func (m *mockServiceRepo) GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*repository.GroupMemberWithUser, error) {
+	bankCode := "970422"
+	bankAccount := "0123456789"
+	bankHolder := "NGUYEN VAN A"
+	return &repository.GroupMemberWithUser{
+		ID:                    memberID,
+		GroupID:               groupID,
+		Role:                  "captain",
+		Status:                "active",
+		DefaultBankCode:       &bankCode,
+		DefaultBankAccountNum: &bankAccount,
+		DefaultBankHolder:     &bankHolder,
+	}, nil
+}
+
+func (m *mockServiceRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
+	bills := []*domain.Bill{}
+	if m.bill != nil {
+		bills = append(bills, m.bill)
+	}
+	return &repository.ListBillsCursorResult{
+		Bills: bills,
+	}, nil
 }
 
 func (m *mockServiceRepo) GetActiveOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error) {
@@ -82,9 +119,12 @@ func (m *mockServiceRepo) UpdateDraftBill(ctx context.Context, params repository
 	return m.updatedBill, nil
 }
 
-func (m *mockServiceRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
+func (m *mockServiceRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
 	m.bill.Status = domain.BillStatusReviewed
 	m.bill.Version = expectedVersion + 1
+	now := time.Now()
+	m.bill.ReviewedAt = &now
+	m.bill.ReviewedByMemberID = &reviewerMemberID
 	return m.bill, nil
 }
 
@@ -209,7 +249,7 @@ func TestRetryOCR_LimitEnforced(t *testing.T) {
 			ID:      uuid.New(),
 			GroupID: groupID,
 			UserID:  userID,
-			Role:    "member",
+			Role:    "captain",
 			Status:  "active",
 		},
 		bill: &domain.Bill{
@@ -227,6 +267,39 @@ func TestRetryOCR_LimitEnforced(t *testing.T) {
 	_, err := service.RetryOCR(context.Background(), userID, billID, groupID)
 	if err != domain.ErrOcrLimitReached {
 		t.Errorf("expected ErrOcrLimitReached, got %v", err)
+	}
+}
+
+func TestRetryOCR_NonCreditorNonCaptain_ReturnsForbidden(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusDraft,
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), ImageKey: "bills/op-1/0"},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.RetryOCR(context.Background(), userID, billID, groupID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for non-creditor non-captain, got %v", err)
 	}
 }
 
@@ -633,7 +706,7 @@ func TestRetryOCR_Success(t *testing.T) {
 			ID:      uuid.New(),
 			GroupID: groupID,
 			UserID:  userID,
-			Role:    "member",
+			Role:    "captain",
 			Status:  "active",
 		},
 		bill: &domain.Bill{
@@ -658,6 +731,307 @@ func TestRetryOCR_Success(t *testing.T) {
 	}
 	if enqueuer.enqueuedCount != 1 {
 		t.Errorf("expected 1 job enqueued, got %d", enqueuer.enqueuedCount)
+	}
+}
+
+func TestFinalizeBill_MissingBankAccount_ReturnsBankAccountRequired(t *testing.T) {
+	// covers: B-2, Spec 3 AC-9 (422 BANK_ACCOUNT_REQUIRED when creditor has no bank info)
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	creditorMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorMemberID,
+			Status:           domain.BillStatusReviewed,
+			Version:          1,
+			Subtotal:         100000,
+			Total:            100000,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: captainMemberID, Weight: "1.0"},
+					},
+				},
+			},
+		},
+	}
+
+	// Override GetGroupMemberUser to return nil bank code
+	service := usecase.NewService(&mockRepoWithNoBank{mockServiceRepo: repo}, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrBankAccountRequired) {
+		t.Errorf("expected ErrBankAccountRequired, got %v", err)
+	}
+}
+
+type mockRepoWithNoBank struct {
+	*mockServiceRepo
+}
+
+func (m *mockRepoWithNoBank) GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*repository.GroupMemberWithUser, error) {
+	return &repository.GroupMemberWithUser{
+		ID:                    memberID,
+		GroupID:               groupID,
+		Role:                  "captain",
+		Status:                "active",
+		DefaultBankCode:       nil,
+		DefaultBankAccountNum: nil,
+	}, nil
+}
+
+func TestFinalizeBill_ReconciliationMismatch_ReturnsBillNotReady(t *testing.T) {
+	// covers: B-2, Spec 3 AC-5, AC-9 (subtotal or total mismatch fails finalization)
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusReviewed,
+			Version:          1,
+			Subtotal:         100000,
+			Total:            120000, // mismatch: items sum = 100000, but Total = 120000 without fees
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: captainMemberID, Weight: "1.0"},
+					},
+				},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrBillNotReady) {
+		t.Errorf("expected ErrBillNotReady, got %v", err)
+	}
+}
+
+func TestFinalizeBill_VersionMismatch_ReturnsConflict(t *testing.T) {
+	// covers: B-2, Spec 3 AC-9 (version check before state transition)
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusReviewed,
+			Version:          2, // current is 2
+			Subtotal:         100000,
+			Total:            100000,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: captainMemberID, Weight: "1.0"},
+					},
+				},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1) // expects 1
+	if !errors.Is(err, domain.ErrVersionConflict) {
+		t.Errorf("expected ErrVersionConflict, got %v", err)
+	}
+}
+
+func TestVoidBill_StatusChecks(t *testing.T) {
+	// covers: M-1, Spec 3 AC-11 (only finalized bills can be voided, already voided returns ErrBillAlreadyVoided)
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	t.Run("Draft bill returns ErrBillNotFinalized", func(t *testing.T) {
+		repo := &mockServiceRepo{
+			member: &repository.GroupMember{
+				ID:      captainMemberID,
+				GroupID: groupID,
+				UserID:  userID,
+				Role:    "captain",
+				Status:  "active",
+			},
+			bill: &domain.Bill{
+				ID:      billID,
+				GroupID: groupID,
+				Status:  domain.BillStatusDraft,
+				Version: 1,
+			},
+		}
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		_, err := service.VoidBill(context.Background(), userID, billID, groupID, 1, "Mistake")
+		if !errors.Is(err, domain.ErrBillNotFinalized) {
+			t.Errorf("expected ErrBillNotFinalized, got %v", err)
+		}
+	})
+
+	t.Run("Already voided bill returns ErrBillAlreadyVoided", func(t *testing.T) {
+		repo := &mockServiceRepo{
+			member: &repository.GroupMember{
+				ID:      captainMemberID,
+				GroupID: groupID,
+				UserID:  userID,
+				Role:    "captain",
+				Status:  "active",
+			},
+			bill: &domain.Bill{
+				ID:      billID,
+				GroupID: groupID,
+				Status:  domain.BillStatusVoided,
+				Version: 1,
+			},
+		}
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		_, err := service.VoidBill(context.Background(), userID, billID, groupID, 1, "Mistake")
+		if !errors.Is(err, domain.ErrBillAlreadyVoided) {
+			t.Errorf("expected ErrBillAlreadyVoided, got %v", err)
+		}
+	})
+
+	t.Run("Version mismatch returns ErrVersionConflict", func(t *testing.T) {
+		repo := &mockServiceRepo{
+			member: &repository.GroupMember{
+				ID:      captainMemberID,
+				GroupID: groupID,
+				UserID:  userID,
+				Role:    "captain",
+				Status:  "active",
+			},
+			bill: &domain.Bill{
+				ID:      billID,
+				GroupID: groupID,
+				Status:  domain.BillStatusFinalized,
+				Version: 3,
+			},
+		}
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		_, err := service.VoidBill(context.Background(), userID, billID, groupID, 1, "Mistake")
+		if !errors.Is(err, domain.ErrVersionConflict) {
+			t.Errorf("expected ErrVersionConflict, got %v", err)
+		}
+	})
+}
+
+func TestUpdateDraftBill_ReviewedStatus_Allowed(t *testing.T) {
+	// covers: B-3, Spec 3 AC-7 (editing a reviewed bill reverts to draft and increments version)
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:      billID,
+			GroupID: groupID,
+			Status:  domain.BillStatusReviewed,
+			Version: 2,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	req := usecase.UpdateDraftRequest{
+		Version:  2,
+		Subtotal: 200000,
+		Total:    200000,
+		Items: []usecase.CreateBillItemRequest{
+			{Name: "Item 1", LineTotal: 200000},
+		},
+	}
+
+	updated, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, req)
+	if err != nil {
+		t.Fatalf("UpdateDraftBill() error = %v", err)
+	}
+	if updated == nil {
+		t.Fatal("expected updated bill, got nil")
+	}
+}
+
+func TestListBillsCursor_Success(t *testing.T) {
+	// covers: M-3, Spec 3 AC-12 (cursor-based bill listing)
+	groupID := uuid.New()
+	userID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:      billID,
+			GroupID: groupID,
+			Status:  domain.BillStatusFinalized,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10)
+	if err != nil {
+		t.Fatalf("ListBillsCursor() error = %v", err)
+	}
+	if len(res.Bills) != 1 {
+		t.Errorf("expected 1 bill, got %d", len(res.Bills))
 	}
 }
 

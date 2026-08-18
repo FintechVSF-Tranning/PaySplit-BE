@@ -43,6 +43,28 @@ func (m *mockHandlerRepo) GetBillByID(ctx context.Context, id, groupID uuid.UUID
 	return nil, domain.ErrBillNotFound
 }
 
+func (m *mockHandlerRepo) GetBillOnlyByID(ctx context.Context, id uuid.UUID) (*domain.Bill, error) {
+	if m.bill != nil {
+		return m.bill, nil
+	}
+	return nil, domain.ErrBillNotFound
+}
+
+func (m *mockHandlerRepo) GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*repository.GroupMemberWithUser, error) {
+	bankCode := "970422"
+	bankAccount := "0123456789"
+	bankHolder := "NGUYEN VAN A"
+	return &repository.GroupMemberWithUser{
+		ID:                    memberID,
+		GroupID:               groupID,
+		Role:                  "captain",
+		Status:                "active",
+		DefaultBankCode:       &bankCode,
+		DefaultBankAccountNum: &bankAccount,
+		DefaultBankHolder:     &bankHolder,
+	}, nil
+}
+
 func (m *mockHandlerRepo) ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
 	if m.bill != nil {
 		return []*domain.Bill{m.bill}, nil
@@ -50,10 +72,23 @@ func (m *mockHandlerRepo) ListBillsByGroup(ctx context.Context, groupID uuid.UUI
 	return []*domain.Bill{}, nil
 }
 
-func (m *mockHandlerRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
+func (m *mockHandlerRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
+	bills := []*domain.Bill{}
+	if m.bill != nil {
+		bills = append(bills, m.bill)
+	}
+	return &repository.ListBillsCursorResult{
+		Bills: bills,
+	}, nil
+}
+
+func (m *mockHandlerRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
 	if m.bill != nil {
 		m.bill.Status = domain.BillStatusReviewed
 		m.bill.Version = expectedVersion + 1
+		now := time.Now()
+		m.bill.ReviewedAt = &now
+		m.bill.ReviewedByMemberID = &reviewerMemberID
 		return m.bill, nil
 	}
 	return nil, domain.ErrBillNotFound

@@ -65,4 +65,16 @@ var (
 
 	// ErrPaymentAlreadyStarted trả về khi cố gắng hủy hóa đơn có khoản nợ đã bắt đầu thanh toán.
 	ErrPaymentAlreadyStarted = errors.New("payment already started")
+
+	// ErrBillNotFinalized trả về khi cố gắng hủy hóa đơn chưa được finalize (Spec 3 AC-11).
+	ErrBillNotFinalized = errors.New("bill not finalized")
+
+	// ErrBillAlreadyVoided trả về khi cố gắng hủy hóa đơn đã bị hủy trước đó (Spec 3 AC-11).
+	ErrBillAlreadyVoided = errors.New("bill already voided")
+
+	// ErrBankAccountRequired trả về khi finalize hóa đơn nhưng Creditor chưa cấu hình tài khoản ngân hàng (Spec 3 AC-9).
+	ErrBankAccountRequired = errors.New("bank account required")
+
+	// ErrInvalidCursor trả về khi cursor phân trang không hợp lệ (Spec 3 AC-12).
+	ErrInvalidCursor = errors.New("invalid cursor")
 )

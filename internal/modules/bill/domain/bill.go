@@ -54,10 +54,12 @@ type Bill struct {
 	MismatchCodes    []string    `json:"mismatch_codes"`
 	ReplacesBillID   *uuid.UUID  `json:"replaces_bill_id,omitempty"`
 	Version          int32       `json:"version"`
-	FinalizedAt      *time.Time  `json:"finalized_at,omitempty"`
-	VoidedAt         *time.Time  `json:"voided_at,omitempty"`
-	CreatedAt        time.Time   `json:"created_at"`
-	UpdatedAt        time.Time   `json:"updated_at"`
+	FinalizedAt          *time.Time  `json:"finalized_at,omitempty"`
+	VoidedAt             *time.Time  `json:"voided_at,omitempty"`
+	ReviewedAt           *time.Time  `json:"reviewed_at,omitempty"`
+	ReviewedByMemberID   *uuid.UUID  `json:"reviewed_by_member_id,omitempty"`
+	CreatedAt            time.Time   `json:"created_at"`
+	UpdatedAt            time.Time   `json:"updated_at"`
 
 	// Quan hệ (populated khi load chi tiết)
 	Images []*BillImage `json:"images,omitempty"`

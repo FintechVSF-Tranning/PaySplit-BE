@@ -146,6 +146,7 @@ func New(ctx context.Context) (*App, error) {
 
 	billEnqueuer := billjobs.NewEnqueuer(riverClient)
 	billService := billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
+	billService.SetManualOCRConfig(cfg.OCR.ManualLimit, cfg.OCR.ManualWindowHours)
 	billHandler := billhttp.NewHandler(billService, billSSEHandler)
 
 	groupRepo := grouppostgres.New(db)

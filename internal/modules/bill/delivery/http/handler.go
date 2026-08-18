@@ -153,7 +153,7 @@ func (h *Handler) GetBillDetail(w http.ResponseWriter, r *http.Request) {
 	_ = helpers.WriteJSON(w, http.StatusOK, detail)
 }
 
-// ListBills xử lý GET /api/v1/bills?group_id=...&limit=...&offset=...
+// ListBills xử lý GET /api/v1/bills?group_id=...&limit=...&cursor=...
 func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 	callerUserID := getUserID(r)
 	groupIDStr := r.URL.Query().Get("group_id")
@@ -170,22 +170,43 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	offset := 0
-	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+	cursorStr := r.URL.Query().Get("cursor")
+	var cursor *string
+	if cursorStr != "" {
+		cursor = &cursorStr
+	}
+
+	offsetStr := r.URL.Query().Get("offset")
+	if offsetStr != "" && cursor == nil {
+		offset := 0
 		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
 			offset = o
 		}
+		bills, err := h.service.ListBills(r.Context(), callerUserID, groupID, int32(limit), int32(offset))
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+			"bills": bills,
+		})
+		return
 	}
 
-	bills, err := h.service.ListBills(r.Context(), callerUserID, groupID, int32(limit), int32(offset))
+	res, err := h.service.ListBillsCursor(r.Context(), callerUserID, groupID, cursor, int32(limit))
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
-		"bills": bills,
-	})
+	resp := map[string]any{
+		"bills": res.Bills,
+	}
+	if res.NextCursor != nil {
+		resp["next_cursor"] = *res.NextCursor
+	}
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // RetryOCR xử lý POST /api/v1/bills/{id}/ocr-retry?group_id=...
@@ -251,7 +272,7 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UpdateDraftBill xử lý PATCH /api/v1/bills/{id}?group_id=...
+// UpdateDraftBill xử lý PUT /api/v1/bills/{id}?group_id=...
 func (h *Handler) UpdateDraftBill(w http.ResponseWriter, r *http.Request) {
 	callerUserID := getUserID(r)
 	billID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -303,7 +324,10 @@ func (h *Handler) ReviewBill(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Version int32 `json:"version"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
 
 	reviewedBill, err := h.service.ReviewBill(r.Context(), callerUserID, billID, groupID, body.Version)
 	if err != nil {
@@ -335,7 +359,10 @@ func (h *Handler) FinalizeBill(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Version int32 `json:"version"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
 
 	finalizedBill, err := h.service.FinalizeBill(r.Context(), callerUserID, billID, groupID, body.Version)
 	if err != nil {
@@ -368,7 +395,10 @@ func (h *Handler) VoidBill(w http.ResponseWriter, r *http.Request) {
 		Version int32  `json:"version"`
 		Reason  string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
 
 	voidedBill, err := h.service.VoidBill(r.Context(), callerUserID, billID, groupID, body.Version, body.Reason)
 	if err != nil {
@@ -421,6 +451,9 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrInvalidInput):
 		status = http.StatusBadRequest
 		code = "VALIDATION_FAILED"
+	case errors.Is(err, domain.ErrInvalidCursor):
+		status = http.StatusBadRequest
+		code = "INVALID_CURSOR"
 	case errors.Is(err, domain.ErrForbidden):
 		status = http.StatusForbidden
 		code = "FORBIDDEN"
@@ -433,6 +466,15 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrBillImmutable):
 		status = http.StatusConflict
 		code = "BILL_IMMUTABLE"
+	case errors.Is(err, domain.ErrBillNotFinalized):
+		status = http.StatusConflict
+		code = "BILL_NOT_FINALIZED"
+	case errors.Is(err, domain.ErrBillAlreadyVoided):
+		status = http.StatusConflict
+		code = "BILL_ALREADY_VOIDED"
+	case errors.Is(err, domain.ErrBankAccountRequired):
+		status = http.StatusUnprocessableEntity
+		code = "BANK_ACCOUNT_REQUIRED"
 	case errors.Is(err, domain.ErrImagesRequired):
 		status = http.StatusBadRequest
 		code = "IMAGES_REQUIRED"
@@ -440,7 +482,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 		code = "REVIEW_REQUIRED"
 	case errors.Is(err, domain.ErrBillNotReady):
-		status = http.StatusBadRequest
+		status = http.StatusUnprocessableEntity
 		code = "BILL_NOT_READY"
 	case errors.Is(err, domain.ErrOcrAlreadyRunning):
 		status = http.StatusConflict

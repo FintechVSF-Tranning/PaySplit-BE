@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	CountManualOCRAttemptsInWindow(ctx context.Context, arg CountManualOCRAttemptsInWindowParams) (int64, error)
+	CountNonAwaitingDebtsByBillID(ctx context.Context, billID pgtype.UUID) (int64, error)
 	CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error)
 	// ============================================================================
 	// BILL IMAGES
@@ -35,12 +36,14 @@ type Querier interface {
 	DeleteBillItemAssignmentsByItem(ctx context.Context, billItemID pgtype.UUID) error
 	DeleteBillItems(ctx context.Context, billID pgtype.UUID) error
 	DeleteBillShares(ctx context.Context, billID pgtype.UUID) error
-	DeleteDraftBill(ctx context.Context, arg DeleteDraftBillParams) error
+	DeleteDraftBill(ctx context.Context, arg DeleteDraftBillParams) (int64, error)
 	FinalizeBill(ctx context.Context, arg FinalizeBillParams) (Bill, error)
 	GetActiveOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetBillByID(ctx context.Context, arg GetBillByIDParams) (Bill, error)
 	GetBillByIDForUpdate(ctx context.Context, arg GetBillByIDForUpdateParams) (Bill, error)
+	GetBillOnlyByID(ctx context.Context, id pgtype.UUID) (GetBillOnlyByIDRow, error)
 	GetGroupMember(ctx context.Context, arg GetGroupMemberParams) (GroupMember, error)
+	GetGroupMemberUser(ctx context.Context, arg GetGroupMemberUserParams) (GetGroupMemberUserRow, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, error)
 	ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error)
@@ -50,6 +53,7 @@ type Querier interface {
 	ListBillItems(ctx context.Context, billID pgtype.UUID) ([]BillItem, error)
 	ListBillShares(ctx context.Context, billID pgtype.UUID) ([]BillShare, error)
 	ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error)
+	ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error)
 	ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, error)
 	UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams) (Bill, error)
 	UpdateOCRJobFailed(ctx context.Context, arg UpdateOCRJobFailedParams) (OcrJob, error)

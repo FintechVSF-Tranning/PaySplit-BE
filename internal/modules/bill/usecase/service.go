@@ -44,11 +44,13 @@ type JobEnqueuer interface {
 
 // Service quản lý toàn bộ nghiệp vụ của module Bill và OCR.
 type Service struct {
-	repo        repository.Repository
-	ocrProvider OCRProvider
-	storage     BillStorage
-	processor   ReceiptProcessor
-	enqueuer    JobEnqueuer
+	repo         repository.Repository
+	ocrProvider  OCRProvider
+	storage      BillStorage
+	processor    ReceiptProcessor
+	enqueuer     JobEnqueuer
+	manualLimit  int
+	manualWindow time.Duration
 }
 
 // NewService khởi tạo Bill usecase service với các dependencies.
@@ -60,11 +62,23 @@ func NewService(
 	enqueuer JobEnqueuer,
 ) *Service {
 	return &Service{
-		repo:        repo,
-		ocrProvider: ocrProvider,
-		storage:     storage,
-		processor:   processor,
-		enqueuer:    enqueuer,
+		repo:         repo,
+		ocrProvider:  ocrProvider,
+		storage:      storage,
+		processor:    processor,
+		enqueuer:     enqueuer,
+		manualLimit:  5,
+		manualWindow: 24 * time.Hour,
+	}
+}
+
+// SetManualOCRConfig cấu hình giới hạn số lần và cửa sổ retry OCR thủ công (Spec 3 AC-2).
+func (s *Service) SetManualOCRConfig(limit int, window time.Duration) {
+	if limit > 0 {
+		s.manualLimit = limit
+	}
+	if window > 0 {
+		s.manualWindow = window
 	}
 }
 
@@ -145,8 +159,8 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		return nil, fmt.Errorf("%w: maximum 5 receipt images allowed", domain.ErrInvalidInput)
 	}
 
-	billID := uuid.New()
-	operationID := uuid.New()
+	billID := uuid.Must(uuid.NewV7())
+	operationID := uuid.Must(uuid.NewV7())
 
 	uploadedKeys := make([]string, 0, len(req.Files))
 	success := false
@@ -174,7 +188,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		uploadedKeys = append(uploadedKeys, uploadedKey)
 
 		images = append(images, &domain.BillImage{
-			ID:       uuid.New(),
+			ID:       uuid.Must(uuid.NewV7()),
 			BillID:   billID,
 			GroupID:  req.GroupID,
 			ImageKey: uploadedKey,
@@ -185,7 +199,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	// 3. Chuẩn bị danh sách món ăn
 	items := make([]*domain.BillItem, 0, len(req.Items))
 	for i, it := range req.Items {
-		itemID := uuid.New()
+		itemID := uuid.Must(uuid.NewV7())
 		lineTotal := it.LineTotal
 		if lineTotal <= 0 && it.UnitPrice > 0 {
 			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
@@ -204,7 +218,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 
 		for _, assign := range it.Assignments {
 			domItem.Assignments = append(domItem.Assignments, &domain.BillItemAssignment{
-				ID:         uuid.New(),
+				ID:         uuid.Must(uuid.NewV7()),
 				BillItemID: itemID,
 				GroupID:    req.GroupID,
 				MemberID:   assign.MemberID,
@@ -218,7 +232,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	var ocrJob *domain.OCRJob
 	if len(images) > 0 {
 		ocrJob = &domain.OCRJob{
-			ID:       uuid.New(),
+			ID:       uuid.Must(uuid.NewV7()),
 			BillID:   billID,
 			Status:   domain.OCRJobStatusQueued,
 			Provider: "llamaextract",
@@ -241,22 +255,23 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		ReplacesBillID:   req.ReplacesBillID,
 	}
 
-	// 5. Lưu hóa đơn vào Database
+	// 5. Lưu hóa đơn vào Database và đẩy River OCR Job trong cùng transaction (Spec 3 AC-2)
 	createdBill, err := s.repo.CreateBill(ctx, repository.CreateBillParams{
 		Bill:   bill,
 		Images: images,
 		Items:  items,
 		OCRJob: ocrJob,
+		BeforeCommit: func(ctx context.Context, tx pgx.Tx) error {
+			if ocrJob != nil && s.enqueuer != nil {
+				if err := s.enqueuer.EnqueueOCRJobTx(ctx, tx, billID, ocrJob.ID, req.GroupID); err != nil {
+					return fmt.Errorf("enqueue ocr job tx: %w", err)
+				}
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create bill in repo: %w", err)
-	}
-
-	// 6. Đẩy River OCR Job nếu có ảnh
-	if ocrJob != nil && s.enqueuer != nil {
-		if err := s.enqueuer.EnqueueOCRJob(ctx, billID, ocrJob.ID, req.GroupID); err != nil {
-			return nil, fmt.Errorf("enqueue ocr job: %w", err)
-		}
 	}
 
 	success = true
@@ -302,7 +317,7 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 	}, nil
 }
 
-// ListBills lấy danh sách hóa đơn trong nhóm có phân trang.
+// ListBills lấy danh sách hóa đơn trong nhóm có phân trang (offset legacy).
 func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member.Status != "active" {
@@ -319,7 +334,21 @@ func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID
 	return s.repo.ListBillsByGroup(ctx, groupID, limit, offset)
 }
 
-// RetryOCR kích hoạt lại quá trình bóc tách OCR thủ công (tối đa 5 lần / 24h, Spec 3 AC-2).
+// ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12).
+func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32) (*repository.ListBillsCursorResult, error) {
+	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
+	if err != nil || member.Status != "active" {
+		return nil, domain.ErrInvalidInput
+	}
+
+	return s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+		GroupID: groupID,
+		Cursor:  cursor,
+		Limit:   limit,
+	})
+}
+
+// RetryOCR kích hoạt lại quá trình bóc tách OCR thủ công (tối đa 5 lần / 24h, Spec 3 AC-2, AC-8).
 func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uuid.UUID) (*domain.OCRJob, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member.Status != "active" {
@@ -331,8 +360,13 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 		return nil, err
 	}
 
-	// Chỉ cho phép retry khi bill là draft và có ảnh
-	if bill.Status != domain.BillStatusDraft {
+	// Chỉ cho phép Creditor hoặc Captain retry OCR (Spec 3 AC-8)
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return nil, domain.ErrForbidden
+	}
+
+	// Chỉ cho phép retry khi bill là draft hoặc reviewed và có ảnh
+	if bill.Status != domain.BillStatusDraft && bill.Status != domain.BillStatusReviewed {
 		return nil, domain.ErrBillImmutable
 	}
 	if len(bill.Images) == 0 {
@@ -345,15 +379,23 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 		return nil, domain.ErrOcrAlreadyRunning
 	}
 
-	// Kiểm tra giới hạn retry thủ công (tối đa 5 lần trong 24h)
-	attempts, err := s.repo.CountManualOCRAttemptsInWindow(ctx, billID, time.Now().Add(-24*time.Hour))
-	if err == nil && attempts >= 5 {
+	// Kiểm tra giới hạn retry thủ công (Spec 3 AC-2)
+	limit := s.manualLimit
+	if limit <= 0 {
+		limit = 5
+	}
+	window := s.manualWindow
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	attempts, err := s.repo.CountManualOCRAttemptsInWindow(ctx, billID, time.Now().Add(-window))
+	if err == nil && int(attempts) >= limit {
 		return nil, domain.ErrOcrLimitReached
 	}
 
 	// Tạo job OCR mới và enqueue vào River Queue
 	newJob := &domain.OCRJob{
-		ID:       uuid.New(),
+		ID:       uuid.Must(uuid.NewV7()),
 		BillID:   billID,
 		Status:   domain.OCRJobStatusQueued,
 		Provider: "llamaextract",
@@ -387,7 +429,13 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
 		return nil, domain.ErrForbidden
 	}
-	if bill.Status != domain.BillStatusDraft {
+	if bill.Status != domain.BillStatusDraft && bill.Status != domain.BillStatusReviewed {
+		if bill.Status == domain.BillStatusFinalized {
+			return nil, domain.ErrBillImmutable
+		}
+		if bill.Status == domain.BillStatusVoided {
+			return nil, domain.ErrBillAlreadyVoided
+		}
 		return nil, domain.ErrBillImmutable
 	}
 
@@ -427,7 +475,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	// Tạo items từ Candidate
 	items := make([]*domain.BillItem, 0, len(candidate.Items))
 	for i, cItem := range candidate.Items {
-		itemID := uuid.New()
+		itemID := uuid.Must(uuid.NewV7())
 		domItem := &domain.BillItem{
 			ID:        itemID,
 			BillID:    billID,
@@ -442,7 +490,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 		// Gán chia đều mặc định cho toàn bộ thành viên nhóm
 		for _, m := range activeMembers {
 			domItem.Assignments = append(domItem.Assignments, &domain.BillItemAssignment{
-				ID:         uuid.New(),
+				ID:         uuid.Must(uuid.NewV7()),
 				BillItemID: itemID,
 				GroupID:    groupID,
 				MemberID:   m.ID,
@@ -459,7 +507,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	})
 }
 
-// UpdateDraftBill cập nhật chỉnh sửa hóa đơn nháp (Spec 3 AC-5).
+// UpdateDraftBill cập nhật chỉnh sửa hóa đơn nháp (Spec 3 AC-5, AC-7).
 func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, req UpdateDraftRequest) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member.Status != "active" {
@@ -473,7 +521,14 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
 		return nil, domain.ErrForbidden
 	}
-	if bill.Status != domain.BillStatusDraft {
+	// Cho phép chỉnh sửa khi bill đang ở trạng thái draft hoặc reviewed (sửa bill reviewed sẽ tự động đưa về draft)
+	if bill.Status != domain.BillStatusDraft && bill.Status != domain.BillStatusReviewed {
+		if bill.Status == domain.BillStatusFinalized {
+			return nil, domain.ErrBillImmutable
+		}
+		if bill.Status == domain.BillStatusVoided {
+			return nil, domain.ErrBillAlreadyVoided
+		}
 		return nil, domain.ErrBillImmutable
 	}
 
@@ -488,7 +543,7 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 
 	items := make([]*domain.BillItem, 0, len(req.Items))
 	for i, it := range req.Items {
-		itemID := uuid.New()
+		itemID := uuid.Must(uuid.NewV7())
 		lineTotal := it.LineTotal
 		if lineTotal <= 0 && it.UnitPrice > 0 {
 			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
@@ -507,7 +562,7 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 
 		for _, assign := range it.Assignments {
 			domItem.Assignments = append(domItem.Assignments, &domain.BillItemAssignment{
-				ID:         uuid.New(),
+				ID:         uuid.Must(uuid.NewV7()),
 				BillItemID: itemID,
 				GroupID:    groupID,
 				MemberID:   assign.MemberID,
@@ -539,24 +594,39 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 		return nil, domain.ErrForbidden
 	}
 	if bill.Status != domain.BillStatusDraft {
+		if bill.Status == domain.BillStatusFinalized {
+			return nil, domain.ErrBillImmutable
+		}
+		if bill.Status == domain.BillStatusVoided {
+			return nil, domain.ErrBillAlreadyVoided
+		}
+		if bill.Status == domain.BillStatusReviewed {
+			// Đã review ở version này
+			if bill.Version == expectedVersion {
+				return bill, nil
+			}
+		}
 		return nil, domain.ErrBillImmutable
 	}
+	if bill.Version != expectedVersion {
+		return nil, domain.ErrVersionConflict
+	}
 
-	// Kiểm tra đối soát tổng tiền
+	// Kiểm tra đối soát tổng tiền và phân bổ (Spec 3 AC-5, AC-6)
 	var sumItems int64
 	for _, it := range bill.Items {
 		sumItems += it.LineTotal
 		if len(it.Assignments) == 0 {
-			return nil, errors.New("every item must have at least one assignee before review")
+			return nil, domain.ErrBillNotReady
 		}
 	}
 
 	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
 	if bill.Subtotal != sumItems || bill.Total != expectedTotal {
-		return nil, errors.New("bill totals do not reconcile (subtotal or total mismatch)")
+		return nil, domain.ErrBillNotReady
 	}
 
-	return s.repo.ReviewBill(ctx, billID, groupID, expectedVersion)
+	return s.repo.ReviewBill(ctx, billID, groupID, expectedVersion, member.ID)
 }
 
 // FinalizeBill chạy giải thuật Hamilton allocation, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
@@ -573,14 +643,44 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	if member.Role != "captain" {
 		return nil, domain.ErrForbidden
 	}
+
+	// 1. Kiểm tra trạng thái và review (Spec 3 AC-7, AC-9)
 	if bill.Status != domain.BillStatusReviewed {
 		if bill.Status == domain.BillStatusFinalized {
 			return nil, domain.ErrBillImmutable
 		}
+		if bill.Status == domain.BillStatusVoided {
+			return nil, domain.ErrBillAlreadyVoided
+		}
 		return nil, domain.ErrReviewRequired
 	}
 
-	// Chạy giải thuật Hamilton
+	// 2. Kiểm tra version khớp trước khi chạy thuật toán Hamilton (Spec 3 AC-9)
+	if bill.Version != expectedVersion {
+		return nil, domain.ErrVersionConflict
+	}
+
+	// 3. Re-verify đối soát tổng tiền và tính hợp lệ của assignments (Spec 3 AC-5, AC-6, AC-9)
+	var sumItems int64
+	for _, it := range bill.Items {
+		sumItems += it.LineTotal
+		if len(it.Assignments) == 0 {
+			return nil, domain.ErrBillNotReady
+		}
+	}
+	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
+	if bill.Subtotal != sumItems || bill.Total != expectedTotal {
+		return nil, domain.ErrBillNotReady
+	}
+
+	// 4. Kiểm tra tài khoản ngân hàng của Creditor (Spec 3 AC-9: 422 BANK_ACCOUNT_REQUIRED)
+	creditorMember, err := s.repo.GetGroupMemberUser(ctx, bill.CreditorMemberID, groupID)
+	if err != nil || creditorMember.DefaultBankCode == nil || creditorMember.DefaultBankAccountNum == nil ||
+		strings.TrimSpace(*creditorMember.DefaultBankCode) == "" || strings.TrimSpace(*creditorMember.DefaultBankAccountNum) == "" {
+		return nil, domain.ErrBankAccountRequired
+	}
+
+	// 5. Chạy giải thuật Hamilton
 	allocInput := toAllocationInput(bill)
 	allocations, err := CalculateHamiltonAllocation(allocInput)
 	if err != nil {
@@ -591,23 +691,28 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	debts := make([]*repository.Debt, 0, len(allocations))
 
 	for _, a := range allocations {
+		// Đảm bảo FinalAmount không âm (m-1)
+		amount := a.FinalAmount
+		if amount < 0 {
+			amount = 0
+		}
 		shares = append(shares, &domain.BillShare{
-			ID:             uuid.New(),
+			ID:             uuid.Must(uuid.NewV7()),
 			BillID:         billID,
 			GroupID:        groupID,
 			MemberID:       a.MemberID,
-			ComputedAmount: a.FinalAmount,
+			ComputedAmount: amount,
 		})
 
 		// Nếu không phải Creditor và có số tiền nợ > 0 -> tạo debt
-		if a.MemberID != bill.CreditorMemberID && a.FinalAmount > 0 {
+		if a.MemberID != bill.CreditorMemberID && amount > 0 {
 			debts = append(debts, &repository.Debt{
-				ID:               uuid.New(),
+				ID:               uuid.Must(uuid.NewV7()),
 				GroupID:          groupID,
 				BillID:           billID,
 				DebtorMemberID:   a.MemberID,
 				CreditorMemberID: bill.CreditorMemberID,
-				Amount:           a.FinalAmount,
+				Amount:           amount,
 				Status:           "awaiting",
 			})
 		}
@@ -623,7 +728,7 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	})
 }
 
-// VoidBill hủy bỏ hóa đơn đã chốt và đóng các khoản nợ liên quan (Spec 3 AC-10).
+// VoidBill hủy bỏ hóa đơn đã chốt và đóng các khoản nợ liên quan (Spec 3 AC-11).
 func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32, reason string) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member.Status != "active" {
@@ -635,7 +740,22 @@ func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uu
 
 	trimmedReason := strings.TrimSpace(reason)
 	if trimmedReason == "" || len(trimmedReason) > 500 {
-		return nil, errors.New("void reason must be between 1 and 500 characters")
+		return nil, fmt.Errorf("%w: void reason must be between 1 and 500 characters", domain.ErrInvalidInput)
+	}
+
+	// 1. Kiểm tra trạng thái bill trước khi thao tác (Spec 3 AC-11)
+	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if bill.Status == domain.BillStatusVoided {
+		return nil, domain.ErrBillAlreadyVoided
+	}
+	if bill.Status != domain.BillStatusFinalized {
+		return nil, domain.ErrBillNotFinalized
+	}
+	if bill.Version != expectedVersion {
+		return nil, domain.ErrVersionConflict
 	}
 
 	return s.repo.VoidBill(ctx, repository.VoidBillParams{
