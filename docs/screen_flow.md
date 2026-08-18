@@ -114,6 +114,8 @@ Quản lý đăng nhập, đăng ký, phiên hoạt động (sessions) và hồ 
 
 - **`PUT /api/user/profile`**: Cập nhật tên, avatar, số điện thoại và thông tin tài khoản ngân hàng mặc định (4.1.6).
 
+- **`GET /api/v1/banks`**: Lấy danh mục các ngân hàng hỗ trợ (VietQR directory snapshot) cho Bank Picker khi thiết lập tài khoản ngân hàng.
+
 ### Module 2: Group (Quản lý Nhóm)
 
 Xử lý vòng đời của nhóm chi tiêu, thành viên và tạo mã mời.

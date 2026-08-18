@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -24,11 +25,20 @@ type Config struct {
 	Firebase   FirebaseConfig
 	River      RiverConfig
 	Group      GroupConfig
+	Metrics    MetricsConfig
+}
+
+// MetricsConfig chứa cấu hình Prometheus metrics scraper.
+type MetricsConfig struct {
+	Enabled     bool
+	BearerToken string
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
 type AppConfig struct {
 	Environment                string
+	Host                       string
+	Port                       string
 	Address                    string
 	RequestTimeout             time.Duration
 	CORSAllowedOrigins         []string
@@ -202,10 +212,30 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	httpHost := stringEnv("HTTP_HOST", "localhost")
+	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
+	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
+	if httpAddress == "" {
+		if httpHost != "" {
+			httpAddress = net.JoinHostPort(httpHost, httpPort)
+		} else {
+			httpAddress = ":" + httpPort
+		}
+	} else if host, port, err := net.SplitHostPort(httpAddress); err == nil {
+		if host != "" {
+			httpHost = host
+		}
+		if port != "" {
+			httpPort = port
+		}
+	}
+
 	cfg := &Config{
 		App: AppConfig{
 			Environment:                stringEnv("APP_ENV", "development"),
-			Address:                    stringEnv("HTTP_ADDRESS", ":8080"),
+			Host:                       httpHost,
+			Port:                       httpPort,
+			Address:                    httpAddress,
 			RequestTimeout:             requestTimeout,
 			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
 			RateLimitRequestsPerMinute: rateLimit,
@@ -235,6 +265,10 @@ func Load() (*Config, error) {
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
 		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
 		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		Metrics: MetricsConfig{
+			Enabled:     boolEnv("METRICS_ENABLED", true),
+			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -353,4 +387,14 @@ func durationEnv(name string, fallback int, unit time.Duration) (time.Duration, 
 		return 0, err
 	}
 	return time.Duration(value) * unit, nil
+}
+
+func boolEnv(name string, fallback bool) bool {
+	if val := strings.TrimSpace(os.Getenv(name)); val != "" {
+		parsed, err := strconv.ParseBool(val)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
 }

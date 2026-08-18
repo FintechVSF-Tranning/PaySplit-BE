@@ -1,7 +1,7 @@
 # 0005. Admin v1
 
 **Date**: 2026-08-17
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 

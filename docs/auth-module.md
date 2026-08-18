@@ -64,6 +64,15 @@ Nếu backend không hỗ trợ định dạng như HEIC, file gốc được g�
 
 V1 không đặt trần pixel nguồn. Conversion bị giới hạn 10 giây và mặc định chỉ hai tác vụ chạy đồng thời. Đây là rủi ro prototype đã được ghi trong spec và cần xem lại trước production.
 
+## Bank Directory và Endpoint GET /api/v1/banks
+
+Backend nhúng snapshot danh mục ngân hàng từ VietQR (`internal/platform/banks/data/banks.json`) và khởi tạo `Directory` khi khởi động hệ thống.
+
+- `GET /api/v1/banks` là endpoint công khai (public) trả về danh sách toàn bộ ngân hàng (bao gồm `id`, `name`, `code`, `bin`, `short_name`, `logo`, `supported`).
+- Cho phép truyền query parameter `?supported=true` (hoặc `?supported=false`) để lọc danh sách ngân hàng được hỗ trợ.
+- Header phản hồi đính kèm `Cache-Control: public, max-age=86400` cho phép app Flutter / proxy cache dữ liệu cục bộ trong 24 giờ.
+- Khi người dùng cập nhật thông tin tài khoản ngân hàng (`PATCH /api/v1/users/me`), backend dùng `Directory.Supported(code)` để đảm bảo mã ngân hàng gửi lên là hợp lệ và được hỗ trợ; nếu không sẽ trả về `400 UNSUPPORTED_BANK`.
+
 ## Khi thêm một module mới
 
 Bạn nên bắt đầu bằng một luồng nhỏ đi xuyên suốt database, usecase và HTTP.

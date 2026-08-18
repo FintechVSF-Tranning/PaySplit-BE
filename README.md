@@ -103,7 +103,9 @@ cp .env.example .env
 | Biến | Mặc định | Mô tả |
 | --- | --- | --- |
 | `APP_ENV` | `development` | Tên môi trường chạy |
-| `HTTP_ADDRESS` | `:8080` | Địa chỉ API lắng nghe |
+| `HTTP_HOST` | `localhost` | Host/IP lắng nghe (dùng `0.0.0.0` khi deploy container/cloud) |
+| `HTTP_PORT` | `8080` | Port lắng nghe |
+| `HTTP_ADDRESS` | `localhost:8080` | Tùy chọn gộp `host:port` (ghi đè nếu có) |
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5433/paysplit?sslmode=disable` | Chuỗi kết nối PostgreSQL (port 5433 khi dùng docker compose) |
 | `DB_MAX_CONNS` / `DB_MIN_CONNS` | `10` / `2` | Giới hạn số kết nối của pgx pool |
 | `DB_MAX_CONN_LIFETIME_MINUTES` | `60` | Thời gian sống tối đa của một kết nối trong pool |

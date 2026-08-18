@@ -94,6 +94,7 @@ Only admin workflows may change `suspended` or administrative `locked`. Temporar
 | `/api/v1/users/me` | PATCH | profile and bank fields | updated safe profile | bearer and live session | `VALIDATION_FAILED`, `PHONE_EXISTS`, `UNSUPPORTED_BANK` |
 | `/api/v1/users/me/avatar` | PUT | multipart avatar | avatar URL | bearer and live session | `INVALID_IMAGE`, `PAYLOAD_TOO_LARGE`, `IMAGE_STORAGE_FAILED` |
 | `/api/v1/users/me/avatar` | DELETE | none | no body | bearer and live session | `AUTHENTICATION_REQUIRED` |
+| `/api/v1/banks` | GET | optional `supported` query param | list of VietQR banks | public | none |
 
 The old `/api/v1/auth/register` and `/api/v1/auth/login` routes are removed without aliases.
 
@@ -118,6 +119,7 @@ The canonical safe user object contains `id`, `email`, `phone_number`, `display_
 | `PATCH /users/me` | `200` with updated `user` |
 | `PUT /users/me/avatar` | `200` with `avatar_url` |
 | `DELETE /users/me/avatar` | `204` with no body |
+| `GET /banks` | `200` with `banks` array and `Cache-Control: public, max-age=86400` |
 
 Input strings are trimmed before validation except passwords and token material. Email is at most 254 bytes after normalization. Display name is 1 to 100 Unicode characters after trim. Phone is stored in E.164 and is at most 16 characters including `+`. Device ID is a canonical UUID generated once per app installation. Optional device name is at most 120 Unicode characters after trim. Bank account holder is 1 to 100 Unicode characters after trim. Bank account number is 6 to 19 ASCII digits.
 
