@@ -24,6 +24,13 @@ type Config struct {
 	Firebase   FirebaseConfig
 	River      RiverConfig
 	Group      GroupConfig
+	Metrics    MetricsConfig
+}
+
+// MetricsConfig chứa cấu hình Prometheus metrics scraper.
+type MetricsConfig struct {
+	Enabled     bool
+	BearerToken string
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -235,6 +242,10 @@ func Load() (*Config, error) {
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
 		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
 		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		Metrics: MetricsConfig{
+			Enabled:     boolEnv("METRICS_ENABLED", true),
+			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -353,4 +364,14 @@ func durationEnv(name string, fallback int, unit time.Duration) (time.Duration, 
 		return 0, err
 	}
 	return time.Duration(value) * unit, nil
+}
+
+func boolEnv(name string, fallback bool) bool {
+	if val := strings.TrimSpace(os.Getenv(name)); val != "" {
+		parsed, err := strconv.ParseBool(val)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
 }

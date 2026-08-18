@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -9,13 +10,19 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"paysplit-backend/internal/config"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
 )
 
+// DBPingChecker kiểm tra kết nối DB cho readiness probe.
+type DBPingChecker interface {
+	Ping(ctx context.Context) error
+}
+
 // New tạo router gốc của ứng dụng, cài đặt middleware dùng chung và trả về
 // chi.Router để bootstrap có thể đăng ký route của từng module trước khi chạy server.
-func New(appConfig config.AppConfig) chi.Router {
+func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbChecker DBPingChecker) chi.Router {
 	router := chi.NewRouter()
 
 	// RequestID thêm mã định danh vào context để theo dõi request xuyên suốt hệ thống.
@@ -24,6 +31,7 @@ func New(appConfig config.AppConfig) chi.Router {
 	router.Use(
 		chiMiddleware.RequestID,
 		chiMiddleware.ClientIPFromRemoteAddr,
+		platformmetrics.HTTPMetricsMiddleware,
 		middleware.RequestLogger,
 		chiMiddleware.Recoverer,
 		middleware.CORS(appConfig.CORSAllowedOrigins...),
@@ -33,6 +41,10 @@ func New(appConfig config.AppConfig) chi.Router {
 
 	router.Get("/", root)
 	router.Get("/health", health)
+	router.Get("/health/live", healthLive)
+	router.Get("/health/ready", healthReady(dbChecker))
+
+	router.Method(http.MethodGet, "/metrics", platformmetrics.MetricsHandler(metricsConfig.Enabled, metricsConfig.BearerToken))
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		if err := helpers.WriteAPIError(w, http.StatusNotFound, "ROUTE_NOT_FOUND", "route not found", nil); err != nil {
@@ -58,6 +70,32 @@ func root(w http.ResponseWriter, _ *http.Request) {
 
 func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func healthLive(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func healthReady(dbChecker DBPingChecker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if dbChecker != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+
+			if err := dbChecker.Ping(ctx); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status":   "degraded",
+					"database": "down",
+				})
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":   "ready",
+			"database": "ok",
+		})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

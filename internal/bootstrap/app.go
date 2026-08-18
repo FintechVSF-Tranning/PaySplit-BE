@@ -13,6 +13,9 @@ import (
 	"github.com/riverqueue/river"
 
 	"paysplit-backend/internal/config"
+	adminhttp "paysplit-backend/internal/modules/admin/delivery/http"
+	adminpostgres "paysplit-backend/internal/modules/admin/repository/postgres"
+	adminusecase "paysplit-backend/internal/modules/admin/usecase"
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
@@ -29,6 +32,7 @@ import (
 	"paysplit-backend/internal/platform/database"
 	"paysplit-backend/internal/platform/email/gmail"
 	avatarimage "paysplit-backend/internal/platform/image/avatar"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 	"paysplit-backend/internal/platform/notification/fcm"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/security/password"
@@ -129,7 +133,13 @@ func New(ctx context.Context) (*App, error) {
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
 
-	appRouter := router.New(cfg.App)
+	adminRepo := adminpostgres.New(db)
+	adminService := adminusecase.NewService(adminRepo)
+	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
+
+	platformmetrics.RegisterDBPool(db)
+
+	appRouter := router.New(cfg.App, cfg.Metrics, db)
 	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
 	// chỉ cần mount tại đây, không phải thêm tham số vào router.New.
 	liveAuth := transportmw.Auth(tokens, authRepo)
@@ -139,6 +149,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
+		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 	})
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
