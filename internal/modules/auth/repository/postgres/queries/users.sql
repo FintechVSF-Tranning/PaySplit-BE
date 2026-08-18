@@ -14,3 +14,9 @@ SELECT *
 FROM users
 WHERE id = $1
 LIMIT 1;
+
+-- name: UpdateSessionFCMToken :execrows
+UPDATE sessions
+SET fcm_token = $2
+WHERE id = $1 AND revoked_at IS NULL;
+

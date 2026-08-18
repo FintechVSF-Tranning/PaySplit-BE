@@ -14,9 +14,9 @@ type CreateUserParams struct {
 }
 
 type CreateSessionParams struct {
-	UserID, ExpectedPasswordHash, DeviceID, DeviceName string
-	RefreshTokenHash                                   []byte
-	Now, ExpiresAt                                     time.Time
+	UserID, ExpectedPasswordHash, DeviceID, DeviceName, FCMToken string
+	RefreshTokenHash                                             []byte
+	Now, ExpiresAt                                               time.Time
 }
 
 type RotateRefreshResult struct {
@@ -52,5 +52,6 @@ type Repository interface {
 	ClaimMediaCleanup(context.Context, time.Time, int) ([]domain.MediaCleanupJob, error)
 	CompleteMediaCleanup(context.Context, string, time.Time) error
 	FailMediaCleanup(context.Context, string, string, time.Time) error
+	UpdateSessionFCMToken(context.Context, string, string) error
 	CleanupExpiredAuth(context.Context, time.Time, int) (int64, error)
 }

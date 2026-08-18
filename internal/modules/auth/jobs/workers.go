@@ -48,7 +48,7 @@ func (w *Workers) Run(ctx context.Context) {
 func (w *Workers) cleanupAuth(ctx context.Context, now time.Time) {
 	count, err := w.repo.CleanupExpiredAuth(ctx, now.Add(-w.retention), 500)
 	if err != nil {
-		log.Printf("event=auth_cleanup_failed")
+		log.Printf("event=auth_cleanup_failed err=%v", err)
 		return
 	}
 	if count > 0 {
@@ -58,7 +58,7 @@ func (w *Workers) cleanupAuth(ctx context.Context, now time.Time) {
 func (w *Workers) cleanupMedia(ctx context.Context, now time.Time) {
 	jobs, err := w.repo.ClaimMediaCleanup(ctx, now, 50)
 	if err != nil {
-		log.Printf("event=media_cleanup_claim_failed")
+		log.Printf("event=media_cleanup_claim_failed err=%v", err)
 		return
 	}
 	for _, job := range jobs {
@@ -78,10 +78,4 @@ func (w *Workers) cleanupMedia(ctx context.Context, now time.Time) {
 			log.Printf("event=media_cleanup_retry_scheduled job_id=%s attempt=%d", job.ID, job.AttemptCount)
 		}
 	}
-}
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

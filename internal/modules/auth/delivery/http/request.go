@@ -19,6 +19,7 @@ type signInRequest struct {
 	Password   string `json:"password"`
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
+	FCMToken   string `json:"fcm_token,omitempty"`
 }
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
@@ -58,4 +59,8 @@ type patchProfileRequest struct {
 	BankCode          optionalString `json:"bank_code"`
 	BankAccountNumber optionalString `json:"bank_account_number"`
 	BankAccountHolder optionalString `json:"bank_account_holder"`
+}
+
+type updateFCMTokenRequest struct {
+	FCMToken string `json:"fcm_token"`
 }

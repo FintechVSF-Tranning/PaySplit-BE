@@ -21,6 +21,8 @@ type Config struct {
 	Cloudinary CloudinaryConfig
 	Avatar     AvatarConfig
 	Cleanup    CleanupConfig
+	Firebase   FirebaseConfig
+	River      RiverConfig
 	Group      GroupConfig
 }
 
@@ -79,6 +81,17 @@ type CleanupConfig struct {
 	Retention           time.Duration
 	MediaWorkerInterval time.Duration
 	MediaMaxAttempts    int
+}
+type FirebaseConfig struct {
+	CredentialsFile string
+	CredentialsJSON string
+	Timeout         time.Duration
+}
+
+// RiverConfig chứa cấu hình cho background job queue (River trên PostgreSQL).
+type RiverConfig struct {
+	WorkerCount   int
+	FetchCooldown time.Duration
 }
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
@@ -176,6 +189,18 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	fcmTimeout, err := durationEnv("FCM_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	riverWorkerCount, err := intEnv("RIVER_WORKER_COUNT", 5)
+	if err != nil {
+		return nil, err
+	}
+	riverFetchCooldown, err := durationEnv("RIVER_FETCH_COOLDOWN_MS", 100, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
@@ -207,6 +232,8 @@ func Load() (*Config, error) {
 		Cloudinary: CloudinaryConfig{CloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"), APIKey: os.Getenv("CLOUDINARY_API_KEY"), APISecret: os.Getenv("CLOUDINARY_API_SECRET")},
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
+		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
+		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
 		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
 	}
 
@@ -269,6 +296,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
+	}
+	if c.River.WorkerCount <= 0 || c.River.FetchCooldown <= 0 {
+		return errors.New("river settings must be positive")
+	}
+	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
+		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
 	}
 	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
 		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")

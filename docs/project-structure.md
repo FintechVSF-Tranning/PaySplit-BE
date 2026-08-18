@@ -34,60 +34,40 @@ PaySplit-BE/
 │   │   └── config_test.go                  # Kiểm thử cấu hình
 │   │
 │   ├── modules/
-│   │   └── auth/
+│   │   ├── auth/                           # Module định danh, phiên đăng nhập, OTP và tài khoản
+│   │   │   ├── domain/
+│   │   │   ├── jobs/
+│   │   │   ├── usecase/
+│   │   │   ├── repository/ (interface + postgres adapter)
+│   │   │   └── delivery/http/
+│   │   ├── group/                          # Module quản lý nhóm, mã mời, thành viên và timeline
+│   │   │   ├── domain/
+│   │   │   ├── usecase/
+│   │   │   ├── repository/ (interface + postgres adapter)
+│   │   │   └── delivery/http/
+│   │   └── notification/                   # Module thông báo in-app và push FCM
 │   │       ├── domain/
-│   │       │   ├── errors.go               # Lỗi nghiệp vụ của auth
-│   │       │   ├── token.go                # Sinh và hash opaque token
-│   │       │   └── user.go                 # User, session và cleanup entity
-│   │       ├── jobs/
-│   │       │   └── workers.go              # Auth và Cloudinary cleanup workers
+│   │       ├── jobs/                       # River Queue worker xử lý gửi push
 │   │       ├── usecase/
-│   │       │   └── service.go              # Toàn bộ auth, password, profile và avatar flow
-│   │       ├── repository/
-│   │       │   ├── repository.go           # Interface lưu trữ mà usecase sử dụng
-│   │       │   └── postgres/
-│   │       │       ├── repository.go       # Adapter PostgreSQL
-│   │       │       ├── queries/
-│   │       │       │   └── users.sql       # Query do module auth sở hữu
-│   │       │       └── sqlc/
-│   │       │           ├── db.go            # Code do sqlc sinh
-│   │       │           ├── models.go        # Database model do sqlc sinh
-│   │       │           ├── querier.go       # Query interface do sqlc sinh
-│   │       │           └── users.sql.go     # Hàm query do sqlc sinh
-│   │       └── delivery/
-│   │           └── http/
-│   │               ├── handler.go           # Nhận request và gọi usecase
-│   │               ├── request.go           # DTO đầu vào
-│   │               ├── response.go          # DTO đầu ra
-│   │               └── routes.go            # Route auth và /users/me
+│   │       ├── repository/ (interface + postgres adapter)
+│   │       └── delivery/http/
 │   │
 │   ├── platform/
-│   │   ├── auth/
-│   │   │   └── jwt/
-│   │   │       └── access_token_manager.go  # Phát hành và xác thực JWT access token
-│   │   ├── banks/                           # Snapshot VietQR được embed và kiểm tra startup
-│   │   ├── database/
-│   │   │   └── postgres.go                  # Khởi tạo pgx connection pool
-│   │   ├── email/gmail/                     # Gmail SMTP adapter
-│   │   ├── image/avatar/                    # EXIF, resize và WebP converter
-│   │   └── security/
-│   │       └── password/
-│   │           └── bcrypt.go                # Băm và so sánh mật khẩu
-│   │   └── storage/cloudinary/              # Upload và xóa avatar Cloudinary
+│   │   ├── auth/jwt/                       # Phát hành và xác thực JWT access token
+│   │   ├── banks/                          # Snapshot VietQR được embed và kiểm tra startup
+│   │   ├── database/                       # Khởi tạo pgx connection pool
+│   │   ├── email/gmail/                    # Gmail SMTP adapter
+│   │   ├── image/avatar/                   # EXIF, resize và WebP converter
+│   │   ├── notification/fcm/               # Firebase Cloud Messaging adapter & payload builders
+│   │   ├── queue/river/                    # River Queue client & migrator trên PostgreSQL
+│   │   ├── security/password/              # Bộ băm bcrypt
+│   │   └── storage/cloudinary/             # Upload và xóa avatar Cloudinary
 │   │
 │   └── transport/
 │       └── http/
-│           ├── helpers/
-│           │   ├── error.go                 # Khuôn dạng lỗi JSON
-│           │   ├── json.go                  # Đọc và ghi JSON
-│           │   └── pagination.go            # Kiểu và helper phân trang
-│           ├── middleware/
-│           │   ├── auth.go                  # Xác thực request bằng access token
-│           │   ├── cors.go                  # Chính sách CORS
-│           │   ├── ratelimit.go             # Giới hạn tần suất request
-│           │   └── timeout.go               # Giới hạn thời gian xử lý request
-│           └── router/
-│               └── router.go                # Router gốc, middleware và health endpoint
+│           ├── helpers/                    # Ghi JSON, khuôn dạng lỗi, phân trang
+│           ├── middleware/                 # Xác thực JWT, session, CORS, ratelimit, timeout
+│           └── router/                     # Router gốc, middleware và health endpoint
 │
 ├── .env.example                             # Mẫu cấu hình chạy local
 ├── .gitignore                               # Các file Git bỏ qua

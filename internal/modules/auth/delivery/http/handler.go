@@ -78,7 +78,7 @@ func (h *Handler) SignIn(w http.ResponseWriter, r *http.Request) {
 	if !read(w, r, &req) {
 		return
 	}
-	out, err := h.service.SignIn(r.Context(), usecase.SignInInput{Email: req.Email, Password: req.Password, DeviceID: req.DeviceID, DeviceName: req.DeviceName})
+	out, err := h.service.SignIn(r.Context(), usecase.SignInInput{Email: req.Email, Password: req.Password, DeviceID: req.DeviceID, DeviceName: req.DeviceName, FCMToken: req.FCMToken})
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -233,6 +233,31 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) UpdateFCMToken(w http.ResponseWriter, r *http.Request) {
+	sessionID, ok := authmw.SessionID(r.Context())
+	if !ok || sessionID == "" {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing session context", nil)
+		return
+	}
+
+	var req updateFCMTokenRequest
+	if !read(w, r, &req) {
+		return
+	}
+
+	if req.FCMToken == "" {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_FCM_TOKEN", "fcm_token must not be empty", nil)
+		return
+	}
+
+	if err := h.service.UpdateFCMToken(r.Context(), sessionID, req.FCMToken); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update fcm token", nil)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func read(w http.ResponseWriter, r *http.Request, d any) bool {
