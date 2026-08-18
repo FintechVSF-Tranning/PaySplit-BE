@@ -30,12 +30,24 @@ func New(db *pgxpool.Pool) repository.Repository {
 }
 
 func (r *postgresRepository) CreateNotification(ctx context.Context, notif *domain.Notification) error {
+	return r.createNotification(ctx, dbgen.New(r.db), notif)
+}
+
+func (r *postgresRepository) CreateNotificationTx(ctx context.Context, ex repository.Executor, notif *domain.Notification) error {
+	tx, ok := ex.(pgx.Tx)
+	if !ok {
+		return fmt.Errorf("create notification: invalid transaction executor")
+	}
+	return r.createNotification(ctx, dbgen.New(tx), notif)
+}
+
+func (r *postgresRepository) createNotification(ctx context.Context, q *dbgen.Queries, notif *domain.Notification) error {
 	userID, err := uuid.Parse(notif.UserID)
 	if err != nil {
 		return domain.ErrInvalidInput
 	}
 
-	row, err := dbgen.New(r.db).CreateNotification(ctx, dbgen.CreateNotificationParams{
+	row, err := q.CreateNotification(ctx, dbgen.CreateNotificationParams{
 		UserID:  pgUUID(userID),
 		Type:    notif.Type,
 		Title:   notif.Title,
@@ -50,6 +62,40 @@ func (r *postgresRepository) CreateNotification(ctx context.Context, notif *doma
 	notif.ID = mapped.ID
 	notif.CreatedAt = mapped.CreatedAt
 	return nil
+}
+
+// WithTx mở một transaction Postgres, chạy fn với Executor tương ứng, rồi commit khi fn
+// thành công hoặc rollback khi fn lỗi (rollback sau commit là no-op an toàn).
+func (r *postgresRepository) WithTx(ctx context.Context, fn func(ctx context.Context, ex repository.Executor) error) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+func (r *postgresRepository) GetNotificationByID(ctx context.Context, notificationID string) (domain.Notification, error) {
+	nid, err := uuid.Parse(notificationID)
+	if err != nil {
+		return domain.Notification{}, domain.ErrInvalidInput
+	}
+
+	row, err := dbgen.New(r.db).GetNotificationByID(ctx, pgUUID(nid))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Notification{}, domain.ErrNotificationNotFound
+		}
+		return domain.Notification{}, fmt.Errorf("get notification: %w", err)
+	}
+	return mapGeneratedNotification(row), nil
 }
 
 func (r *postgresRepository) ListByUserID(ctx context.Context, userID string, pager pagination.OffsetPager) (pagination.Page[domain.Notification], error) {
@@ -147,8 +193,16 @@ func (r *postgresRepository) GetActiveFCMTokenByUserID(ctx context.Context, user
 	return "", nil
 }
 
-func (r *postgresRepository) ClearFCMToken(ctx context.Context, fcmToken string) error {
-	err := dbgen.New(r.db).ClearFCMToken(ctx, pgtype.Text{String: fcmToken, Valid: fcmToken != ""})
+func (r *postgresRepository) ClearFCMToken(ctx context.Context, userID, fcmToken string) error {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return domain.ErrInvalidInput
+	}
+
+	err = dbgen.New(r.db).ClearFCMToken(ctx, dbgen.ClearFCMTokenParams{
+		FcmToken: pgtype.Text{String: fcmToken, Valid: fcmToken != ""},
+		UserID:   pgUUID(uid),
+	})
 	if err != nil {
 		return fmt.Errorf("clear fcm token: %w", err)
 	}

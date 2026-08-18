@@ -3,6 +3,7 @@ package river
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,7 +13,8 @@ import (
 )
 
 type Config struct {
-	MaxWorkers int
+	MaxWorkers    int
+	FetchCooldown time.Duration
 }
 
 // AutoMigrate tự động chạy migration để tạo/cập nhật các bảng nội bộ của River trong PostgreSQL
@@ -44,14 +46,19 @@ func NewClient(dbPool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river
 
 	maxWorkers := cfg.MaxWorkers
 	if maxWorkers <= 0 {
-		maxWorkers = 50
+		maxWorkers = 5
+	}
+	fetchCooldown := cfg.FetchCooldown
+	if fetchCooldown <= 0 {
+		fetchCooldown = 100 * time.Millisecond
 	}
 
 	riverClient, err := river.NewClient(riverpgxv5.New(dbPool), &river.Config{
 		Queues: map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: maxWorkers},
 		},
-		Workers: workers,
+		Workers:       workers,
+		FetchCooldown: fetchCooldown,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create river client: %w", err)

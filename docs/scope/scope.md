@@ -101,7 +101,7 @@ Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed R
   - [x] HTTP delivery handlers, routes registration, and unit/integration tests (satisfies AC-1, AC-6)
 - [x] Verify it: `/check verify notification and background queue v1`
 - [x] Test it: `/test notification and background queue v1`
-- [ ] Review it (fresh model): `/check review notification and background queue v1`
+- [x] Review it (fresh model): `/check review notification and background queue v1`
 - [x] Document it: `/document notification and background queue v1`
 
 Spec [0006](../specs/0006-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`

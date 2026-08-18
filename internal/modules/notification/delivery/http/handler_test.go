@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"paysplit-backend/internal/modules/notification/domain"
+	"paysplit-backend/internal/modules/notification/repository"
 	"paysplit-backend/internal/modules/notification/usecase"
 	transportmw "paysplit-backend/internal/transport/http/middleware"
 
@@ -25,6 +26,15 @@ type mockRepo struct {
 
 func (m *mockRepo) CreateNotification(ctx context.Context, notif *domain.Notification) error {
 	return nil
+}
+func (m *mockRepo) CreateNotificationTx(ctx context.Context, ex repository.Executor, notif *domain.Notification) error {
+	return nil
+}
+func (m *mockRepo) WithTx(ctx context.Context, fn func(ctx context.Context, ex repository.Executor) error) error {
+	return fn(ctx, nil)
+}
+func (m *mockRepo) GetNotificationByID(ctx context.Context, notificationID string) (domain.Notification, error) {
+	return domain.Notification{}, domain.ErrNotificationNotFound
 }
 func (m *mockRepo) ListByUserID(ctx context.Context, userID string, pager pagination.OffsetPager) (pagination.Page[domain.Notification], error) {
 	items := []domain.Notification{
@@ -49,7 +59,7 @@ func (m *mockRepo) MarkAllAsRead(ctx context.Context, userID string) error {
 func (m *mockRepo) GetActiveFCMTokenByUserID(ctx context.Context, userID string) (string, error) {
 	return "", nil
 }
-func (m *mockRepo) ClearFCMToken(ctx context.Context, fcmToken string) error {
+func (m *mockRepo) ClearFCMToken(ctx context.Context, userID, fcmToken string) error {
 	return nil
 }
 
@@ -148,6 +158,29 @@ func TestMarkAsReadEndpoint_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestMarkAsReadEndpoint_AlreadyReadIsIdempotent(t *testing.T) {
+	// mockRepo.MarkAsRead never returns ErrNotificationNotFound for a repeat call, mirroring the
+	// SQL fix (COALESCE(read_at, now()) with no read_at IS NULL filter): tapping an already-read
+	// notification twice must return 200, not 404.
+	repo := &mockRepo{}
+	svc := usecase.NewService(repo, nil, nil)
+	handler := NewHandler(svc)
+
+	r := chi.NewRouter()
+	r.Route("/api/v1/notifications", func(sub chi.Router) {
+		handler.RegisterRoutes(sub, fakeAuthMiddleware("user-1", "session-1"))
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/notifications/notif-99/read", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d: expected 200, got %d: %s", i+1, w.Code, w.Body.String())
+		}
 	}
 }
 

@@ -14,11 +14,16 @@ import (
 const clearFCMToken = `-- name: ClearFCMToken :exec
 UPDATE sessions
 SET fcm_token = NULL
-WHERE fcm_token = $1
+WHERE fcm_token = $1 AND user_id = $2
 `
 
-func (q *Queries) ClearFCMToken(ctx context.Context, fcmToken pgtype.Text) error {
-	_, err := q.db.Exec(ctx, clearFCMToken, fcmToken)
+type ClearFCMTokenParams struct {
+	FcmToken pgtype.Text `json:"fcm_token"`
+	UserID   pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) ClearFCMToken(ctx context.Context, arg ClearFCMTokenParams) error {
+	_, err := q.db.Exec(ctx, clearFCMToken, arg.FcmToken, arg.UserID)
 	return err
 }
 
@@ -99,11 +104,33 @@ func (q *Queries) GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.U
 	return fcm_token, err
 }
 
+const getNotificationByID = `-- name: GetNotificationByID :one
+SELECT id, user_id, type, payload, read_at, created_at, title, body
+FROM notifications
+WHERE id = $1
+`
+
+func (q *Queries) GetNotificationByID(ctx context.Context, id pgtype.UUID) (Notification, error) {
+	row := q.db.QueryRow(ctx, getNotificationByID, id)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Type,
+		&i.Payload,
+		&i.ReadAt,
+		&i.CreatedAt,
+		&i.Title,
+		&i.Body,
+	)
+	return i, err
+}
+
 const listNotificationsByUserID = `-- name: ListNotificationsByUserID :many
 SELECT id, user_id, type, payload, read_at, created_at, title, body
 FROM notifications
 WHERE user_id = $1
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -155,8 +182,8 @@ func (q *Queries) MarkAllNotificationsAsRead(ctx context.Context, userID pgtype.
 
 const markNotificationAsRead = `-- name: MarkNotificationAsRead :execrows
 UPDATE notifications
-SET read_at = now()
-WHERE id = $1 AND user_id = $2 AND read_at IS NULL
+SET read_at = COALESCE(read_at, now())
+WHERE id = $1 AND user_id = $2
 `
 
 type MarkNotificationAsReadParams struct {

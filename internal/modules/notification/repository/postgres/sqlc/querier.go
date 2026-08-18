@@ -11,11 +11,12 @@ import (
 )
 
 type Querier interface {
-	ClearFCMToken(ctx context.Context, fcmToken pgtype.Text) error
+	ClearFCMToken(ctx context.Context, arg ClearFCMTokenParams) error
 	CountNotificationsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (pgtype.Text, error)
+	GetNotificationByID(ctx context.Context, id pgtype.UUID) (Notification, error)
 	ListNotificationsByUserID(ctx context.Context, arg ListNotificationsByUserIDParams) ([]Notification, error)
 	MarkAllNotificationsAsRead(ctx context.Context, userID pgtype.UUID) error
 	MarkNotificationAsRead(ctx context.Context, arg MarkNotificationAsReadParams) (int64, error)

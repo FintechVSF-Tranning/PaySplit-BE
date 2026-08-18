@@ -20,6 +20,11 @@ var (
 	// ErrInvalidToken báo hiệu FCM Registration Token không còn tồn tại (user đã gỡ app),
 	// đã hết hạn hoặc không đúng định dạng. Khi gặp lỗi này, Backend nên xóa fcm_token khỏi database.
 	ErrInvalidToken = errors.New("fcm: invalid or unregistered registration token")
+
+	// ErrInvalidMessage báo hiệu FCM từ chối nội dung message (payload/data key/APNs config sai
+	// định dạng), không liên quan đến token. Backend KHÔNG được xóa fcm_token khi gặp lỗi này,
+	// vì token vẫn hợp lệ, chỉ có payload đang gửi là sai.
+	ErrInvalidMessage = errors.New("fcm: invalid message payload")
 )
 
 type PushMessage struct {
@@ -79,8 +84,11 @@ func (n *Notifier) SendToDevice(ctx context.Context, fcmToken string, msg PushMe
 
 	_, err := n.client.Send(sendCtx, fcmMsg)
 	if err != nil {
-		if messaging.IsRegistrationTokenNotRegistered(err) || messaging.IsInvalidArgument(err) {
+		if messaging.IsRegistrationTokenNotRegistered(err) {
 			return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		}
+		if messaging.IsInvalidArgument(err) {
+			return fmt.Errorf("%w: %v", ErrInvalidMessage, err)
 		}
 		return fmt.Errorf("send FCM message to device: %w", err)
 	}
@@ -106,14 +114,24 @@ func (n *Notifier) SendToAllUsers(ctx context.Context, msg PushMessage) error {
 	return nil
 }
 
-// IsInvalidTokenError kiểm tra xem lỗi trả về có phải do Token đã chết hoặc không hợp lệ hay không
+// IsInvalidTokenError kiểm tra xem lỗi trả về có phải do Token đã chết hoặc không hợp lệ hay không.
+// Chỉ token thực sự không còn đăng ký (NOT_REGISTERED) mới được coi là chết; các lỗi payload
+// (INVALID_ARGUMENT) không nằm trong nhóm này, xem IsInvalidMessageError.
 func IsInvalidTokenError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, ErrInvalidToken) ||
-		messaging.IsRegistrationTokenNotRegistered(err) ||
-		messaging.IsInvalidArgument(err)
+	return errors.Is(err, ErrInvalidToken) || messaging.IsRegistrationTokenNotRegistered(err)
+}
+
+// IsInvalidMessageError kiểm tra xem lỗi trả về có phải do nội dung message gửi lên FCM không
+// hợp lệ hay không (payload/data key/APNs config sai định dạng). Lỗi này không kéo theo việc
+// xóa fcm_token vì bản thân token vẫn có thể còn hợp lệ.
+func IsInvalidMessageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrInvalidMessage) || messaging.IsInvalidArgument(err)
 }
 
 func (n *Notifier) buildFCMMessage(msg PushMessage) *messaging.Message {

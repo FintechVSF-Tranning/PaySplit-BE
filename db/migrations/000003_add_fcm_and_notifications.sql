@@ -11,8 +11,12 @@ ALTER TABLE notifications
     ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS body TEXT NOT NULL DEFAULT '';
 
--- Bỏ default '' sau khi đã cập nhật giá trị cho các record cũ (nếu có)
-ALTER TABLE notifications 
+-- Cập nhật giá trị cho các record cũ (nếu có) trước khi áp CHECK constraint bên dưới
+UPDATE notifications SET title = '(no title)' WHERE btrim(title) = '';
+UPDATE notifications SET body = '(no content)' WHERE btrim(body) = '';
+
+-- Bỏ default '' sau khi đã cập nhật giá trị cho các record cũ
+ALTER TABLE notifications
     ALTER COLUMN title DROP DEFAULT,
     ALTER COLUMN body DROP DEFAULT;
 

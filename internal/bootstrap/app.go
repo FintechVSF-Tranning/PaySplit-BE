@@ -85,11 +85,16 @@ func New(ctx context.Context) (*App, error) {
 	authService := authusecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
 	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
 
-	fcmNotifier, err := fcm.New(ctx, cfg.Firebase.CredentialsFile, cfg.Firebase.CredentialsJSON, cfg.Firebase.Timeout)
+	fcmClient, err := fcm.New(ctx, cfg.Firebase.CredentialsFile, cfg.Firebase.CredentialsJSON, cfg.Firebase.Timeout)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create FCM notifier: %w", err)
 	}
+	// fcm.New trả về (*fcm.Notifier)(nil) khi FCM bị tắt (thiếu credentials). Phải kiểm tra bằng
+	// so sánh con trỏ cụ thể TRƯỚC khi gán vào các tham số kiểu interface bên dưới, vì một con
+	// trỏ nil được đặt vào interface sẽ tạo ra "typed nil" khiến các so sánh `== nil` sau đó trên
+	// interface luôn trả về false, làm ẩn đi các nhánh xử lý khi FCM bị tắt.
+	fcmEnabled := fcmClient != nil
 
 	notificationRepo := notificationpostgres.New(db)
 
@@ -99,15 +104,24 @@ func New(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("auto-migrate river: %w", err)
 	}
 	riverWorkers := river.NewWorkers()
-	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, fcmNotifier))
+	var fcmNotifier notificationusecase.PushNotifier
+	var notificationJobNotifier notificationjobs.PushNotifier
+	if fcmEnabled {
+		fcmNotifier = fcmClient
+		notificationJobNotifier = fcmClient
+		river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, notificationJobNotifier))
+	}
 
-	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: 20})
+	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create river client: %w", err)
 	}
 
-	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
+	var notificationEnqueuer notificationusecase.JobEnqueuer
+	if fcmEnabled {
+		notificationEnqueuer = notificationjobs.NewEnqueuer(riverClient)
+	}
 	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
@@ -166,10 +180,10 @@ func (a *App) Start() error {
 
 // Shutdown chờ HTTP server xử lý xong các request đang chạy trước khi đóng
 // River queue, workers và database pool dùng chung; ctx giới hạn thời gian chờ quá trình này.
+// Việc dừng River/workers/pool luôn chạy, kể cả khi HTTP server drain quá thời hạn ctx, để
+// không rò rỉ tài nguyên đúng vào lúc quá trình tắt orderly quan trọng nhất.
 func (a *App) Shutdown(ctx context.Context) error {
-	if err := a.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("shutdown HTTP server: %w", err)
-	}
+	httpErr := a.server.Shutdown(ctx)
 	if a.riverClient != nil {
 		_ = a.riverClient.Stop(ctx)
 	}
@@ -177,5 +191,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.workers.Wait()
 	// Giữ pool hoạt động cho đến khi các handler đang xử lý request hoàn tất.
 	a.db.Close()
+	if httpErr != nil {
+		return fmt.Errorf("shutdown HTTP server: %w", httpErr)
+	}
 	return nil
 }

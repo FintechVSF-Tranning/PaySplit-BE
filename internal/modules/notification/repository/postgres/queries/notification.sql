@@ -3,11 +3,16 @@ INSERT INTO notifications (user_id, type, title, body, payload)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- name: GetNotificationByID :one
+SELECT *
+FROM notifications
+WHERE id = $1;
+
 -- name: ListNotificationsByUserID :many
 SELECT *
 FROM notifications
 WHERE user_id = $1
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $2 OFFSET $3;
 
 -- name: CountNotificationsByUserID :one
@@ -22,8 +27,8 @@ WHERE user_id = $1 AND read_at IS NULL;
 
 -- name: MarkNotificationAsRead :execrows
 UPDATE notifications
-SET read_at = now()
-WHERE id = $1 AND user_id = $2 AND read_at IS NULL;
+SET read_at = COALESCE(read_at, now())
+WHERE id = $1 AND user_id = $2;
 
 -- name: MarkAllNotificationsAsRead :exec
 UPDATE notifications
@@ -40,6 +45,6 @@ LIMIT 1;
 -- name: ClearFCMToken :exec
 UPDATE sessions
 SET fcm_token = NULL
-WHERE fcm_token = $1;
+WHERE fcm_token = $1 AND user_id = $2;
 
 

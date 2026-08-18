@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"paysplit-backend/internal/modules/notification/domain"
+	"paysplit-backend/internal/modules/notification/repository"
 )
 
 func testPool(t *testing.T) *pgxpool.Pool {
@@ -200,10 +202,10 @@ func TestPostgresRepository_UnreadCountAndMarkAsRead(t *testing.T) {
 		t.Errorf("expected 1 unread for user1, got %d", count)
 	}
 
-	// Mark notif1 as read again should return ErrNotificationNotFound (already read)
-	err = repo.MarkAsRead(ctx, user1, notif1.ID)
-	if err != domain.ErrNotificationNotFound {
-		t.Errorf("expected ErrNotificationNotFound when marking already-read notif, got: %v", err)
+	// Marking an already-read notification again must be idempotent (200, not 404): the client
+	// may retry a flaky PATCH, or the user may tap it twice.
+	if err := repo.MarkAsRead(ctx, user1, notif1.ID); err != nil {
+		t.Errorf("expected marking an already-read notification to be idempotent, got: %v", err)
 	}
 
 	// User1 cannot mark User2's notification as read
@@ -263,7 +265,7 @@ func TestPostgresRepository_GetAndClearActiveFCMToken(t *testing.T) {
 	}
 
 	// Clear the FCM token (dead token cleanup)
-	if err := repo.ClearFCMToken(ctx, fcmTok); err != nil {
+	if err := repo.ClearFCMToken(ctx, user, fcmTok); err != nil {
 		t.Fatalf("clear fcm token: %v", err)
 	}
 
@@ -274,5 +276,106 @@ func TestPostgresRepository_GetAndClearActiveFCMToken(t *testing.T) {
 	}
 	if token != "" {
 		t.Errorf("expected empty token after clear, got %s", token)
+	}
+}
+
+// TestPostgresRepository_ClearFCMToken_ScopedToUser pins the fix for a token being cleared for
+// every session holding that value, not only the caller's user. Two different app installs can
+// legitimately share the same FCM registration token (e.g. sign-out on user A, sign-in as user B
+// on the same phone), so clearing must be scoped to the user the worker is currently processing.
+func TestPostgresRepository_ClearFCMToken_ScopedToUser(t *testing.T) {
+	pool := testPool(t)
+	cleanup := newCleanup(t, pool)
+	ctx := context.Background()
+	repo := New(pool)
+
+	user1 := createTestUser(t, ctx, pool, cleanup, "Shared Token User 1")
+	user2 := createTestUser(t, ctx, pool, cleanup, "Shared Token User 2")
+
+	sharedTok := "fcm-shared-device-token"
+	for _, uid := range []string{user1, user2} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO sessions (user_id, device_id, fcm_token, issued_at, expires_at)
+			VALUES ($1, gen_random_uuid(), $2, now(), now() + interval '7 days')
+		`, uid, sharedTok)
+		if err != nil {
+			t.Fatalf("insert session: %v", err)
+		}
+	}
+
+	if err := repo.ClearFCMToken(ctx, user1, sharedTok); err != nil {
+		t.Fatalf("clear fcm token: %v", err)
+	}
+
+	token1, err := repo.GetActiveFCMTokenByUserID(ctx, user1)
+	if err != nil || token1 != "" {
+		t.Errorf("expected user1 token cleared, got %q (err: %v)", token1, err)
+	}
+
+	token2, err := repo.GetActiveFCMTokenByUserID(ctx, user2)
+	if err != nil || token2 != sharedTok {
+		t.Errorf("expected user2 token untouched, got %q (err: %v)", token2, err)
+	}
+}
+
+// TestPostgresRepository_CreateNotificationTx_RollsBackOnError pins the transactional-enqueue
+// fix: CreateNotificationTx participates in a caller-managed transaction, so a rollback after it
+// must leave no orphan row.
+func TestPostgresRepository_CreateNotificationTx_RollsBackOnError(t *testing.T) {
+	pool := testPool(t)
+	cleanup := newCleanup(t, pool)
+	ctx := context.Background()
+	repo := New(pool)
+
+	user := createTestUser(t, ctx, pool, cleanup, "Tx Rollback User")
+
+	notif := &domain.Notification{UserID: user, Type: "bill_finalized", Title: "t", Body: "b"}
+	err := repo.WithTx(ctx, func(ctx context.Context, ex repository.Executor) error {
+		if err := repo.CreateNotificationTx(ctx, ex, notif); err != nil {
+			return err
+		}
+		return errors.New("force rollback")
+	})
+	if err == nil {
+		t.Fatalf("expected WithTx to propagate the forced error")
+	}
+
+	page, err := repo.ListByUserID(ctx, user, pagination.NewOffsetPager(1, 20))
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if page.Total != 0 {
+		t.Errorf("expected the notification insert to be rolled back, found %d rows", page.Total)
+	}
+}
+
+// TestPostgresRepository_CreateNotificationTx_CommitsOnSuccess pins that a successful WithTx
+// commits the notification row and GetNotificationByID can read it back afterwards, exactly what
+// the River worker relies on to load title/body/payload by NotificationID.
+func TestPostgresRepository_CreateNotificationTx_CommitsOnSuccess(t *testing.T) {
+	pool := testPool(t)
+	cleanup := newCleanup(t, pool)
+	ctx := context.Background()
+	repo := New(pool)
+
+	user := createTestUser(t, ctx, pool, cleanup, "Tx Commit User")
+
+	notif := &domain.Notification{UserID: user, Type: "bill_finalized", Title: "t", Body: "b"}
+	err := repo.WithTx(ctx, func(ctx context.Context, ex repository.Executor) error {
+		return repo.CreateNotificationTx(ctx, ex, notif)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if notif.ID == "" {
+		t.Fatalf("expected notification ID to be populated after commit")
+	}
+
+	got, err := repo.GetNotificationByID(ctx, notif.ID)
+	if err != nil {
+		t.Fatalf("get notification by id: %v", err)
+	}
+	if got.Title != "t" || got.Body != "b" {
+		t.Errorf("unexpected notification content: %+v", got)
 	}
 }

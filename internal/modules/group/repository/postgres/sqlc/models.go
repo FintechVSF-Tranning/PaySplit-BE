@@ -140,6 +140,8 @@ type Notification struct {
 	Payload   []byte             `json:"payload"`
 	ReadAt    pgtype.Timestamptz `json:"read_at"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Title     string             `json:"title"`
+	Body      string             `json:"body"`
 }
 
 type OcrJob struct {
@@ -182,6 +184,7 @@ type Session struct {
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt     pgtype.Timestamptz `json:"revoked_at"`
 	RevokedReason pgtype.Text        `json:"revoked_reason"`
+	FcmToken      pgtype.Text        `json:"fcm_token"`
 }
 
 type SessionRefreshToken struct {
