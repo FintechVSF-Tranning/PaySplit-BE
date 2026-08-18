@@ -17,6 +17,9 @@ import (
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	authusecase "paysplit-backend/internal/modules/auth/usecase"
+	billjobs "paysplit-backend/internal/modules/bill/jobs"
+	billpostgres "paysplit-backend/internal/modules/bill/repository/postgres"
+	billusecase "paysplit-backend/internal/modules/bill/usecase"
 	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
 	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
 	groupusecase "paysplit-backend/internal/modules/group/usecase"
@@ -29,7 +32,9 @@ import (
 	"paysplit-backend/internal/platform/database"
 	"paysplit-backend/internal/platform/email/gmail"
 	avatarimage "paysplit-backend/internal/platform/image/avatar"
+	receiptimage "paysplit-backend/internal/platform/image/receipt"
 	"paysplit-backend/internal/platform/notification/fcm"
+	"paysplit-backend/internal/platform/ocr/llamaextract"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
@@ -112,6 +117,17 @@ func New(ctx context.Context) (*App, error) {
 		river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, notificationJobNotifier))
 	}
 
+	// Khởi tạo OCR Provider, Cloudinary Bill Storage, Receipt Processor và Bill Module
+	ocrClient := llamaextract.New(cfg.OCR)
+	billStorage, err := avatarstorage.NewBillStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create bill storage: %w", err)
+	}
+	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
+	billRepo := billpostgres.New(db)
+	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, cfg.OCR.ProviderTimeout))
+
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
 	if err != nil {
 		db.Close()
@@ -124,6 +140,9 @@ func New(ctx context.Context) (*App, error) {
 	}
 	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
 	notificationHandler := notificationhttp.NewHandler(notificationService)
+
+	billEnqueuer := billjobs.NewEnqueuer(riverClient)
+	_ = billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
 
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)

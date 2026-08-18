@@ -4,7 +4,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"paysplit-backend/internal/modules/bill/domain"
+	"paysplit-backend/internal/modules/bill/repository"
 )
 
 // OCRProvider là interface định nghĩa khả năng bóc tách dữ liệu từ ảnh hóa đơn (Spec 3 AC-3).
@@ -42,18 +46,34 @@ type ReceiptProcessor interface {
 	IsUnsupported(err error) bool
 }
 
+// JobEnqueuer là interface đẩy công việc OCR vào hàng đợi River Queue.
+type JobEnqueuer interface {
+	EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID, groupID uuid.UUID) error
+	EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error
+}
+
 // Service quản lý toàn bộ nghiệp vụ của module Bill và OCR.
 type Service struct {
+	repo        repository.Repository
 	ocrProvider OCRProvider
 	storage     BillStorage
 	processor   ReceiptProcessor
+	enqueuer    JobEnqueuer
 }
 
 // NewService khởi tạo Bill usecase service với các dependencies.
-func NewService(ocrProvider OCRProvider, storage BillStorage, processor ReceiptProcessor) *Service {
+func NewService(
+	repo repository.Repository,
+	ocrProvider OCRProvider,
+	storage BillStorage,
+	processor ReceiptProcessor,
+	enqueuer JobEnqueuer,
+) *Service {
 	return &Service{
+		repo:        repo,
 		ocrProvider: ocrProvider,
 		storage:     storage,
 		processor:   processor,
+		enqueuer:    enqueuer,
 	}
 }
