@@ -1502,7 +1502,110 @@ func TestRetryOCR_CapturesCurrentBillVersion(t *testing.T) {
 	}
 }
 
-func TestCreateBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
+func TestCreateBill_ExceedsMaxImages_ReturnsInvalidInput(t *testing.T) {
+	// covers: AC-1 (At most 5 images allowed)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	files := make([][]byte, 6) // 6 files > max 5
+	for i := 0; i < 6; i++ {
+		files[i] = []byte("fake-image")
+	}
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   50000,
+		Files:   files,
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for > 5 images, got %v", err)
+	}
+}
+
+func TestDeleteDraftBill_NonCreditorNonCaptain_ReturnsForbidden(t *testing.T) {
+	// covers: AC-8, AC-13 (Only Creditor or Captain can delete draft)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member", // regular member, not creditor or captain
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusDraft,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	err := service.DeleteDraftBill(context.Background(), userID, billID, groupID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("expected ErrForbidden for non-creditor non-captain deleting draft, got %v", err)
+	}
+}
+
+func TestDeleteDraftBill_Success(t *testing.T) {
+	// covers: AC-13 (Deleting draft bill passes image keys to repository for media cleanup)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusDraft,
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), BillID: billID, ImageKey: "bills/op-1/0"},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	err := service.DeleteDraftBill(context.Background(), userID, billID, groupID)
+	if err != nil {
+		t.Fatalf("DeleteDraftBill() unexpected error = %v", err)
+	}
+	if !repo.deletedDraft {
+		t.Error("expected repository DeleteDraftBill to be called")
+	}
+}
+
+func TestCreateBill_ExceedsMaxItems_ReturnsInvalidInput(t *testing.T) {
+	// covers: AC-5 (At most 100 items allowed per bill)
 	groupID := uuid.New()
 	userID := uuid.New()
 	memberID := uuid.New()
@@ -1520,25 +1623,25 @@ func TestCreateBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
 	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
 
 	items := make([]usecase.CreateBillItemRequest, 101)
-	for i := range items {
+	for i := 0; i < 101; i++ {
 		items[i] = usecase.CreateBillItemRequest{
 			Name:      "Item",
-			Quantity:  "1",
-			UnitPrice: 1000,
 			LineTotal: 1000,
 		}
 	}
 
 	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
 		GroupID: groupID,
+		Total:   101000,
 		Items:   items,
 	})
 	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Errorf("expected ErrInvalidInput when creating bill with > 100 items, got %v", err)
+		t.Errorf("expected ErrInvalidInput for > 100 items, got %v", err)
 	}
 }
 
-func TestUpdateDraftBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
+func TestUpdateDraftBill_ExceedsMaxItems_ReturnsInvalidInput(t *testing.T) {
+	// covers: AC-5 (At most 100 items allowed on draft replacement)
 	groupID := uuid.New()
 	userID := uuid.New()
 	memberID := uuid.New()
@@ -1564,20 +1667,62 @@ func TestUpdateDraftBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
 	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
 
 	items := make([]usecase.CreateBillItemRequest, 101)
-	for i := range items {
+	for i := 0; i < 101; i++ {
 		items[i] = usecase.CreateBillItemRequest{
 			Name:      "Item",
-			Quantity:  "1",
-			UnitPrice: 1000,
 			LineTotal: 1000,
 		}
 	}
 
 	_, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
 		Version: 1,
+		Total:   101000,
 		Items:   items,
 	})
 	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Errorf("expected ErrInvalidInput when updating bill with > 100 items, got %v", err)
+		t.Errorf("expected ErrInvalidInput for > 100 items in UpdateDraftBill, got %v", err)
+	}
+}
+
+func TestUpdateDraftBill_PreservesExistingSplitMethodWhenOmitted(t *testing.T) {
+	// covers: AC-5 (Omitted split method in update request preserves current draft split method)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: memberID,
+			Status:           domain.BillStatusDraft,
+			SplitMethod:      domain.SplitMethodItemRatio, // existing split method
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	updated, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version:     1,
+		Total:       50000,
+		SplitMethod: "", // omitted
+		Items: []usecase.CreateBillItemRequest{
+			{Name: "Item 1", LineTotal: 50000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraftBill() error = %v", err)
+	}
+	if updated.SplitMethod != domain.SplitMethodItemRatio {
+		t.Errorf("expected SplitMethod to remain %s, got %s", domain.SplitMethodItemRatio, updated.SplitMethod)
 	}
 }

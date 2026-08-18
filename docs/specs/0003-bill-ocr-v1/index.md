@@ -1,7 +1,7 @@
 # 0003. Bill and OCR v1
 
 **Date**: 2026-08-17
-**Status**: Proposed
+**Status**: Accepted
 
 ## Summary
 

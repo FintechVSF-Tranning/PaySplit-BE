@@ -166,6 +166,10 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		return nil, fmt.Errorf("%w: maximum 100 items allowed", domain.ErrInvalidInput)
 	}
 
+	if len(req.Items) > 100 {
+		return nil, fmt.Errorf("%w: maximum 100 items allowed per bill", domain.ErrInvalidInput)
+	}
+
 	// Kiểm tra tính hợp lệ của replaces_bill_id nếu được truyền (Spec 3 AC-11)
 	if req.ReplacesBillID != nil && *req.ReplacesBillID != uuid.Nil {
 		replacedBill, err := s.repo.GetBillByID(ctx, *req.ReplacesBillID, req.GroupID)
@@ -581,6 +585,10 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 		return nil, domain.ErrInvalidInput
 	}
 
+	if len(req.Items) > 100 {
+		return nil, fmt.Errorf("%w: maximum 100 items allowed per bill", domain.ErrInvalidInput)
+	}
+
 	// Kiểm tra tính hợp lệ của trọng số assignments
 	for _, it := range req.Items {
 		for _, assign := range it.Assignments {
@@ -598,7 +606,9 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	bill.VAT = req.VAT
 	bill.Discount = req.Discount
 	bill.Total = req.Total
-	bill.SplitMethod = req.SplitMethod
+	if req.SplitMethod != "" {
+		bill.SplitMethod = req.SplitMethod
+	}
 
 	items := make([]*domain.BillItem, 0, len(req.Items))
 	for i, it := range req.Items {
@@ -942,6 +952,8 @@ func (s *Service) DeleteDraftBill(ctx context.Context, callerUserID, billID, gro
 // HELPER CONVERSIONS
 // ============================================================================
 
+// toAllocationInput chuyển đổi domain.Bill sang AllocationInput cho giải thuật Hamilton.
+// Trọng số (weight) được chuẩn hóa phòng thủ (defensive fallback w=1.0 nếu trọng số <= 0).
 func toAllocationInput(b *domain.Bill) AllocationInput {
 	items := make([]ItemInput, 0, len(b.Items))
 	for _, it := range b.Items {

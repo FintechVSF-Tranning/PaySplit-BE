@@ -13,7 +13,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 |---|---|---|---|
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | done |
-| 3 | Bill and OCR v1 | Slice 3 | in-progress |
+| 3 | Bill and OCR v1 | Slice 3 | done |
 | 4 | Split and settlement v1 | Slice 4 | in-progress |
 | 5 | Admin v1 | Slice 5 | in-progress |
 | 6 | Notification and background queue v1 | Slice 6 | done |
@@ -64,7 +64,7 @@ Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/mod
 
 ## Slice 3: Bill and OCR
 
-### 3. Bill and OCR v1 · in-progress
+### 3. Bill and OCR v1 · done
 
 Provide manual and multi image bill drafts, private receipt storage, durable LlamaExtract OCR, versioned correction, ratio based item allocation, explicit review, exact Hamilton calculation, transactional finalization into immutable shares and debts, and safe void with replacement history.
 

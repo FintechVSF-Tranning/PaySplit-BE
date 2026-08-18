@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -216,5 +217,123 @@ func TestHamilton_LargeDiscount_NeverProducesNegativeFinalAmount(t *testing.T) {
 
 	if sum != 1 {
 		t.Errorf("expected total sum = 1, got %d", sum)
+	}
+}
+func TestHamilton_100Items_50Members_PerformanceAndExactness(t *testing.T) {
+	// covers: AC-6, AC-10, AC-14 (Scale: 100 items, 50 members, sub-50ms execution, exact sum reconciliation)
+	members := make([]uuid.UUID, 50)
+	for i := 0; i < 50; i++ {
+		members[i] = uuid.New()
+	}
+	creditor := members[0]
+
+	items := make([]usecase.ItemInput, 100)
+	var subtotal int64
+	for i := 0; i < 100; i++ {
+		lineTotal := int64((i + 1) * 15000)
+		subtotal += lineTotal
+
+		// Assign item to 5 members with equal ratio
+		assignees := make([]usecase.ItemAssignmentInput, 5)
+		for j := 0; j < 5; j++ {
+			assignees[j] = usecase.ItemAssignmentInput{
+				MemberID: members[(i+j)%50],
+				Ratio:    0.20,
+			}
+		}
+
+		items[i] = usecase.ItemInput{
+			ID:          uuid.New(),
+			LineTotal:   lineTotal,
+			Assignments: assignees,
+		}
+	}
+
+	serviceCharge := int64(subtotal / 20) // 5%
+	vat := int64(subtotal / 10)           // 10%
+	discount := int64(subtotal / 25)      // 4%
+	total := subtotal + serviceCharge + vat - discount
+
+	input := usecase.AllocationInput{
+		CreditorID:    creditor,
+		Subtotal:      subtotal,
+		ServiceCharge: serviceCharge,
+		VAT:           vat,
+		Discount:      discount,
+		Total:         total,
+		Items:         items,
+		Members:       members,
+	}
+
+	start := time.Now()
+	res, err := usecase.CalculateHamiltonAllocation(input)
+	duration := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("CalculateHamiltonAllocation() error = %v", err)
+	}
+
+	// Performance target: < 50ms per Spec 3 AC-14
+	if duration > 50*time.Millisecond {
+		t.Errorf("expected execution time < 50ms, got %v", duration)
+	}
+
+	// Exact sum check
+	var sum int64
+	for _, a := range res {
+		if a.FinalAmount < 0 {
+			t.Errorf("member %s got negative amount %d", a.MemberID, a.FinalAmount)
+		}
+		sum += a.FinalAmount
+	}
+
+	if sum != total {
+		t.Errorf("expected total sum %d, got %d (diff: %d)", total, sum, total-sum)
+	}
+}
+
+func TestHamilton_DeterministicAscendingUUIDTieBreaking_MultipleMembers(t *testing.T) {
+	// covers: AC-6, AC-10 (Deterministic tie breaking with 4 members having identical remainder)
+	m1 := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	m2 := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	m3 := uuid.MustParse("00000000-0000-0000-0000-000000000003")
+	m4 := uuid.MustParse("00000000-0000-0000-0000-000000000004")
+
+	// Line total = 100001 divided by 4 = 25000.25 each
+	// Remainder for all 4 is 0.25. Undistributed = 100001 - 100000 = 1 VND.
+	// m1 has lowest UUID byte -> m1 gets the +1 VND -> 25001 VND. m2, m3, m4 get 25000 VND.
+	input := usecase.AllocationInput{
+		CreditorID: m1,
+		Subtotal:   100001,
+		Total:      100001,
+		Items: []usecase.ItemInput{
+			{
+				ID:        uuid.New(),
+				LineTotal: 100001,
+				Assignments: []usecase.ItemAssignmentInput{
+					{MemberID: m4, Ratio: 0.25},
+					{MemberID: m3, Ratio: 0.25},
+					{MemberID: m2, Ratio: 0.25},
+					{MemberID: m1, Ratio: 0.25},
+				},
+			},
+		},
+	}
+
+	res, err := usecase.CalculateHamiltonAllocation(input)
+	if err != nil {
+		t.Fatalf("CalculateHamiltonAllocation() error = %v", err)
+	}
+
+	allocMap := make(map[uuid.UUID]int64)
+	for _, a := range res {
+		allocMap[a.MemberID] = a.FinalAmount
+	}
+
+	if allocMap[m1] != 25001 {
+		t.Errorf("expected m1 to get 25001 VND due to ascending UUID tie breaking, got %d", allocMap[m1])
+	}
+	if allocMap[m2] != 25000 || allocMap[m3] != 25000 || allocMap[m4] != 25000 {
+		t.Errorf("expected m2, m3, m4 to get 25000 VND, got m2=%d, m3=%d, m4=%d", allocMap[m2], allocMap[m3], allocMap[m4])
 	}
 }

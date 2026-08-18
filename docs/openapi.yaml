@@ -683,8 +683,70 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
     put:
-      summary: Update draft bill fields, items, and assignments
+      summary: Update draft bill fields, items, and assignments (full replacement)
+      description: Replaces the complete draft bill fields, items list, and member assignments. Requires all items to be supplied.
       operationId: updateDraftBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, total]
+              properties:
+                version: {type: integer}
+                merchant_name: {type: string}
+                bill_date: {type: string, format: date-time}
+                subtotal: {type: integer, format: int64}
+                service_charge: {type: integer, format: int64}
+                vat: {type: integer, format: int64}
+                discount: {type: integer, format: int64}
+                total: {type: integer, format: int64}
+                split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, line_total]
+                    properties:
+                      name: {type: string}
+                      quantity: {type: string}
+                      unit_price: {type: integer, format: int64}
+                      line_total: {type: integer, format: int64}
+                      assignments:
+                        type: array
+                        items:
+                          type: object
+                          required: [member_id]
+                          properties:
+                            member_id: {type: string, format: uuid}
+                            weight: {type: string}
+      responses:
+        "200":
+          description: Updated bill
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Version conflict or bill immutable"}
+    patch:
+      summary: Update draft bill fields (alias for full draft replacement)
+      description: Alias for PUT update draft bill. Replaces all items and assignments with the provided list.
+      operationId: patchDraftBill
       security: [{bearerAuth: []}]
       parameters:
         - name: id
