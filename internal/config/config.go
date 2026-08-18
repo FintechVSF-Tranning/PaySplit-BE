@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -36,6 +37,8 @@ type MetricsConfig struct {
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
 type AppConfig struct {
 	Environment                string
+	Host                       string
+	Port                       string
 	Address                    string
 	RequestTimeout             time.Duration
 	CORSAllowedOrigins         []string
@@ -209,10 +212,30 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	httpHost := stringEnv("HTTP_HOST", "localhost")
+	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
+	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
+	if httpAddress == "" {
+		if httpHost != "" {
+			httpAddress = net.JoinHostPort(httpHost, httpPort)
+		} else {
+			httpAddress = ":" + httpPort
+		}
+	} else if host, port, err := net.SplitHostPort(httpAddress); err == nil {
+		if host != "" {
+			httpHost = host
+		}
+		if port != "" {
+			httpPort = port
+		}
+	}
+
 	cfg := &Config{
 		App: AppConfig{
 			Environment:                stringEnv("APP_ENV", "development"),
-			Address:                    stringEnv("HTTP_ADDRESS", ":8080"),
+			Host:                       httpHost,
+			Port:                       httpPort,
+			Address:                    httpAddress,
 			RequestTimeout:             requestTimeout,
 			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
 			RateLimitRequestsPerMinute: rateLimit,

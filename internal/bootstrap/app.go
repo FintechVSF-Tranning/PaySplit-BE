@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 
@@ -63,12 +64,14 @@ func New(ctx context.Context) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	log.Printf("[Config] Loaded environment: %s (host: %s, port: %s)", cfg.App.Environment, cfg.App.Host, cfg.App.Port)
 
 	// 2. Mở pool kết nối PostgreSQL dùng chung cho toàn bộ ứng dụng
 	db, err := database.NewPostgresPool(ctx, cfg.Database)
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("[Database] Connected to PostgreSQL pool (max_conns: %d, min_conns: %d)", cfg.Database.MaxConns, cfg.Database.MinConns)
 
 	// 3. Khởi tạo các adapter hạ tầng (Platform Layer)
 	tokens, err := jwt.NewAccessTokenManager(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.AccessTokenTTL)
@@ -82,16 +85,22 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("load banks: %w", err)
 	}
+	log.Printf("[Banks] Bank directory loaded (%d banks loaded)", len(bankDirectory.All()))
+
 	mailer, err := gmail.New(cfg.SMTP, cfg.Auth.EmailVerificationURL, cfg.Auth.PasswordResetURL)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	log.Printf("[SMTP] Gmail mailer initialized (sender: %s, host: %s:%d)", cfg.SMTP.Username, cfg.SMTP.Host, cfg.SMTP.Port)
+
 	avatarStore, err := avatarstorage.New(cfg.Cloudinary, cfg.Avatar.UploadTimeout)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	log.Printf("[Storage] Cloudinary avatar storage initialized (cloud: %s)", cfg.Cloudinary.CloudName)
+
 	imageProcessor := avatarimage.NewProcessor(cfg.Avatar.ProcessingTimeout, cfg.Avatar.MaxConcurrentConversions)
 
 	// 4. Khởi tạo Module Auth
@@ -109,6 +118,11 @@ func New(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("create FCM notifier: %w", err)
 	}
 	fcmEnabled := fcmClient != nil
+	if fcmEnabled {
+		log.Println("[FCM] Firebase Cloud Messaging initialized and enabled")
+	} else {
+		log.Println("[FCM] Firebase Cloud Messaging is disabled (no credentials provided)")
+	}
 
 	notificationRepo := notificationpostgres.New(db)
 
@@ -118,6 +132,7 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("auto-migrate river: %w", err)
 	}
+	log.Println("[Queue] River queue database tables verified/migrated")
 
 	// Đăng ký Worker xử lý job gửi thông báo vào bundle `riverWorkers`.
 	// Lưu ý: River Queue bắt buộc bundle phải có ít nhất 1 worker được đăng ký trước khi start.
@@ -168,6 +183,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })
 	})
+	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, admin, banks)")
 
 	// 11. Khởi chạy River Queue Worker Engine
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
@@ -176,6 +192,7 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("start river client: %w", err)
 	}
+	log.Printf("[Queue] River queue worker engine started (%d workers)", cfg.River.WorkerCount)
 
 	// 12. Khởi chạy tác vụ dọn dẹp định kỳ (Media Cleanup & Auth Cleanup)
 	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
@@ -191,10 +208,12 @@ func New(ctx context.Context) (*App, error) {
 	}
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); cleanupWorkers.Run(workerCtx) }()
+	log.Printf("[Workers] Periodic cleanup workers started (interval: %v, media_interval: %v)", cfg.Cleanup.Interval, cfg.Cleanup.MediaWorkerInterval)
+
 	return app, nil
 }
 
-// Address trả về địa chỉ mạng đã cấu hình cho HTTP server.
+// Address trả về địa chỉ mạng đã cấu hình cho HTTP server (lấy từ biến HTTP_ADDRESS trong cấu hình).
 func (a *App) Address() string {
 	return a.server.Addr
 }
