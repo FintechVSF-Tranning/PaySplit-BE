@@ -205,6 +205,32 @@ paths:
       responses:
         "204": {description: Avatar reference cleared}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/users/me/fcm-token:
+    put:
+      operationId: updateMyFCMToken
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcm_token]
+              additionalProperties: false
+              properties:
+                fcm_token: {type: string, minLength: 1}
+      responses:
+        "200":
+          description: FCM token updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, enum: [ok]}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/groups:
     post:
       operationId: createGroup
@@ -424,6 +450,78 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/notifications:
+    get:
+      operationId: listNotifications
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: {type: integer, default: 1, minimum: 1}
+        - name: page_size
+          in: query
+          required: false
+          schema: {type: integer, default: 20, minimum: 1, maximum: 100}
+      responses:
+        "200":
+          description: Paginated notifications list
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PaginatedNotifications"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/notifications/unread-count:
+    get:
+      operationId: getUnreadNotificationsCount
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Unread notifications count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unread_count]
+                properties:
+                  unread_count: {type: integer, format: int64}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/notifications/read-all:
+    patch:
+      operationId: markAllNotificationsAsRead
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: All notifications marked as read
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/notifications/{id}/read:
+    patch:
+      operationId: markNotificationAsRead
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Notification marked as read
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: {type: string}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -556,6 +654,34 @@ components:
         bank_code: {type: string, nullable: true}
         bank_account_number: {type: string, pattern: "^[0-9]{6,19}$", nullable: true}
         bank_account_holder: {type: string, minLength: 1, maxLength: 100, nullable: true}
+    Notification:
+      type: object
+      required: [id, user_id, type, title, body, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+        type: {type: string}
+        title: {type: string}
+        body: {type: string}
+        payload: {type: object, nullable: true}
+        read_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+    PaginationMeta:
+      type: object
+      required: [page, page_size, total_items, total_pages]
+      properties:
+        page: {type: integer}
+        page_size: {type: integer}
+        total_items: {type: integer, format: int64}
+        total_pages: {type: integer}
+    PaginatedNotifications:
+      type: object
+      required: [items, meta]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Notification"}
+        meta: {$ref: "#/components/schemas/PaginationMeta"}
     Error:
       type: object
       required: [error]

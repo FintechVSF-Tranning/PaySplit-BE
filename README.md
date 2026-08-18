@@ -104,7 +104,7 @@ cp .env.example .env
 | --- | --- | --- |
 | `APP_ENV` | `development` | Tên môi trường chạy |
 | `HTTP_ADDRESS` | `:8080` | Địa chỉ API lắng nghe |
-| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/paysplit?sslmode=disable` | Chuỗi kết nối PostgreSQL |
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5433/paysplit?sslmode=disable` | Chuỗi kết nối PostgreSQL (port 5433 khi dùng docker compose) |
 | `DB_MAX_CONNS` / `DB_MIN_CONNS` | `10` / `2` | Giới hạn số kết nối của pgx pool |
 | `DB_MAX_CONN_LIFETIME_MINUTES` | `60` | Thời gian sống tối đa của một kết nối trong pool |
 | `DB_MAX_CONN_IDLE_MINUTES` | `15` | Thời gian nhàn rỗi tối đa trước khi đóng kết nối |
@@ -115,8 +115,11 @@ cp .env.example .env
 | `AUTH_REFRESH_TOKEN_TTL_HOURS` | `168` | Session tuyệt đối 7 ngày, rotation không kéo dài session |
 | `AUTH_EMAIL_VERIFICATION_TTL_MINUTES` / `AUTH_PASSWORD_RESET_TTL_MINUTES` | `10` | Thời hạn email token |
 | `AUTH_EMAIL_VERIFICATION_URL` / `AUTH_PASSWORD_RESET_URL` | — | Deep link hoặc HTTPS callback, backend thêm query `token` |
+| `APP_INVITE_BASE_URL` | `paysplit://join` | Base URL cho link mời nhóm |
 | `SMTP_USERNAME` / `SMTP_APP_PASSWORD` | — | Gmail có bật xác minh hai bước và Google App Password 16 ký tự |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | — | Cloudinary lưu avatar WebP |
+| `FIREBASE_CREDENTIALS_FILE` / `FIREBASE_CREDENTIALS_JSON` | — | Google Firebase Service Account credentials cho push notification FCM |
+| `FCM_TIMEOUT_SECONDS` | `5` | Thời gian timeout khi gửi tin FCM |
 
 **2. Khởi động PostgreSQL**
 
@@ -176,6 +179,7 @@ Image được build nhiều tầng: build binary tĩnh với `CGO_ENABLED=0` r�
 
 ## 🔌 Các endpoint API
 
+### Auth & User
 | Method | Đường dẫn | Mô tả |
 | --- | --- | --- |
 | `GET` | `/` | Tên dịch vụ, trạng thái, phiên bản |
@@ -191,6 +195,30 @@ Image được build nhiều tầng: build binary tĩnh với `CGO_ENABLED=0` r�
 | `GET/PATCH` | `/api/v1/users/me` | Đọc hoặc cập nhật hồ sơ |
 | `PUT` | `/api/v1/users/me/password` | Đổi password |
 | `PUT/DELETE` | `/api/v1/users/me/avatar` | Tải lên hoặc xóa avatar |
+| `PUT` | `/api/v1/users/me/fcm-token` | Cập nhật FCM registration token |
+
+### Groups
+| Method | Đường dẫn | Mô tả |
+| --- | --- | --- |
+| `POST` | `/api/v1/groups` | Tạo nhóm chi tiêu mới |
+| `GET` | `/api/v1/groups` | Danh sách nhóm đã tham gia (cursor pagination) |
+| `GET` | `/api/v1/groups/{id}` | Xem chi tiết nhóm và danh sách thành viên |
+| `POST` | `/api/v1/groups/{id}/invites` | Tạo hoặc lấy lại mã mời nhóm (Captain) |
+| `DELETE` | `/api/v1/groups/{id}/invites/{invite_id}` | Thu hồi mã mời nhóm (Captain) |
+| `GET` | `/api/v1/groups/invites/{code}` | Xem trước thông tin nhóm từ mã mời |
+| `POST` | `/api/v1/groups/join` | Tham gia nhóm bằng mã mời |
+| `POST` | `/api/v1/groups/{id}/leave` | Rời khỏi nhóm |
+| `DELETE` | `/api/v1/groups/{id}/members/{member_id}` | Loại thành viên khỏi nhóm (Captain) |
+| `PUT` | `/api/v1/groups/{id}/members/{member_id}/role` | Chuyển vai trò Captain |
+| `GET` | `/api/v1/groups/{id}/activities` | Xem lịch sử hoạt động nhóm (timeline) |
+
+### Notifications
+| Method | Đường dẫn | Mô tả |
+| --- | --- | --- |
+| `GET` | `/api/v1/notifications` | Danh sách thông báo in-app (phân trang `page`, `page_size`) |
+| `GET` | `/api/v1/notifications/unread-count` | Số lượng thông báo chưa đọc |
+| `PATCH` | `/api/v1/notifications/{id}/read` | Đánh dấu 1 thông báo đã đọc |
+| `PATCH` | `/api/v1/notifications/read-all` | Đánh dấu tất cả thông báo đã đọc |
 
 Hợp đồng API đầy đủ được mô tả trong [docs/openapi.yaml](docs/openapi.yaml). Route không tồn tại trả về JSON `404`; sai method trả về JSON `405`. Mọi request đều bị giới hạn bởi middleware timeout 15 giây.
 
@@ -203,6 +231,8 @@ Hợp đồng API đầy đủ được mô tả trong [docs/openapi.yaml](docs/
 
 Tuyệt đối không sửa tay bất cứ thứ gì trong thư mục `sqlc/` — chúng sẽ bị ghi đè mỗi lần sinh code.
 
-## Trạng thái auth
+## 📚 Tài liệu chi tiết các module
 
-Module auth v1 đã có schema PostgreSQL 18, email verification, password recovery, một session hoạt động cho mỗi user, refresh rotation và reuse detection, hồ sơ ngân hàng, avatar WebP cùng cleanup workers. Xem [docs/auth-module.md](docs/auth-module.md) để hiểu luồng code và cách mở rộng module.
+* [docs/auth-module.md](docs/auth-module.md) — Kiến trúc Auth v1, session management, OTP, token rotation, avatar pipeline.
+* [docs/group-module.md](docs/group-module.md) — Quản lý Group v1, row-level locking, membership invariants, mã mời, activity timeline.
+* [docs/notification-module.md](docs/notification-module.md) — Thông báo In-App, push FCM, River Queue background worker, dead token pruning.

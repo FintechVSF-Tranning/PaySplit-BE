@@ -16,6 +16,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 3 | Bill and OCR v1 | Slice 3 | in-progress |
 | 4 | Split and settlement v1 | Slice 4 | in-progress |
 | 5 | Admin v1 | Slice 5 | in-progress |
+| 6 | Notification and background queue v1 | Slice 6 | done |
 
 ## Slice 1: Identity and account
 
@@ -127,6 +128,28 @@ Provide account search, filtering, and pagination, account detail inspection wit
 - [ ] Document it: `/document admin v1`
 
 Spec [0005](../specs/0005-admin-v1/index.md) · planned code in `internal/modules/admin/`, `internal/transport/http/router/`, and `internal/bootstrap/`
+
+## Slice 6: Notification and background queue
+
+### 6. Notification and background queue v1 · in-progress
+
+Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed River Queue job processing, device token session binding, dead token pruning, and in-app notification center.
+
+**Done when:** all seven acceptance criteria in spec 0006 pass against PostgreSQL 18, background jobs run reliably through River with exponential backoff on transient errors, dead FCM tokens are pruned automatically, in-app notifications support unread count and pagination, and graceful shutdown drains queue workers cleanly.
+
+- [x] Design it (spec): `/architect notification and background queue v1`
+- [x] Build it: `/develop notification and background queue v1`
+  - [x] PostgreSQL schema migration for session FCM token and notification records (satisfies AC-1, AC-3)
+  - [x] River Queue platform adapter, worker registry, and graceful lifecycle wiring (satisfies AC-2, AC-7)
+  - [x] FCM push notification client, payload builders, and dead token pruning (satisfies AC-4, AC-5)
+  - [x] In-app notification repository, usecase, and River enqueuer (satisfies AC-3, AC-4, AC-6)
+  - [x] HTTP delivery handlers, routes registration, and unit/integration tests (satisfies AC-1, AC-6)
+- [x] Verify it: `/check verify notification and background queue v1`
+- [x] Test it: `/test notification and background queue v1`
+- [x] Review it (fresh model): `/check review notification and background queue v1`
+- [x] Document it: `/document notification and background queue v1`
+
+Spec [0006](../specs/0006-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
 
 ## Deferred
 

@@ -83,6 +83,14 @@ func SessionID(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// WithAuthContext injects authentication identity into context (useful for testing and internal calls)
+func WithAuthContext(ctx context.Context, userID, sessionID, role string) context.Context {
+	ctx = context.WithValue(ctx, userIDContextKey, userID)
+	ctx = context.WithValue(ctx, sessionIDContextKey, sessionID)
+	ctx = context.WithValue(ctx, userRoleContextKey, role)
+	return ctx
+}
+
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, role := range roles {

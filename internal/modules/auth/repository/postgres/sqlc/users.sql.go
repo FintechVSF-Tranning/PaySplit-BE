@@ -117,3 +117,22 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	)
 	return i, err
 }
+
+const updateSessionFCMToken = `-- name: UpdateSessionFCMToken :execrows
+UPDATE sessions
+SET fcm_token = $2
+WHERE id = $1 AND revoked_at IS NULL
+`
+
+type UpdateSessionFCMTokenParams struct {
+	ID       pgtype.UUID `json:"id"`
+	FcmToken pgtype.Text `json:"fcm_token"`
+}
+
+func (q *Queries) UpdateSessionFCMToken(ctx context.Context, arg UpdateSessionFCMTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateSessionFCMToken, arg.ID, arg.FcmToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

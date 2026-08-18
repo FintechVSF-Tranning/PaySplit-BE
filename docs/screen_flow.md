@@ -96,7 +96,7 @@ graph TD
 
 ## 3. Phân chia Module Backend & Danh sách API
 
-Dựa trên thiết kế kiến trúc phần mềm (High-Level Architecture) và thiết kế cơ sở dữ liệu (Database Schema), Backend được chia thành 5 module cốt lõi.
+Dựa trên thiết kế kiến trúc phần mềm (High-Level Architecture) và thiết kế cơ sở dữ liệu (Database Schema), Backend được chia thành 6 module cốt lõi.
 
 ### Module 1: Auth & User (Xác thực và Người dùng)
 
@@ -173,3 +173,18 @@ Module dành riêng cho người vận hành để kiểm soát nền tảng và
 - **`GET /health`**, **`GET /health/ready`** & **`GET /metrics`**: Giám sát tình trạng hệ thống, hàng đợi job (River queue) và hiệu suất API (4.1.23).
 
 - **`GET /api/v1/admin/system/overview`**: Tổng quan thống kê nền tảng cho dashboard quản trị (4.1.23).
+
+### Module 6: Notification & Background Queue (Thông báo & Hàng đợi ngầm)
+
+Quản lý thông báo in-app, push notification qua Firebase Cloud Messaging (FCM), và xử lý tác vụ nền bất đồng bộ với River Queue.
+
+- **`PUT /api/v1/users/me/fcm-token`**: Cập nhật FCM token thiết bị cho phiên đăng nhập hiện tại.
+
+- **`GET /api/v1/notifications`**: Lấy danh sách thông báo in-app của người dùng có phân trang.
+
+- **`GET /api/v1/notifications/unread-count`**: Đếm số lượng thông báo chưa đọc.
+
+- **`PATCH /api/v1/notifications/{id}/read`**: Đánh dấu 1 thông báo cụ thể là đã đọc.
+
+- **`PATCH /api/v1/notifications/read-all`**: Đánh dấu tất cả thông báo của người dùng là đã đọc.
+

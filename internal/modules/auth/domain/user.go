@@ -35,6 +35,7 @@ type Session struct {
 	ID        string
 	UserID    string
 	DeviceID  string
+	FCMToken  *string
 	ExpiresAt time.Time
 }
 
