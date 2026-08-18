@@ -297,4 +297,3 @@ func sortUUIDs(uuids []uuid.UUID) {
 		return bytes.Compare(uuids[i][:], uuids[j][:]) < 0
 	})
 }
-

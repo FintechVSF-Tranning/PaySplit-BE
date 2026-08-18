@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -77,7 +78,10 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 		// Đọc metadata JSON
 		metaJSON := r.FormValue("metadata")
 		if metaJSON != "" {
-			_ = json.Unmarshal([]byte(metaJSON), &req)
+			if err := json.Unmarshal([]byte(metaJSON), &req); err != nil {
+				_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid metadata JSON", nil)
+				return
+			}
 		} else {
 			groupIDStr := r.FormValue("group_id")
 			if gID, err := uuid.Parse(groupIDStr); err == nil {
@@ -99,13 +103,16 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 			for _, fh := range fileHeaders {
 				f, err := fh.Open()
 				if err != nil {
-					continue
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", fmt.Sprintf("failed to open uploaded file: %v", err), nil)
+					return
 				}
 				data, err := io.ReadAll(f)
 				f.Close()
-				if err == nil {
-					req.Files = append(req.Files, data)
+				if err != nil {
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", fmt.Sprintf("failed to read uploaded file: %v", err), nil)
+					return
 				}
+				req.Files = append(req.Files, data)
 			}
 		}
 		reqBodyBytes, _ = json.Marshal(map[string]any{

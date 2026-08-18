@@ -120,4 +120,3 @@ func TestProcessor_TimeoutReleasesSlot(t *testing.T) {
 		t.Error("expected non-empty output")
 	}
 }
-

@@ -70,7 +70,7 @@ func NewOCRWorker(
 // Work được River Queue tự động kích hoạt khi có job OCR trong hàng đợi.
 func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error {
 	if w.repo == nil || w.storage == nil || w.ocrProvider == nil {
-		return nil
+		return errors.New("ocr worker dependencies not configured")
 	}
 
 	billID, err := uuid.Parse(job.Args.BillID)
@@ -354,4 +354,3 @@ func stitchReceiptImages(images [][]byte) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
-

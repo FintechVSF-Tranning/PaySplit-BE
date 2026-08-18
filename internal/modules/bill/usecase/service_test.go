@@ -1189,10 +1189,10 @@ func TestApplyCandidate_PropagatesMismatchWarnings(t *testing.T) {
 			Version:          1,
 		},
 		ocrJob: &domain.OCRJob{
-			ID:       jobID,
-			BillID:   billID,
-			Status:   domain.OCRJobStatusSucceeded,
-			Version:  1,
+			ID:      jobID,
+			BillID:  billID,
+			Status:  domain.OCRJobStatusSucceeded,
+			Version: 1,
 			Candidate: &domain.OCRCandidate{
 				Subtotal: 100000,
 				Total:    120000,
@@ -1502,5 +1502,82 @@ func TestRetryOCR_CapturesCurrentBillVersion(t *testing.T) {
 	}
 }
 
+func TestCreateBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
 
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+	}
 
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	items := make([]usecase.CreateBillItemRequest, 101)
+	for i := range items {
+		items[i] = usecase.CreateBillItemRequest{
+			Name:      "Item",
+			Quantity:  "1",
+			UnitPrice: 1000,
+			LineTotal: 1000,
+		}
+	}
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Items:   items,
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput when creating bill with > 100 items, got %v", err)
+	}
+}
+
+func TestUpdateDraftBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: memberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	items := make([]usecase.CreateBillItemRequest, 101)
+	for i := range items {
+		items[i] = usecase.CreateBillItemRequest{
+			Name:      "Item",
+			Quantity:  "1",
+			UnitPrice: 1000,
+			LineTotal: 1000,
+		}
+	}
+
+	_, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version: 1,
+		Items:   items,
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput when updating bill with > 100 items, got %v", err)
+	}
+}

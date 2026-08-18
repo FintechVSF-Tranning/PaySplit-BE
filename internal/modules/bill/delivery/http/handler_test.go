@@ -449,3 +449,45 @@ func TestDeleteDraftBill_Handler_Success(t *testing.T) {
 		t.Fatalf("expected status 204 No Content, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 }
+
+func TestCreateBill_Multipart_InvalidMetadataJSON_ReturnsBadRequest(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	repo := &mockHandlerRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockHandlerOCR{}, &mockHandlerStorage{}, &mockHandlerProcessor{}, nil)
+	handler := billhttp.NewHandler(service, nil)
+
+	r := chi.NewRouter()
+	handler.RegisterRoutes(r, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ctx := authmw.WithAuthContext(req.Context(), userID.String(), "s-1", "user")
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	})
+
+	body := &bytes.Buffer{}
+	body.WriteString("--boundary\r\n")
+	body.WriteString("Content-Disposition: form-data; name=\"metadata\"\r\n\r\n")
+	body.WriteString("{invalid-json\r\n")
+	body.WriteString("--boundary--\r\n")
+
+	req, _ := http.NewRequest(http.MethodPost, "/", body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}

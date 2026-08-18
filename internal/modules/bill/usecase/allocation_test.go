@@ -218,4 +218,3 @@ func TestHamilton_LargeDiscount_NeverProducesNegativeFinalAmount(t *testing.T) {
 		t.Errorf("expected total sum = 1, got %d", sum)
 	}
 }
-

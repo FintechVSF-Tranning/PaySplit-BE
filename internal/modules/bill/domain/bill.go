@@ -39,27 +39,27 @@ const (
 
 // Bill là thực thể hóa đơn chính trong hệ thống.
 type Bill struct {
-	ID               uuid.UUID   `json:"id"`
-	GroupID          uuid.UUID   `json:"group_id"`
-	CreditorMemberID uuid.UUID   `json:"creditor_member_id"`
-	Status           BillStatus  `json:"status"`
-	MerchantName     *string     `json:"merchant_name,omitempty"`
-	BillDate         *time.Time  `json:"bill_date,omitempty"`
-	Subtotal         int64       `json:"subtotal"`
-	ServiceCharge    int64       `json:"service_charge"`
-	VAT              int64       `json:"vat"`
-	Discount         int64       `json:"discount"`
-	Total            int64       `json:"total"`
-	SplitMethod      SplitMethod `json:"split_method"`
-	MismatchCodes    []string    `json:"mismatch_codes"`
-	ReplacesBillID   *uuid.UUID  `json:"replaces_bill_id,omitempty"`
-	Version          int32       `json:"version"`
-	FinalizedAt          *time.Time  `json:"finalized_at,omitempty"`
-	VoidedAt             *time.Time  `json:"voided_at,omitempty"`
-	ReviewedAt           *time.Time  `json:"reviewed_at,omitempty"`
-	ReviewedByMemberID   *uuid.UUID  `json:"reviewed_by_member_id,omitempty"`
-	CreatedAt            time.Time   `json:"created_at"`
-	UpdatedAt            time.Time   `json:"updated_at"`
+	ID                 uuid.UUID   `json:"id"`
+	GroupID            uuid.UUID   `json:"group_id"`
+	CreditorMemberID   uuid.UUID   `json:"creditor_member_id"`
+	Status             BillStatus  `json:"status"`
+	MerchantName       *string     `json:"merchant_name,omitempty"`
+	BillDate           *time.Time  `json:"bill_date,omitempty"`
+	Subtotal           int64       `json:"subtotal"`
+	ServiceCharge      int64       `json:"service_charge"`
+	VAT                int64       `json:"vat"`
+	Discount           int64       `json:"discount"`
+	Total              int64       `json:"total"`
+	SplitMethod        SplitMethod `json:"split_method"`
+	MismatchCodes      []string    `json:"mismatch_codes"`
+	ReplacesBillID     *uuid.UUID  `json:"replaces_bill_id,omitempty"`
+	Version            int32       `json:"version"`
+	FinalizedAt        *time.Time  `json:"finalized_at,omitempty"`
+	VoidedAt           *time.Time  `json:"voided_at,omitempty"`
+	ReviewedAt         *time.Time  `json:"reviewed_at,omitempty"`
+	ReviewedByMemberID *uuid.UUID  `json:"reviewed_by_member_id,omitempty"`
+	CreatedAt          time.Time   `json:"created_at"`
+	UpdatedAt          time.Time   `json:"updated_at"`
 
 	// Quan hệ (populated khi load chi tiết)
 	Images []*BillImage `json:"images,omitempty"`

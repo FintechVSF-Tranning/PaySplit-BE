@@ -352,3 +352,19 @@ func TestOCRWorker_MultipleImagesStitched_Success(t *testing.T) {
 	}
 }
 
+func TestOCRWorker_MissingDependencies_ReturnsError(t *testing.T) {
+	worker := jobs.NewOCRWorker(nil, nil, nil, nil, 5*time.Second)
+
+	job := &river.Job[jobs.OCRJobArgs]{
+		Args: jobs.OCRJobArgs{
+			BillID:  uuid.New().String(),
+			JobID:   uuid.New().String(),
+			GroupID: uuid.New().String(),
+		},
+	}
+
+	err := worker.Work(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected error when OCRWorker dependencies are nil, got nil")
+	}
+}

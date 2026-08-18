@@ -1456,4 +1456,3 @@ func (r *postgresRepository) PurgeExpiredRawOCRResponses(ctx context.Context, ol
 	}
 	return tag.RowsAffected(), nil
 }
-

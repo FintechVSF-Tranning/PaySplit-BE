@@ -162,6 +162,9 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	if len(req.Files) > 5 {
 		return nil, fmt.Errorf("%w: maximum 5 receipt images allowed", domain.ErrInvalidInput)
 	}
+	if len(req.Items) > 100 {
+		return nil, fmt.Errorf("%w: maximum 100 items allowed", domain.ErrInvalidInput)
+	}
 
 	// Kiểm tra tính hợp lệ của replaces_bill_id nếu được truyền (Spec 3 AC-11)
 	if req.ReplacesBillID != nil && *req.ReplacesBillID != uuid.Nil {
@@ -229,7 +232,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	for i, it := range req.Items {
 		itemID := uuid.Must(uuid.NewV7())
 		lineTotal := it.LineTotal
-		if lineTotal <= 0 && it.UnitPrice > 0 {
+		if lineTotal == 0 && it.UnitPrice > 0 {
 			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
 		}
 
@@ -491,7 +494,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	// Lấy danh sách thành viên active trong nhóm để chia đều các món bóc tách
 	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, groupID)
 	if err != nil || len(activeMembers) == 0 {
-		return nil, errors.New("no active members to assign")
+		return nil, fmt.Errorf("%w: no active members to assign", domain.ErrBillNotReady)
 	}
 
 	candidate := ocrJob.Candidate
@@ -569,6 +572,10 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 		return nil, domain.ErrBillImmutable
 	}
 
+	if len(req.Items) > 100 {
+		return nil, fmt.Errorf("%w: maximum 100 items allowed", domain.ErrInvalidInput)
+	}
+
 	// Kiểm tra giá trị discount không được âm
 	if req.Discount < 0 {
 		return nil, domain.ErrInvalidInput
@@ -597,7 +604,7 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	for i, it := range req.Items {
 		itemID := uuid.Must(uuid.NewV7())
 		lineTotal := it.LineTotal
-		if lineTotal <= 0 && it.UnitPrice > 0 {
+		if lineTotal == 0 && it.UnitPrice > 0 {
 			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
 		}
 
@@ -1065,4 +1072,3 @@ func HashSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
-
