@@ -15,6 +15,12 @@ ALTER TABLE bills
     ADD COLUMN IF NOT EXISTS split_method TEXT NOT NULL DEFAULT 'even',
     ADD COLUMN IF NOT EXISTS mismatch_codes TEXT[] NOT NULL DEFAULT '{}';
 
+-- Cập nhật ràng buộc trạng thái finalized/voided (thay thế bills_check1 cũ)
+ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_check1;
+ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_finalized_check;
+ALTER TABLE bills ADD CONSTRAINT bills_finalized_check 
+    CHECK ((status IN ('finalized', 'voided')) = (finalized_at IS NOT NULL));
+
 -- Bổ sung CHECK constraints và Index cho bills
 ALTER TABLE bills 
     ADD CONSTRAINT bills_split_method_check CHECK (split_method IN ('even', 'item_ratio', 'exact', 'shares', 'percentage')),
@@ -40,6 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_bill_images_bill ON bill_images(bill_id, position
 -- 4. Bổ sung cột position vào bảng bill_items để giữ đúng thứ tự món ăn
 ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS position SMALLINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_bill_items_bill_pos ON bill_items(bill_id, position);
+
+-- Đảm bảo cột weight trong bill_item_assignments tồn tại (hoặc rename từ share_ratio nếu có)
+DO $$ BEGIN ALTER TABLE bill_item_assignments RENAME COLUMN share_ratio TO weight; EXCEPTION WHEN undefined_column THEN null; END $$;
+ALTER TABLE bill_item_assignments ADD COLUMN IF NOT EXISTS weight NUMERIC(10,4) NOT NULL DEFAULT 1;
 
 -- 5. Tạo bảng bill_shares: Snapshot phân bổ nợ chi tiết của từng thành viên sau khi Finalize (Spec 3 AC-9)
 CREATE TABLE IF NOT EXISTS bill_shares (

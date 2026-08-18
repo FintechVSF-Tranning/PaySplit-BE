@@ -9,8 +9,17 @@ var (
 	// ErrBillNotFound trả về khi hóa đơn không tồn tại hoặc caller không có quyền truy cập trong group.
 	ErrBillNotFound = errors.New("bill not found")
 
+	// ErrBillConflict trả về khi version cung cấp không khớp hoặc hóa đơn đã bị thay đổi đồng thời.
+	ErrBillConflict = errors.New("bill conflict")
+
 	// ErrVersionConflict trả về khi version cung cấp không khớp với version hiện tại trong database.
-	ErrVersionConflict = errors.New("version conflict")
+	ErrVersionConflict = ErrBillConflict
+
+	// ErrOcrJobNotFound trả về khi không tìm thấy OCR job tương ứng.
+	ErrOcrJobNotFound = errors.New("ocr job not found")
+
+	// ErrOcrJobConflict trả về khi version của OCR job không khớp.
+	ErrOcrJobConflict = errors.New("ocr job conflict")
 
 	// ErrBillImmutable trả về khi cố gắng thay đổi một hóa đơn đã finalized.
 	ErrBillImmutable = errors.New("bill is immutable")
