@@ -303,6 +303,59 @@ func (q *Queries) CreateBillShare(ctx context.Context, arg CreateBillShareParams
 	return i, err
 }
 
+const createDebt = `-- name: CreateDebt :one
+INSERT INTO debts (
+    id,
+    group_id,
+    bill_id,
+    debtor_member_id,
+    creditor_member_id,
+    amount,
+    status,
+    reminder_count,
+    created_at,
+    updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, 'awaiting', 0, now(), now()
+) RETURNING id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at
+`
+
+type CreateDebtParams struct {
+	ID               pgtype.UUID `json:"id"`
+	GroupID          pgtype.UUID `json:"group_id"`
+	BillID           pgtype.UUID `json:"bill_id"`
+	DebtorMemberID   pgtype.UUID `json:"debtor_member_id"`
+	CreditorMemberID pgtype.UUID `json:"creditor_member_id"`
+	Amount           int64       `json:"amount"`
+}
+
+func (q *Queries) CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, error) {
+	row := q.db.QueryRow(ctx, createDebt,
+		arg.ID,
+		arg.GroupID,
+		arg.BillID,
+		arg.DebtorMemberID,
+		arg.CreditorMemberID,
+		arg.Amount,
+	)
+	var i Debt
+	err := row.Scan(
+		&i.ID,
+		&i.GroupID,
+		&i.BillID,
+		&i.DebtorMemberID,
+		&i.CreditorMemberID,
+		&i.Amount,
+		&i.Status,
+		&i.ReminderCount,
+		&i.PaymentID,
+		&i.CreatedAt,
+		&i.SettledAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createOCRJob = `-- name: CreateOCRJob :one
 
 INSERT INTO ocr_jobs (
@@ -567,6 +620,32 @@ func (q *Queries) GetBillByIDForUpdate(ctx context.Context, arg GetBillByIDForUp
 	return i, err
 }
 
+const getGroupMember = `-- name: GetGroupMember :one
+SELECT id, group_id, user_id, role, status, joined_at, left_at
+FROM group_members
+WHERE group_id = $1 AND user_id = $2
+`
+
+type GetGroupMemberParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	UserID  pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetGroupMember(ctx context.Context, arg GetGroupMemberParams) (GroupMember, error) {
+	row := q.db.QueryRow(ctx, getGroupMember, arg.GroupID, arg.UserID)
+	var i GroupMember
+	err := row.Scan(
+		&i.ID,
+		&i.GroupID,
+		&i.UserID,
+		&i.Role,
+		&i.Status,
+		&i.JoinedAt,
+		&i.LeftAt,
+	)
+	return i, err
+}
+
 const getLatestOCRJobByBillID = `-- name: GetLatestOCRJobByBillID :one
 SELECT id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version FROM ocr_jobs
 WHERE bill_id = $1
@@ -617,6 +696,40 @@ func (q *Queries) GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, er
 		&i.Version,
 	)
 	return i, err
+}
+
+const listActiveGroupMembers = `-- name: ListActiveGroupMembers :many
+SELECT id, group_id, user_id, role, status, joined_at, left_at
+FROM group_members
+WHERE group_id = $1 AND status = 'active'
+`
+
+func (q *Queries) ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error) {
+	rows, err := q.db.Query(ctx, listActiveGroupMembers, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GroupMember
+	for rows.Next() {
+		var i GroupMember
+		if err := rows.Scan(
+			&i.ID,
+			&i.GroupID,
+			&i.UserID,
+			&i.Role,
+			&i.Status,
+			&i.JoinedAt,
+			&i.LeftAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listBillImages = `-- name: ListBillImages :many
@@ -1119,4 +1232,16 @@ func (q *Queries) VoidBill(ctx context.Context, arg VoidBillParams) (Bill, error
 		&i.MismatchCodes,
 	)
 	return i, err
+}
+
+const voidDebtsByBillID = `-- name: VoidDebtsByBillID :exec
+UPDATE debts
+SET status = 'voided',
+    updated_at = now()
+WHERE bill_id = $1 AND status = 'awaiting'
+`
+
+func (q *Queries) VoidDebtsByBillID(ctx context.Context, billID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, voidDebtsByBillID, billID)
+	return err
 }

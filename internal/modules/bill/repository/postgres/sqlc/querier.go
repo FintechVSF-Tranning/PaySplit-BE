@@ -26,6 +26,7 @@ type Querier interface {
 	// BILL SHARES (Hamilton Finalized Snapshot)
 	// ============================================================================
 	CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error)
+	CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, error)
 	// ============================================================================
 	// OCR JOBS
 	// ============================================================================
@@ -39,8 +40,10 @@ type Querier interface {
 	GetActiveOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetBillByID(ctx context.Context, arg GetBillByIDParams) (Bill, error)
 	GetBillByIDForUpdate(ctx context.Context, arg GetBillByIDForUpdateParams) (Bill, error)
+	GetGroupMember(ctx context.Context, arg GetGroupMemberParams) (GroupMember, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, error)
+	ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error)
 	ListBillImages(ctx context.Context, billID pgtype.UUID) ([]BillImage, error)
 	ListBillItemAssignmentsByBill(ctx context.Context, billID pgtype.UUID) ([]BillItemAssignment, error)
 	ListBillItemAssignmentsByItem(ctx context.Context, billItemID pgtype.UUID) ([]BillItemAssignment, error)
@@ -53,6 +56,7 @@ type Querier interface {
 	UpdateOCRJobProcessing(ctx context.Context, arg UpdateOCRJobProcessingParams) (OcrJob, error)
 	UpdateOCRJobSuccess(ctx context.Context, arg UpdateOCRJobSuccessParams) (OcrJob, error)
 	VoidBill(ctx context.Context, arg VoidBillParams) (Bill, error)
+	VoidDebtsByBillID(ctx context.Context, billID pgtype.UUID) error
 }
 
 var _ Querier = (*Queries)(nil)

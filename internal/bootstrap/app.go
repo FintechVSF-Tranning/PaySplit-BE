@@ -145,7 +145,8 @@ func New(ctx context.Context) (*App, error) {
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
 	billEnqueuer := billjobs.NewEnqueuer(riverClient)
-	_ = billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
+	billService := billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
+	billHandler := billhttp.NewHandler(billService, billSSEHandler)
 
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
@@ -161,9 +162,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
-		api.Route("/bills", func(r chi.Router) {
-			r.With(liveAuth).Get("/{id}/events", billSSEHandler.StreamBillEvents)
-		})
+		api.Route("/bills", func(r chi.Router) { billHandler.RegisterRoutes(r, liveAuth) })
 	})
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)

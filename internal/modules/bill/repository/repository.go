@@ -9,6 +9,26 @@ import (
 	"paysplit-backend/internal/modules/bill/domain"
 )
 
+// GroupMember đại diện cho thông tin thành viên trong nhóm.
+type GroupMember struct {
+	ID      uuid.UUID
+	GroupID uuid.UUID
+	UserID  uuid.UUID
+	Role    string
+	Status  string
+}
+
+// Debt đại diện cho một bản ghi công nợ sinh ra sau khi Finalize bill.
+type Debt struct {
+	ID               uuid.UUID
+	GroupID          uuid.UUID
+	BillID           uuid.UUID
+	DebtorMemberID   uuid.UUID
+	CreditorMemberID uuid.UUID
+	Amount           int64
+	Status           string
+}
+
 // CreateBillParams chứa dữ liệu để tạo mới một hóa đơn (kèm ảnh, món ăn và job OCR nếu có) trong một transaction.
 type CreateBillParams struct {
 	Bill   *domain.Bill
@@ -30,6 +50,7 @@ type FinalizeBillParams struct {
 	GroupID         uuid.UUID
 	ExpectedVersion int32
 	Shares          []*domain.BillShare
+	Debts           []*Debt
 	ActorMemberID   uuid.UUID
 }
 
@@ -43,6 +64,10 @@ type VoidBillParams struct {
 
 // Repository định nghĩa các phương thức thao tác dữ liệu của module Bill & OCR.
 type Repository interface {
+	// Group Members
+	GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*GroupMember, error)
+	ListActiveGroupMembers(ctx context.Context, groupID uuid.UUID) ([]*GroupMember, error)
+
 	// CreateBill lưu hóa đơn mới (kèm danh sách ảnh, món ăn, phân bổ và ocr job nếu có) trong 1 database transaction.
 	CreateBill(ctx context.Context, params CreateBillParams) (*domain.Bill, error)
 

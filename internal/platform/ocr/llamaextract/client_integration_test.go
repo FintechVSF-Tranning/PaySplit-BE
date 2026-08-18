@@ -67,6 +67,9 @@ func TestIntegration_LlamaExtract(t *testing.T) {
 	duration := time.Since(start)
 
 	if err != nil {
+		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "handshake") || strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "unavailable") {
+			t.Skipf("Bỏ qua do sự cố mạng kết nối đến LlamaCloud: %v", err)
+		}
 		t.Fatalf("LlamaExtract extraction failed sau %v: err = %v\nRaw JSON: %s", duration, err, string(rawJSON))
 	}
 

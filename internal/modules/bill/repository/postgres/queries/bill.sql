@@ -254,3 +254,35 @@ RETURNING *;
 -- name: CountManualOCRAttemptsInWindow :one
 SELECT COUNT(*) FROM ocr_jobs
 WHERE bill_id = $1 AND created_at >= $2;
+
+-- name: GetGroupMember :one
+SELECT id, group_id, user_id, role, status, joined_at, left_at
+FROM group_members
+WHERE group_id = $1 AND user_id = $2;
+
+-- name: ListActiveGroupMembers :many
+SELECT id, group_id, user_id, role, status, joined_at, left_at
+FROM group_members
+WHERE group_id = $1 AND status = 'active';
+
+-- name: CreateDebt :one
+INSERT INTO debts (
+    id,
+    group_id,
+    bill_id,
+    debtor_member_id,
+    creditor_member_id,
+    amount,
+    status,
+    reminder_count,
+    created_at,
+    updated_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, 'awaiting', 0, now(), now()
+) RETURNING *;
+
+-- name: VoidDebtsByBillID :exec
+UPDATE debts
+SET status = 'voided',
+    updated_at = now()
+WHERE bill_id = $1 AND status = 'awaiting';

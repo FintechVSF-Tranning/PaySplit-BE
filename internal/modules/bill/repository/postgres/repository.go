@@ -429,6 +429,55 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 	return toDomainBill(&dbBill), nil
 }
 
+// GetGroupMember lấy thông tin thành viên trong nhóm theo user ID.
+func (r *postgresRepository) GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*repository.GroupMember, error) {
+	q := sqlc.New(r.pool)
+	m, err := q.GetGroupMember(ctx, sqlc.GetGroupMemberParams{
+		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
+		UserID:  pgtype.UUID{Bytes: userID, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, fmt.Errorf("get group member: %w", err)
+	}
+
+	roleStr := fmt.Sprintf("%v", m.Role)
+	statusStr := fmt.Sprintf("%v", m.Status)
+
+	return &repository.GroupMember{
+		ID:      uuid.UUID(m.ID.Bytes),
+		GroupID: uuid.UUID(m.GroupID.Bytes),
+		UserID:  uuid.UUID(m.UserID.Bytes),
+		Role:    roleStr,
+		Status:  statusStr,
+	}, nil
+}
+
+// ListActiveGroupMembers lấy danh sách các thành viên active trong nhóm.
+func (r *postgresRepository) ListActiveGroupMembers(ctx context.Context, groupID uuid.UUID) ([]*repository.GroupMember, error) {
+	q := sqlc.New(r.pool)
+	members, err := q.ListActiveGroupMembers(ctx, pgtype.UUID{Bytes: groupID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("list active group members: %w", err)
+	}
+
+	result := make([]*repository.GroupMember, 0, len(members))
+	for _, m := range members {
+		roleStr := fmt.Sprintf("%v", m.Role)
+		statusStr := fmt.Sprintf("%v", m.Status)
+		result = append(result, &repository.GroupMember{
+			ID:      uuid.UUID(m.ID.Bytes),
+			GroupID: uuid.UUID(m.GroupID.Bytes),
+			UserID:  uuid.UUID(m.UserID.Bytes),
+			Role:    roleStr,
+			Status:  statusStr,
+		})
+	}
+	return result, nil
+}
+
 // FinalizeBill chuyển trạng thái hóa đơn sang finalized, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
 func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.FinalizeBillParams) (*domain.Bill, error) {
 	tx, err := r.pool.Begin(ctx)
@@ -472,6 +521,24 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 		createdShares = append(createdShares, toDomainBillShare(&dbShare))
 	}
 
+	// 3. Tạo các bản ghi debts cho từng thành viên nợ (Spec 3 AC-9)
+	for _, debt := range p.Debts {
+		if debt.Amount <= 0 {
+			continue
+		}
+		_, err := q.CreateDebt(ctx, sqlc.CreateDebtParams{
+			ID:               pgtype.UUID{Bytes: debt.ID, Valid: true},
+			GroupID:          pgtype.UUID{Bytes: debt.GroupID, Valid: true},
+			BillID:           pgtype.UUID{Bytes: debt.BillID, Valid: true},
+			DebtorMemberID:   pgtype.UUID{Bytes: debt.DebtorMemberID, Valid: true},
+			CreditorMemberID: pgtype.UUID{Bytes: debt.CreditorMemberID, Valid: true},
+			Amount:           debt.Amount,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create debt for member %s: %w", debt.DebtorMemberID, err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit finalize bill tx: %w", err)
 	}
@@ -481,9 +548,15 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 	return result, nil
 }
 
-// VoidBill chuyển trạng thái hóa đơn sang voided (Spec 3 AC-10).
+// VoidBill chuyển trạng thái hóa đơn sang voided và hủy debts (Spec 3 AC-10).
 func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBillParams) (*domain.Bill, error) {
-	q := sqlc.New(r.pool)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin void bill tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := sqlc.New(tx)
 
 	dbBill, err := q.VoidBill(ctx, sqlc.VoidBillParams{
 		ID:      pgtype.UUID{Bytes: p.BillID, Valid: true},
@@ -495,6 +568,15 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 			return nil, domain.ErrBillConflict
 		}
 		return nil, fmt.Errorf("void bill: %w", err)
+	}
+
+	// Hủy bỏ toàn bộ các khoản nợ awaiting liên quan đến bill này
+	if err := q.VoidDebtsByBillID(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true}); err != nil {
+		return nil, fmt.Errorf("void debts: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit void bill tx: %w", err)
 	}
 
 	return toDomainBill(&dbBill), nil
