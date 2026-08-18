@@ -42,11 +42,11 @@ func (m *mockWorkerRepo) ClearFCMToken(ctx context.Context, userID, fcmToken str
 
 type mockWorkerNotifier struct {
 	sentToken string
-	sentMsg   fcm.PushMessage
+	sentMsg   domain.PushMessage
 	errToSend error
 }
 
-func (m *mockWorkerNotifier) SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error {
+func (m *mockWorkerNotifier) SendToDevice(ctx context.Context, fcmToken string, msg domain.PushMessage) error {
 	m.sentToken = fcmToken
 	m.sentMsg = msg
 	return m.errToSend

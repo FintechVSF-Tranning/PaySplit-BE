@@ -9,6 +9,8 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
 	"google.golang.org/api/option"
+
+	"paysplit-backend/internal/modules/notification/domain"
 )
 
 const (
@@ -27,11 +29,7 @@ var (
 	ErrInvalidMessage = errors.New("fcm: invalid message payload")
 )
 
-type PushMessage struct {
-	Title string            `json:"title"`
-	Body  string            `json:"body"`
-	Data  map[string]string `json:"data,omitempty"`
-}
+type PushMessage = domain.PushMessage
 
 type Notifier struct {
 	client  *messaging.Client
@@ -122,6 +120,11 @@ func IsInvalidTokenError(err error) bool {
 		return false
 	}
 	return errors.Is(err, ErrInvalidToken) || messaging.IsRegistrationTokenNotRegistered(err)
+}
+
+// IsInvalidToken triển khai phương thức cho interface PushNotifier ở tầng usecase.
+func (n *Notifier) IsInvalidToken(err error) bool {
+	return IsInvalidTokenError(err)
 }
 
 // IsInvalidMessageError kiểm tra xem lỗi trả về có phải do nội dung message gửi lên FCM không
