@@ -89,6 +89,14 @@ func (m *mockOCRProvider) ExtractReceipt(ctx context.Context, imageBytes []byte,
 	return m.candidate, m.rawJSON, m.err
 }
 
+type mockBroadcaster struct {
+	events []string
+}
+
+func (m *mockBroadcaster) Broadcast(billID uuid.UUID, eventType string, data any) {
+	m.events = append(m.events, eventType)
+}
+
 func TestOCRWorker_Success(t *testing.T) {
 	billID := uuid.New()
 	jobID := uuid.New()
@@ -127,7 +135,8 @@ func TestOCRWorker_Success(t *testing.T) {
 		rawJSON: []byte(`{"total": 100000}`),
 	}
 
-	worker := jobs.NewOCRWorker(repo, storage, provider, 5*time.Second)
+	broadcaster := &mockBroadcaster{}
+	worker := jobs.NewOCRWorker(repo, storage, provider, broadcaster, 5*time.Second)
 
 	job := &river.Job[jobs.OCRJobArgs]{
 		JobRow: &rivertype.JobRow{
@@ -152,6 +161,9 @@ func TestOCRWorker_Success(t *testing.T) {
 	if !repo.success {
 		t.Error("expected job to be marked as succeeded")
 	}
+	if len(broadcaster.events) < 2 {
+		t.Errorf("expected broadcast events (processing, ocr.updated), got %+v", broadcaster.events)
+	}
 }
 
 func TestOCRWorker_AlreadyCompleted(t *testing.T) {
@@ -168,7 +180,7 @@ func TestOCRWorker_AlreadyCompleted(t *testing.T) {
 		},
 	}
 
-	worker := jobs.NewOCRWorker(repo, &mockStorage{}, &mockOCRProvider{}, 5*time.Second)
+	worker := jobs.NewOCRWorker(repo, &mockStorage{}, &mockOCRProvider{}, nil, 5*time.Second)
 
 	job := &river.Job[jobs.OCRJobArgs]{
 		Args: jobs.OCRJobArgs{
@@ -211,8 +223,9 @@ func TestOCRWorker_SchemaInvalid_FailsWithoutRetry(t *testing.T) {
 
 	storage := &mockStorage{downloadBytes: []byte("fake-image")}
 	provider := &mockOCRProvider{err: domain.ErrOcrSchemaInvalid}
+	broadcaster := &mockBroadcaster{}
 
-	worker := jobs.NewOCRWorker(repo, storage, provider, 5*time.Second)
+	worker := jobs.NewOCRWorker(repo, storage, provider, broadcaster, 5*time.Second)
 
 	job := &river.Job[jobs.OCRJobArgs]{
 		JobRow: &rivertype.JobRow{
@@ -260,7 +273,7 @@ func TestOCRWorker_DownloadError_ReturnsErrorForRetry(t *testing.T) {
 	storage := &mockStorage{downloadErr: errors.New("network timeout")}
 	provider := &mockOCRProvider{}
 
-	worker := jobs.NewOCRWorker(repo, storage, provider, 5*time.Second)
+	worker := jobs.NewOCRWorker(repo, storage, provider, nil, 5*time.Second)
 
 	job := &river.Job[jobs.OCRJobArgs]{
 		JobRow: &rivertype.JobRow{

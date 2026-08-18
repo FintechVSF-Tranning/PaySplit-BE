@@ -66,6 +66,21 @@ func TestValidateRejectsInvalidBillImage(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidBillSSE(t *testing.T) {
+	cfg := validConfig()
+	cfg.BillSSE.HeartbeatInterval = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for invalid BillSSE HeartbeatInterval")
+	}
+
+	cfg = validConfig()
+	cfg.BillSSE.HeartbeatInterval = 20 * time.Minute
+	cfg.BillSSE.MaxConnectionAge = 15 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error when HeartbeatInterval >= MaxConnectionAge")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 30},
@@ -79,5 +94,6 @@ func validConfig() *Config {
 		Group:      GroupConfig{InviteBaseURL: "paysplit://join"},
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
+		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
 	}
 }

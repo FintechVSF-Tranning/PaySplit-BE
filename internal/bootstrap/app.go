@@ -17,6 +17,7 @@ import (
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	authusecase "paysplit-backend/internal/modules/auth/usecase"
+	billhttp "paysplit-backend/internal/modules/bill/delivery/http"
 	billjobs "paysplit-backend/internal/modules/bill/jobs"
 	billpostgres "paysplit-backend/internal/modules/bill/repository/postgres"
 	billusecase "paysplit-backend/internal/modules/bill/usecase"
@@ -126,7 +127,9 @@ func New(ctx context.Context) (*App, error) {
 	}
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
-	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, cfg.OCR.ProviderTimeout))
+	billHub := billhttp.NewHub(db)
+	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
+	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout))
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
 	if err != nil {
@@ -158,6 +161,9 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
+		api.Route("/bills", func(r chi.Router) {
+			r.With(liveAuth).Get("/{id}/events", billSSEHandler.StreamBillEvents)
+		})
 	})
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)

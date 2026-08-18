@@ -26,6 +26,7 @@ type Config struct {
 	Group      GroupConfig
 	OCR        OCRConfig
 	BillImage  BillImageConfig
+	BillSSE    BillSSEConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -120,6 +121,12 @@ type BillImageConfig struct {
 	UploadTimeout     time.Duration
 	ProcessingTimeout time.Duration
 	SignedURLTTL      time.Duration
+}
+
+// BillSSEConfig chứa cấu hình SSE streaming cho bill events (Spec 3 AC-2, AC-8).
+type BillSSEConfig struct {
+	HeartbeatInterval time.Duration
+	MaxConnectionAge  time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -268,6 +275,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	billSSEHeartbeat, err := durationEnv("BILL_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billSSEMaxAge, err := durationEnv("BILL_SSE_MAX_CONNECTION_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
@@ -318,6 +333,10 @@ func Load() (*Config, error) {
 			UploadTimeout:     billImageUploadTimeout,
 			ProcessingTimeout: billImageProcessingTimeout,
 			SignedURLTTL:      billImageSignedURLTTL,
+		},
+		BillSSE: BillSSEConfig{
+			HeartbeatInterval: billSSEHeartbeat,
+			MaxConnectionAge:  billSSEMaxAge,
 		},
 	}
 
@@ -395,6 +414,12 @@ func (c *Config) Validate() error {
 	}
 	if c.BillImage.MaxCount <= 0 || c.BillImage.MaxBytes <= 0 || c.BillImage.UploadTimeout <= 0 || c.BillImage.ProcessingTimeout <= 0 || c.BillImage.SignedURLTTL <= 0 {
 		return errors.New("bill image settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval <= 0 || c.BillSSE.MaxConnectionAge <= 0 {
+		return errors.New("bill sse settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
+		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
 	}
 	return nil
 }
