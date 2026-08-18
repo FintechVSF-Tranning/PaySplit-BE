@@ -43,6 +43,19 @@ type Bill struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	FinalizedAt      pgtype.Timestamptz `json:"finalized_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ReplacesBillID   pgtype.UUID        `json:"replaces_bill_id"`
+	VoidedAt         pgtype.Timestamptz `json:"voided_at"`
+	SplitMethod      string             `json:"split_method"`
+	MismatchCodes    []string           `json:"mismatch_codes"`
+}
+
+type BillImage struct {
+	ID        pgtype.UUID        `json:"id"`
+	BillID    pgtype.UUID        `json:"bill_id"`
+	GroupID   pgtype.UUID        `json:"group_id"`
+	ImageKey  string             `json:"image_key"`
+	Position  int16              `json:"position"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type BillItem struct {
@@ -55,6 +68,7 @@ type BillItem struct {
 	LineTotal int64              `json:"line_total"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	Position  int16              `json:"position"`
 }
 
 type BillItemAssignment struct {
@@ -64,6 +78,15 @@ type BillItemAssignment struct {
 	MemberID   pgtype.UUID        `json:"member_id"`
 	Weight     pgtype.Numeric     `json:"weight"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type BillShare struct {
+	ID             pgtype.UUID        `json:"id"`
+	BillID         pgtype.UUID        `json:"bill_id"`
+	GroupID        pgtype.UUID        `json:"group_id"`
+	MemberID       pgtype.UUID        `json:"member_id"`
+	ComputedAmount int64              `json:"computed_amount"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type Debt struct {
@@ -155,6 +178,8 @@ type OcrJob struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	CompletedAt  pgtype.Timestamptz `json:"completed_at"`
+	Candidate    []byte             `json:"candidate"`
+	Version      int32              `json:"version"`
 }
 
 type Payment struct {
