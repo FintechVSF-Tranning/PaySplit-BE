@@ -25,6 +25,7 @@ type Config struct {
 	River      RiverConfig
 	Group      GroupConfig
 	OCR        OCRConfig
+	BillImage  BillImageConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -110,6 +111,15 @@ type OCRConfig struct {
 	ManualLimit       int
 	ManualWindowHours time.Duration
 	RawRetentionDays  time.Duration
+}
+
+// BillImageConfig chứa cấu hình tải lên, xử lý và tạo signed URL cho ảnh hóa đơn.
+type BillImageConfig struct {
+	MaxCount          int
+	MaxBytes          int64
+	UploadTimeout     time.Duration
+	ProcessingTimeout time.Duration
+	SignedURLTTL      time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -238,6 +248,26 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	billImageMaxCount, err := intEnv("BILL_IMAGE_MAX_COUNT", 5)
+	if err != nil {
+		return nil, err
+	}
+	billImageMaxBytes, err := intEnv("BILL_IMAGE_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	billImageUploadTimeout, err := durationEnv("BILL_IMAGE_UPLOAD_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageProcessingTimeout, err := durationEnv("BILL_IMAGE_PROCESSING_TIMEOUT_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageSignedURLTTL, err := durationEnv("BILL_IMAGE_SIGNED_URL_TTL_MINUTES", 5, time.Minute)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
@@ -281,6 +311,13 @@ func Load() (*Config, error) {
 			ManualLimit:       ocrManualLimit,
 			ManualWindowHours: ocrManualWindow,
 			RawRetentionDays:  ocrRawRetention,
+		},
+		BillImage: BillImageConfig{
+			MaxCount:          billImageMaxCount,
+			MaxBytes:          int64(billImageMaxBytes),
+			UploadTimeout:     billImageUploadTimeout,
+			ProcessingTimeout: billImageProcessingTimeout,
+			SignedURLTTL:      billImageSignedURLTTL,
 		},
 	}
 
@@ -355,6 +392,9 @@ func (c *Config) Validate() error {
 	}
 	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
 		return errors.New("OCR settings must be positive")
+	}
+	if c.BillImage.MaxCount <= 0 || c.BillImage.MaxBytes <= 0 || c.BillImage.UploadTimeout <= 0 || c.BillImage.ProcessingTimeout <= 0 || c.BillImage.SignedURLTTL <= 0 {
+		return errors.New("bill image settings must be positive")
 	}
 	return nil
 }

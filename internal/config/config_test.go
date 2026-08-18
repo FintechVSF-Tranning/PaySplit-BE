@@ -58,6 +58,14 @@ func TestValidateRejectsInvalidOCR(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidBillImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.BillImage.MaxBytes = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for invalid BillImage MaxBytes")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 30},
@@ -70,5 +78,6 @@ func validConfig() *Config {
 		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond},
 		Group:      GroupConfig{InviteBaseURL: "paysplit://join"},
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
+		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 	}
 }
