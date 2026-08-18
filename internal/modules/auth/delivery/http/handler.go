@@ -46,11 +46,11 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "verification_email_sent": out.VerificationEmailSent, "verification_expires_at": out.VerificationExpiresAt})
 }
 func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
-	var req tokenRequest
+	var req verifyEmailRequest
 	if !read(w, r, &req) {
 		return
 	}
-	if _, err := h.service.VerifyEmail(r.Context(), req.Token); err != nil {
+	if _, err := h.service.VerifyEmail(r.Context(), req.Email, req.OTP); err != nil {
 		writeDomainError(w, err)
 		return
 	}
@@ -112,7 +112,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	if !read(w, r, &req) {
 		return
 	}
-	if err := h.service.ResetPassword(r.Context(), req.Token, req.NewPassword); err != nil {
+	if err := h.service.ResetPassword(r.Context(), req.Email, req.OTP, req.NewPassword); err != nil {
 		writeDomainError(w, err)
 		return
 	}

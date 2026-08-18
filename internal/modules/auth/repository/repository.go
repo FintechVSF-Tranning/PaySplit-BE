@@ -36,13 +36,13 @@ type Repository interface {
 	GetByEmail(context.Context, string) (*domain.User, error)
 	GetByID(context.Context, string) (*domain.User, error)
 	CreateUserToken(context.Context, string, string, []byte, time.Time) error
-	VerifyEmail(context.Context, []byte, time.Time) (*domain.User, error)
+	VerifyEmail(context.Context, string, []byte, time.Time) (*domain.User, error)
 	RecordLoginFailure(context.Context, string, time.Time) (time.Duration, error)
 	CreateSession(context.Context, CreateSessionParams) (*domain.User, *domain.Session, error)
 	RotateRefresh(context.Context, []byte, []byte, string, time.Time) (*RotateRefreshResult, error)
 	ValidateSession(context.Context, string, string, time.Time) (*domain.SessionIdentity, error)
 	RevokeSession(context.Context, string, string, string, time.Time) error
-	ResetPassword(context.Context, []byte, string, time.Time) error
+	ResetPassword(context.Context, string, []byte, string, time.Time) error
 	ChangePassword(context.Context, string, string, string, time.Time) error
 	UpdateProfile(context.Context, string, ProfilePatch) (*domain.User, error)
 	SetAvatar(context.Context, string, string) (*domain.User, *string, error)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"net/url"
 	"strconv"
 	"time"
 
@@ -27,23 +26,20 @@ func New(cfg config.SMTPConfig, verifyURL, resetURL string) (*Mailer, error) {
 	return &Mailer{client: client, username: cfg.Username, fromName: cfg.FromName, verifyURL: verifyURL, resetURL: resetURL, timeout: cfg.Timeout}, nil
 }
 
-func (m *Mailer) SendVerification(ctx context.Context, to, name, token string, expires time.Time) error {
-	return m.send(ctx, to, "Verify your PaySplit email", name, token, expires, m.verifyURL, "Verify email")
-}
-func (m *Mailer) SendPasswordReset(ctx context.Context, to, name, token string, expires time.Time) error {
-	return m.send(ctx, to, "Reset your PaySplit password", name, token, expires, m.resetURL, "Reset password")
+func (m *Mailer) SendVerification(ctx context.Context, to, name, otp string, expires time.Time) error {
+	return m.sendOTP(ctx, to, "Xác thực email PaySplit của bạn", name, otp, expires, "Mã xác thực email của bạn là:")
 }
 
-func (m *Mailer) send(ctx context.Context, to, subject, name, token string, expires time.Time, base, label string) error {
-	link, err := tokenURL(base, token)
-	if err != nil {
-		return err
-	}
+func (m *Mailer) SendPasswordReset(ctx context.Context, to, name, otp string, expires time.Time) error {
+	return m.sendOTP(ctx, to, "Đặt lại mật khẩu PaySplit của bạn", name, otp, expires, "Mã đặt lại mật khẩu của bạn là:")
+}
+
+func (m *Mailer) sendOTP(ctx context.Context, to, subject, name, otp string, expires time.Time, actionText string) error {
 	msg := mail.NewMsg()
-	if err = msg.FromFormat(m.fromName, m.username); err != nil {
+	if err := msg.FromFormat(m.fromName, m.username); err != nil {
 		return err
 	}
-	if err = msg.To(to); err != nil {
+	if err := msg.To(to); err != nil {
 		return err
 	}
 	msg.Subject(subject)
@@ -52,25 +48,14 @@ func (m *Mailer) send(ctx context.Context, to, subject, name, token string, expi
 	if minutes < 1 {
 		minutes = 1
 	}
-	plain := fmt.Sprintf("Hello %s,\n\n%s: %s\n\nThis link expires in %d minutes.\n", name, label, link, minutes)
-	body := fmt.Sprintf("<p>Hello %s,</p><p><a href=\"%s\">%s</a></p><p>This link expires in %s minutes.</p>", html.EscapeString(name), html.EscapeString(link), html.EscapeString(label), strconv.Itoa(minutes))
+	plain := fmt.Sprintf("Xin chào %s,\n\n%s %s\n\nMã OTP này có hiệu lực trong %d phút. Vui lòng không chia sẻ mã này với bất kỳ ai.\n", name, actionText, otp, minutes)
+	body := fmt.Sprintf("<div style=\"font-family: Arial, sans-serif; line-height: 1.6; color: #333;\"><p>Xin chào <strong>%s</strong>,</p><p>%s</p><div style=\"font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #2563eb; padding: 12px 0;\">%s</div><p>Mã OTP này có hiệu lực trong <strong>%s phút</strong>. Vui lòng không chia sẻ mã này với bất kỳ ai.</p></div>", html.EscapeString(name), html.EscapeString(actionText), html.EscapeString(otp), strconv.Itoa(minutes))
 	msg.SetBodyString(mail.TypeTextPlain, plain)
 	msg.AddAlternativeString(mail.TypeTextHTML, body)
 	sendCtx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	if err = m.client.DialAndSendWithContext(sendCtx, msg); err != nil {
+	if err := m.client.DialAndSendWithContext(sendCtx, msg); err != nil {
 		return fmt.Errorf("send Gmail message: %w", err)
 	}
 	return nil
-}
-
-func tokenURL(base, token string) (string, error) {
-	parsed, err := url.Parse(base)
-	if err != nil {
-		return "", fmt.Errorf("parse auth callback URL: %w", err)
-	}
-	query := parsed.Query()
-	query.Set("token", token)
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
 }

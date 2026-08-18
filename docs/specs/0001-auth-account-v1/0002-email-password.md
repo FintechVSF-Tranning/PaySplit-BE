@@ -2,7 +2,7 @@
 
 ## Summary
 
-This slice activates accounts and recovers passwords through short lived single use email tokens. Gmail SMTP is an adapter, not a dependency of the auth usecase, and delivery failure never keeps a database transaction open.
+This slice activates accounts and recovers passwords through short lived single use six digit numeric OTP codes sent by email. Gmail SMTP is an adapter, not a dependency of the auth usecase, and delivery failure never keeps a database transaction open.
 
 ## Requirements
 
@@ -10,39 +10,52 @@ This child implements **AC-2** through **AC-4**, **AC-10**, **AC-11**, **AC-16**
 
 ## Decision
 
-Use `github.com/wneessen/go-mail` with Gmail SMTP, TLS on port 587, and a Google App Password. The usecase depends on a `Mailer` interface. Verification and password reset tokens share `user_tokens` but use separate token types. (basis: the personal Gmail sender requirement and Google App Password guidance)
+Use `github.com/wneessen/go-mail` with Gmail SMTP, TLS on port 587, and a Google App Password. The usecase depends on a `Mailer` interface. Verification and password reset OTP codes share the `user_tokens` table, distinguished by `type` enum (`email_verification`, `password_reset`). OTP codes are stored as SHA 256 bytea hashes with an `attempt_count` tracking failed guesses. (basis: the personal Gmail sender requirement, Google App Password guidance, and six digit numeric OTP UX)
 
-Short rationale: Gmail matches the engineer's personal sender requirement. Resend cannot verify an address under `gmail.com`, while Gmail SMTP can send from that account with two step verification and an App Password. The adapter boundary preserves a later move to a transactional provider.
+Short rationale: Six digit numeric OTP codes provide a mobile friendly verification experience compared to long link tokens. Storing the SHA 256 hash alongside an attempt counter prevents brute force search across the 1,000,000 code space while keeping database lookups fast and secure.
 
 ## Feature design
 
-### Token lifecycle
+### OTP lifecycle and security
 
-Create 32 random bytes with `crypto/rand`, encode as URL safe base64, and persist only the SHA 256 hash. Verification and reset tokens expire after 10 minutes. `used_at` means a token completed its intended action. `superseded_at` means a newer token replaced it before use. Creating a new token locks the user row, marks every unused token of the same user and type as superseded, then inserts the replacement in the same transaction. A partial unique index on user and type where both timestamps are null prevents concurrent active tokens.
+Generate a six digit numeric code (`000000` to `999999`) using cryptographically secure randomness from `crypto/rand`. Persist only the SHA 256 hash (`token_hash BYTEA`, 32 bytes) in `user_tokens`.
 
-Email links append the raw token as the `token` query parameter to the configured callback base. Never log the full link.
+- **Expiry**: OTP codes expire after 10 minutes.
+- **Brute force protection**: Each token tracks `attempt_count`. A failed verification increments `attempt_count`. When `attempt_count` reaches 5, the token is superseded immediately (`superseded_at = now()`), blocking further guesses on that code.
+- **Single active OTP per type**: Creating a new OTP locks the user row, marks every unused and unsuperseded token of the same user and type as superseded (`superseded_at = now()`), then inserts the replacement in the same transaction. A partial unique index on `(user_id, type)` where both `used_at IS NULL` and `superseded_at IS NULL` guarantees at most one active OTP per type.
+- **Terminal states**: `used_at` means the OTP completed its intended action. `superseded_at` means a newer OTP replaced it or it was invalidated due to reaching the maximum attempt limit.
 
 ### API details
 
 #### `POST /api/v1/auth/verify-email`
 
-Hash the supplied token and lock its row. A valid unused and unsuperseded token sets `email_verified_at`, changes pending status to active, and marks the token used in one transaction. Reopening that successfully consumed token returns `200` while its row remains in the 30 day retention window. A superseded, expired, unknown, or wrong type token returns `400 INVALID_OR_EXPIRED_TOKEN`. After cleanup removes a consumed token, reopening it also returns `400`. No auth tokens are issued.
+Accept `email` and `otp` (6 digits string). Normalize email and find the target user. If the user is already `active`, return `200` with `status: "active"` idempotently.
+
+Lock the active `email_verification` token row for the user.
+- If no active token exists or the token is expired: return `400 INVALID_OR_EXPIRED_TOKEN`.
+- If the token hash does not match the SHA 256 of the supplied OTP: increment `attempt_count`. If `attempt_count >= 5`, set `superseded_at = now()`. Return `400 INVALID_OR_EXPIRED_TOKEN`.
+- If the token hash matches and the token is valid: set `email_verified_at = now()`, change user status from `pending_verification` to `active`, and set `used_at = now()` in one database transaction. Return `200` with `status: "active"`. No auth tokens are issued.
 
 #### `POST /api/v1/auth/resend-verification`
 
-Accept email and always return the same `202` body. Only a pending account receives a new token. Invalidate earlier verification tokens before creating the new token. Limit normalized email and IP as independent dimensions to one request per rolling minute and 10 per rolling hour. Exceeding either limit rejects the request.
+Accept `email` and always return the same `202` body (`message: "If the account is eligible, an email will be sent."`). Only a `pending_verification` account receives a new OTP email. Invalidate earlier verification tokens before creating the new OTP. Limit normalized email and IP as independent dimensions to one request per rolling minute and 10 per rolling hour. Exceeding either limit rejects the request with `429 RATE_LIMITED`.
 
 #### `POST /api/v1/auth/forgot-password`
 
-Accept email and always return the same `202` body. Only an existing account receives a token. Invalidate earlier reset tokens before creating the new token. Use the same independent persisted limits as resend verification.
+Accept `email` and always return the same `202` body. Only an existing active account receives an OTP email. Invalidate earlier reset tokens before creating the new OTP. Use the same independent persisted limits as resend verification (1 per minute, 10 per hour).
 
 #### `POST /api/v1/auth/reset-password`
 
-Accept token and new password. Lock token and user rows, validate the shared password policy, update the bcrypt hash, mark the token used, and revoke all sessions and refresh tokens in one transaction. Return `204`.
+Accept `email`, `otp` (6 digits string), and `new_password`. Validate the shared password policy (8 to 72 bytes, uppercase, lowercase, digit).
+
+Find the user by normalized email and lock the active `password_reset` token row.
+- If no active token exists or the token is expired: return `400 INVALID_OR_EXPIRED_TOKEN`.
+- If the token hash does not match the SHA 256 of the supplied OTP: increment `attempt_count`. If `attempt_count >= 5`, set `superseded_at = now()`. Return `400 INVALID_OR_EXPIRED_TOKEN`.
+- If the token hash matches and the token is valid: update the bcrypt password hash on `users`, set `used_at = now()` on the token, and revoke all active sessions (`revoked_at = now()`, `revoked_reason = 'password_reset'`) and their refresh tokens in one transaction. Return `204`.
 
 #### `PUT /api/v1/users/me/password`
 
-Require a bearer token and live session. Accept current and new password. Require the current password to match, the new password to differ, and the shared policy to pass. Update the hash and revoke every session except the current `sid` in one transaction. Keep the current session and its existing refresh tokens. This accepts the explicit tradeoff that a refresh token already exposed from the current installation remains valid until rotation, revocation, or the absolute session expiry. Return `204`.
+Require a bearer token and live session. Accept `current_password` and `new_password`. Require the current password to match, the new password to differ, and the shared policy to pass. Update the hash and revoke every session except the current `sid` in one transaction. Keep the current session and its existing refresh tokens. Return `204`.
 
 ### Rate limit persistence
 
@@ -54,21 +67,22 @@ Gmail settings are required and validated at process startup. Commit the user an
 
 ### Email templates
 
-Provide plain text and HTML templates for verification and reset. Templates receive display name, safe callback URL, and 10 minute expiry text. HTML escapes all values.
+Provide plain text and HTML templates for verification and reset. Templates receive the display name, the 6 digit numeric OTP formatted clearly, and 10 minute expiry text. HTML escapes all values.
 
 ## Configuration
 
-Use the SMTP and callback variables in [index.md](index.md). `.env.example` and README must explain that Gmail requires two step verification and an App Password. The normal Gmail password must never be accepted as configuration documentation.
+Use the SMTP variables in [index.md](index.md). `.env.example` and README explain that Gmail requires two step verification and an App Password. The normal Gmail password must never be accepted as configuration.
 
 ### Request and response contract
 
-JSON bodies are limited to 64 KB and reject unknown fields. Email is at most 254 bytes after normalization. Verification and reset token inputs are at most 128 characters. Success bodies, safe user fields, and UTC RFC 3339 expiry formats are fixed in [index.md](index.md). Rate limited responses use `Retry-After` as delta seconds.
+JSON bodies are limited to 64 KB and reject unknown fields. Email is at most 254 bytes after normalization. OTP input is a 6 digit numeric string. New password is 8 to 72 bytes. Rate limited responses use `Retry-After` as delta seconds.
 
 ## Critical test scenarios
 
-1. Sign up survives SMTP failure and resend later delivers a fresh token.
-2. Verification activates once, remains idempotent, and rejects expired tokens.
-3. Forgot password does not reveal whether an email exists.
-4. Reset revokes all sessions and rejects token reuse.
-5. Change password keeps the current session and rejects the old password afterward.
-6. Email limits return `429` with `Retry-After` and do not reveal account existence.
+1. Sign up generates a 6 digit OTP, commits the account, and sends an email when SMTP is healthy.
+2. Email verification succeeds with correct OTP, activates the account, and is idempotent on repeat calls.
+3. Email verification rejects incorrect OTP, increments `attempt_count`, and supersedes the token after 5 failed attempts.
+4. Forgot password does not reveal whether an email exists, delivering a 6 digit OTP only to existing active accounts.
+5. Password reset with valid email, OTP, and new password updates credentials and revokes all active sessions.
+6. Password reset with invalid or expired OTP fails and does not modify password or revoke sessions.
+7. Rate limiting enforces rolling minute and hour windows on both email and IP dimensions.

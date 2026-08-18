@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -85,7 +86,8 @@ func (r *postgresRepository) CreateUserToken(ctx context.Context, userID, kind s
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+	var existingID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&existingID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrUserNotFound
 		}
@@ -94,54 +96,82 @@ func (r *postgresRepository) CreateUserToken(ctx context.Context, userID, kind s
 	if _, err = tx.Exec(ctx, `UPDATE user_tokens SET superseded_at=now() WHERE user_id=$1 AND type=$2 AND used_at IS NULL AND superseded_at IS NULL`, userID, kind); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO user_tokens (user_id,type,token_hash,expires_at) VALUES ($1,$2,$3,$4)`, userID, kind, hash, expires); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO user_tokens (user_id,type,token_hash,expires_at,attempt_count) VALUES ($1,$2,$3,$4,0)`, userID, kind, hash, expires); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
-func (r *postgresRepository) VerifyEmail(ctx context.Context, hash []byte, now time.Time) (*domain.User, error) {
+func (r *postgresRepository) VerifyEmail(ctx context.Context, email string, otpHash []byte, now time.Time) (*domain.User, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	var userID string
-	if err = tx.QueryRow(ctx, `SELECT user_id FROM user_tokens WHERE token_hash=$1 AND type=$2`, hash, domain.TokenEmailVerification).Scan(&userID); errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if err != nil {
-		return nil, err
-	}
-	user, err := getUserForUpdate(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	var expires time.Time
-	var usedAt, supersededAt *time.Time
-	err = tx.QueryRow(ctx, `SELECT expires_at,used_at,superseded_at FROM user_tokens WHERE token_hash=$1 AND type=$2 AND user_id=$3 FOR UPDATE`, hash, domain.TokenEmailVerification, userID).Scan(&expires, &usedAt, &supersededAt)
+
+	user, err := scanUser(tx.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE email=$1 FOR UPDATE`, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrInvalidOrExpiredToken
 	}
 	if err != nil {
 		return nil, err
 	}
-	if usedAt != nil {
-		if user.Status == domain.StatusActive {
-			return user, tx.Commit(ctx)
+
+	if user.Status == domain.StatusActive {
+		var usedHash []byte
+		err = tx.QueryRow(ctx, `SELECT token_hash FROM user_tokens WHERE user_id=$1 AND type=$2 AND used_at IS NOT NULL ORDER BY used_at DESC LIMIT 1`, user.ID, domain.TokenEmailVerification).Scan(&usedHash)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidOrExpiredToken
 		}
-		return nil, domain.ErrInvalidOrExpiredToken
+		if err != nil {
+			return nil, err
+		}
+		if subtle.ConstantTimeCompare(usedHash, otpHash) != 1 {
+			return nil, domain.ErrInvalidOrExpiredToken
+		}
+		return user, tx.Commit(ctx)
 	}
-	if supersededAt != nil || !now.Before(expires) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if user.Status != domain.StatusPendingVerification && user.Status != domain.StatusActive {
+	if user.Status != domain.StatusPendingVerification {
 		return nil, domain.ErrAccountUnavailable
 	}
-	if _, err = tx.Exec(ctx, `UPDATE users SET status='active',email_verified_at=COALESCE(email_verified_at,$2) WHERE id=$1`, userID, now); err != nil {
+
+	var tokenID string
+	var storedHash []byte
+	var attemptCount int
+	var expires time.Time
+	var usedAt, supersededAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT id,token_hash,attempt_count,expires_at,used_at,superseded_at FROM user_tokens WHERE user_id=$1 AND type=$2 AND used_at IS NULL AND superseded_at IS NULL FOR UPDATE`, user.ID, domain.TokenEmailVerification).Scan(&tokenID, &storedHash, &attemptCount, &expires, &usedAt, &supersededAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrInvalidOrExpiredToken
+	}
+	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE user_tokens SET used_at=$2 WHERE token_hash=$1`, hash, now); err != nil {
+
+	if usedAt != nil || supersededAt != nil || !now.Before(expires) {
+		return nil, domain.ErrInvalidOrExpiredToken
+	}
+	if attemptCount >= 5 {
+		_, _ = tx.Exec(ctx, `UPDATE user_tokens SET superseded_at=$2 WHERE id=$1`, tokenID, now)
+		_ = tx.Commit(ctx)
+		return nil, domain.ErrInvalidOrExpiredToken
+	}
+
+	if subtle.ConstantTimeCompare(storedHash, otpHash) != 1 {
+		attemptCount++
+		if attemptCount >= 5 {
+			_, _ = tx.Exec(ctx, `UPDATE user_tokens SET attempt_count=$2,superseded_at=$3 WHERE id=$1`, tokenID, attemptCount, now)
+		} else {
+			_, _ = tx.Exec(ctx, `UPDATE user_tokens SET attempt_count=$2 WHERE id=$1`, tokenID, attemptCount)
+		}
+		_ = tx.Commit(ctx)
+		return nil, domain.ErrInvalidOrExpiredToken
+	}
+
+	if _, err = tx.Exec(ctx, `UPDATE users SET status='active',email_verified_at=COALESCE(email_verified_at,$2) WHERE id=$1`, user.ID, now); err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE user_tokens SET used_at=$2 WHERE id=$1`, tokenID, now); err != nil {
 		return nil, err
 	}
 	user.Status = domain.StatusActive
@@ -328,7 +358,11 @@ func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionI
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+	var existingID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&existingID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrUserNotFound
+		}
 		return err
 	}
 	_, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$3),revoked_reason=COALESCE(revoked_reason,$4) WHERE id=$1 AND user_id=$2`, sessionID, userID, now, reason)
@@ -342,31 +376,54 @@ func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionI
 	return tx.Commit(ctx)
 }
 
-func (r *postgresRepository) ResetPassword(ctx context.Context, hash []byte, newHash string, now time.Time) error {
+func (r *postgresRepository) ResetPassword(ctx context.Context, email string, otpHash []byte, newHash string, now time.Time) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var tokenID, userID string
-	if err = tx.QueryRow(ctx, `SELECT user_id FROM user_tokens WHERE token_hash=$1 AND type=$2`, hash, domain.TokenPasswordReset).Scan(&userID); errors.Is(err, pgx.ErrNoRows) {
+
+	var userID, status string
+	err = tx.QueryRow(ctx, `SELECT id,status FROM users WHERE email=$1 FOR UPDATE`, email).Scan(&userID, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrInvalidOrExpiredToken
 	}
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
-		return err
+	if status != domain.StatusActive {
+		return domain.ErrInvalidOrExpiredToken
 	}
+
+	var tokenID string
+	var storedHash []byte
+	var attemptCount int
 	var expires time.Time
 	var used, superseded *time.Time
-	err = tx.QueryRow(ctx, `SELECT id,expires_at,used_at,superseded_at FROM user_tokens WHERE token_hash=$1 AND type=$2 AND user_id=$3 FOR UPDATE`, hash, domain.TokenPasswordReset, userID).Scan(&tokenID, &expires, &used, &superseded)
+	err = tx.QueryRow(ctx, `SELECT id,token_hash,attempt_count,expires_at,used_at,superseded_at FROM user_tokens WHERE user_id=$1 AND type=$2 AND used_at IS NULL AND superseded_at IS NULL FOR UPDATE`, userID, domain.TokenPasswordReset).Scan(&tokenID, &storedHash, &attemptCount, &expires, &used, &superseded)
 	if errors.Is(err, pgx.ErrNoRows) || used != nil || superseded != nil || !now.Before(expires) {
 		return domain.ErrInvalidOrExpiredToken
 	}
 	if err != nil {
 		return err
 	}
+	if attemptCount >= 5 {
+		_, _ = tx.Exec(ctx, `UPDATE user_tokens SET superseded_at=$2 WHERE id=$1`, tokenID, now)
+		_ = tx.Commit(ctx)
+		return domain.ErrInvalidOrExpiredToken
+	}
+
+	if subtle.ConstantTimeCompare(storedHash, otpHash) != 1 {
+		attemptCount++
+		if attemptCount >= 5 {
+			_, _ = tx.Exec(ctx, `UPDATE user_tokens SET attempt_count=$2,superseded_at=$3 WHERE id=$1`, tokenID, attemptCount, now)
+		} else {
+			_, _ = tx.Exec(ctx, `UPDATE user_tokens SET attempt_count=$2 WHERE id=$1`, tokenID, attemptCount)
+		}
+		_ = tx.Commit(ctx)
+		return domain.ErrInvalidOrExpiredToken
+	}
+
 	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, newHash); err != nil {
 		return err
 	}
@@ -388,7 +445,11 @@ func (r *postgresRepository) ChangePassword(ctx context.Context, userID, session
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID); err != nil {
+	var existingID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&existingID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrUserNotFound
+		}
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, newHash); err != nil {

@@ -102,7 +102,7 @@ func (s *Service) SignUp(ctx context.Context, in SignUpInput) (*SignUpOutput, er
 	if err != nil {
 		return nil, err
 	}
-	raw, tokenHash, err := domain.NewOpaqueToken()
+	otp, tokenHash, err := domain.NewOTP()
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (s *Service) SignUp(ctx context.Context, in SignUpInput) (*SignUpOutput, er
 	if err != nil {
 		return nil, err
 	}
-	mailErr := s.mailer.SendVerification(ctx, user.Email, user.DisplayName, raw, expires)
+	mailErr := s.mailer.SendVerification(ctx, user.Email, user.DisplayName, otp, expires)
 	sent := mailErr == nil
 	if mailErr != nil {
 		log.Printf("event=verification_email_send_failed user_id=%s", user.ID)
@@ -119,11 +119,12 @@ func (s *Service) SignUp(ctx context.Context, in SignUpInput) (*SignUpOutput, er
 	return &SignUpOutput{User: user, VerificationEmailSent: sent, VerificationExpiresAt: expires}, nil
 }
 
-func (s *Service) VerifyEmail(ctx context.Context, raw string) (*domain.User, error) {
-	if !validRawToken(raw) {
+func (s *Service) VerifyEmail(ctx context.Context, email, otp string) (*domain.User, error) {
+	normEmail, err := normalizeEmail(email)
+	if err != nil || !validOTP(otp) {
 		return nil, domain.ErrInvalidOrExpiredToken
 	}
-	return s.repo.VerifyEmail(ctx, domain.HashToken(raw), time.Now())
+	return s.repo.VerifyEmail(ctx, normEmail, domain.HashToken(otp), time.Now())
 }
 
 func (s *Service) ResendVerification(ctx context.Context, email, clientIP string) error {
@@ -159,7 +160,7 @@ func (s *Service) sendUserToken(ctx context.Context, inputEmail, clientIP, kind 
 	if kind == domain.TokenEmailVerification && user.Status != domain.StatusPendingVerification {
 		return nil
 	}
-	raw, hash, err := domain.NewOpaqueToken()
+	otp, hash, err := domain.NewOTP()
 	if err != nil {
 		return err
 	}
@@ -168,11 +169,11 @@ func (s *Service) sendUserToken(ctx context.Context, inputEmail, clientIP, kind 
 		return err
 	}
 	if kind == domain.TokenEmailVerification {
-		if err = s.mailer.SendVerification(ctx, user.Email, user.DisplayName, raw, expires); err != nil {
+		if err = s.mailer.SendVerification(ctx, user.Email, user.DisplayName, otp, expires); err != nil {
 			log.Printf("event=verification_email_send_failed user_id=%s", user.ID)
 		}
 	} else {
-		if err = s.mailer.SendPasswordReset(ctx, user.Email, user.DisplayName, raw, expires); err != nil {
+		if err = s.mailer.SendPasswordReset(ctx, user.Email, user.DisplayName, otp, expires); err != nil {
 			log.Printf("event=password_reset_email_send_failed user_id=%s", user.ID)
 		}
 	}
@@ -266,8 +267,9 @@ func (s *Service) SignOut(ctx context.Context, userID, sessionID string) error {
 	return s.repo.RevokeSession(ctx, userID, sessionID, "sign_out", time.Now())
 }
 
-func (s *Service) ResetPassword(ctx context.Context, raw, newPassword string) error {
-	if !validRawToken(raw) {
+func (s *Service) ResetPassword(ctx context.Context, email, otp, newPassword string) error {
+	normEmail, err := normalizeEmail(email)
+	if err != nil || !validOTP(otp) {
 		return domain.ErrInvalidOrExpiredToken
 	}
 	if err := s.passwords.Validate(newPassword); err != nil {
@@ -277,7 +279,7 @@ func (s *Service) ResetPassword(ctx context.Context, raw, newPassword string) er
 	if err != nil {
 		return err
 	}
-	return s.repo.ResetPassword(ctx, domain.HashToken(raw), hash, time.Now())
+	return s.repo.ResetPassword(ctx, normEmail, domain.HashToken(otp), hash, time.Now())
 }
 
 func (s *Service) ChangePassword(ctx context.Context, userID, sessionID, current, next string) error {
@@ -454,6 +456,18 @@ func (s *Service) UpdateFCMToken(ctx context.Context, sessionID, fcmToken string
 
 func hashKey(value string) []byte     { sum := sha256.Sum256([]byte(value)); return sum[:] }
 func validRawToken(value string) bool { return len(value) > 0 && len(value) <= 128 }
+func validOTP(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 6 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 func validBankGroup(b *domain.BankProfile) bool {
 	if b == nil {
 		return true

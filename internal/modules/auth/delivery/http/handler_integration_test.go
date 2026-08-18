@@ -23,13 +23,17 @@ import (
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
-type fakeMailer struct{ verification string }
+type fakeMailer struct {
+	verification string
+	resetOTP     string
+}
 
 func (m *fakeMailer) SendVerification(_ context.Context, _, _, token string, _ time.Time) error {
 	m.verification = token
 	return nil
 }
-func (m *fakeMailer) SendPasswordReset(context.Context, string, string, string, time.Time) error {
+func (m *fakeMailer) SendPasswordReset(_ context.Context, _, _, token string, _ time.Time) error {
+	m.resetOTP = token
 	return nil
 }
 
@@ -56,8 +60,12 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	}
 	defer pool.Close()
 	const email = "auth.http.test@example.invalid"
+	_, _ = pool.Exec(ctx, `DELETE FROM auth_rate_limit_events`)
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE email=$1`, email)
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE email=$1`, email) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM auth_rate_limit_events`)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE email=$1`, email)
+	})
 	repo := authpostgres.New(pool)
 	tokenManager, err := jwt.NewAccessTokenManager("integration-secret-longer-than-thirty-two-bytes", "paysplit-test", 15*time.Minute)
 	if err != nil {
@@ -80,10 +88,18 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	if response.Code != stdhttp.StatusCreated {
 		t.Fatalf("sign up status %d body %s", response.Code, response.Body.String())
 	}
-	if mailer.verification == "" {
-		t.Fatal("verification token was not sent to mailer")
+	if len(mailer.verification) != 6 {
+		t.Fatalf("expected 6-digit OTP in mailer, got %q", mailer.verification)
 	}
-	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/verify-email", `{"token":"`+mailer.verification+`"}`, "")
+
+	// Test invalid OTP format
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/verify-email", `{"email":"`+email+`","otp":"123"}`, "")
+	if response.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("invalid otp length status %d body %s", response.Code, response.Body.String())
+	}
+
+	// Test correct OTP
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/verify-email", `{"email":"`+email+`","otp":"`+mailer.verification+`"}`, "")
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("verify status %d body %s", response.Code, response.Body.String())
 	}
@@ -118,6 +134,28 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", rotated.AccessToken)
 	if response.Code != stdhttp.StatusUnauthorized {
 		t.Fatalf("replay did not revoke session: %d", response.Code)
+	}
+
+	// Forgot password & reset password journey
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/forgot-password", `{"email":"`+email+`"}`, "")
+	if response.Code != stdhttp.StatusAccepted {
+		t.Fatalf("forgot password status %d body %s", response.Code, response.Body.String())
+	}
+	if len(mailer.resetOTP) != 6 {
+		t.Fatalf("expected 6-digit reset OTP, got %q", mailer.resetOTP)
+	}
+
+	// Reset password with OTP
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/reset-password", `{"email":"`+email+`","otp":"`+mailer.resetOTP+`","new_password":"NewStrongPass2"}`, "")
+	if response.Code != stdhttp.StatusNoContent {
+		t.Fatalf("reset password status %d body %s", response.Code, response.Body.String())
+	}
+
+	// Sign in with new password
+	deviceThree := "018f0000-0000-7000-8000-000000000013"
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-in", `{"email":"`+email+`","password":"NewStrongPass2","device_id":"`+deviceThree+`","device_name":"third"}`, "")
+	if response.Code != stdhttp.StatusOK {
+		t.Fatalf("sign in with new password status %d body %s", response.Code, response.Body.String())
 	}
 }
 

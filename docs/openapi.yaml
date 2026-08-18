@@ -30,7 +30,7 @@ paths:
   /api/v1/auth/verify-email:
     post:
       operationId: verifyEmail
-      requestBody: {$ref: "#/components/requestBodies/Token"}
+      requestBody: {$ref: "#/components/requestBodies/VerifyEmail"}
       responses:
         "200":
           description: Email verified
@@ -112,10 +112,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [token, new_password]
+              required: [email, otp, new_password]
               additionalProperties: false
               properties:
-                token: {type: string, maxLength: 128}
+                email: {type: string, format: email, maxLength: 254}
+                otp: {type: string, pattern: '^[0-9]{6}$', minLength: 6, maxLength: 6}
                 new_password: {$ref: "#/components/schemas/Password"}
       responses:
         "204": {description: Password reset and all sessions revoked}
@@ -547,15 +548,17 @@ components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
   requestBodies:
-    Token:
+    VerifyEmail:
       required: true
       content:
         application/json:
           schema:
             type: object
-            required: [token]
+            required: [email, otp]
             additionalProperties: false
-            properties: {token: {type: string, maxLength: 128}}
+            properties:
+              email: {type: string, format: email, maxLength: 254}
+              otp: {type: string, pattern: '^[0-9]{6}$', minLength: 6, maxLength: 6}
     Email:
       required: true
       content:
