@@ -24,6 +24,7 @@ type Config struct {
 	Firebase   FirebaseConfig
 	River      RiverConfig
 	Group      GroupConfig
+	OCR        OCRConfig
 }
 
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
@@ -97,6 +98,18 @@ type RiverConfig struct {
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
 type GroupConfig struct {
 	InviteBaseURL string
+}
+
+// OCRConfig chứa cấu hình tích hợp dịch vụ LlamaExtract và background retry/retention cho OCR.
+type OCRConfig struct {
+	APIKey            string
+	Endpoint          string
+	ProviderTimeout   time.Duration
+	MaxAttempts       int
+	RetryBaseDelay    time.Duration
+	ManualLimit       int
+	ManualWindowHours time.Duration
+	RawRetentionDays  time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -201,6 +214,30 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	ocrProviderTimeout, err := durationEnv("BILL_OCR_PROVIDER_TIMEOUT_SECONDS", 8, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrMaxAttempts, err := intEnv("BILL_OCR_MAX_ATTEMPTS", 3)
+	if err != nil {
+		return nil, err
+	}
+	ocrRetryBaseDelay, err := durationEnv("BILL_OCR_RETRY_BASE_DELAY_SECONDS", 1, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualLimit, err := intEnv("BILL_OCR_MANUAL_LIMIT", 5)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualWindow, err := durationEnv("BILL_OCR_MANUAL_WINDOW_HOURS", 24, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	ocrRawRetention, err := durationEnv("BILL_OCR_RAW_RETENTION_DAYS", 30, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		App: AppConfig{
@@ -235,6 +272,16 @@ func Load() (*Config, error) {
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
 		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
 		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		OCR: OCRConfig{
+			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
+			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
+			ProviderTimeout:   ocrProviderTimeout,
+			MaxAttempts:       ocrMaxAttempts,
+			RetryBaseDelay:    ocrRetryBaseDelay,
+			ManualLimit:       ocrManualLimit,
+			ManualWindowHours: ocrManualWindow,
+			RawRetentionDays:  ocrRawRetention,
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -305,6 +352,9 @@ func (c *Config) Validate() error {
 	}
 	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
 		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
+	}
+	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
+		return errors.New("OCR settings must be positive")
 	}
 	return nil
 }

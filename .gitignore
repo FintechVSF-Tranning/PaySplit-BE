@@ -39,3 +39,7 @@ bin/
 # Editor/IDE
 .idea/
 .vscode/
+
+# Test receipt images (contain personal/sensitive spending data)
+testdata/bills/*
+!testdata/bills/.gitkeep
