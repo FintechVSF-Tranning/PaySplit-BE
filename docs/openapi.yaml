@@ -231,6 +231,27 @@ paths:
                   status: {type: string, enum: [ok]}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/banks:
+    get:
+      operationId: listBanks
+      summary: List supported and available banks
+      description: Returns the list of banks from the VietQR snapshot directory.
+      parameters:
+        - name: supported
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Optional filter to return only supported (true) or unsupported (false) banks.
+      responses:
+        "200":
+          description: List of banks
+          headers:
+            Cache-Control:
+              schema: {type: string, example: "public, max-age=86400"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/BankListResponse"}
   /api/v1/groups:
     post:
       operationId: createGroup
@@ -877,3 +898,19 @@ components:
       properties:
         activities: {type: array, items: {$ref: "#/components/schemas/Activity"}}
         next_cursor: {type: string, nullable: true}
+    Bank:
+      type: object
+      required: [name, code, bin, short_name, supported]
+      properties:
+        id: {type: integer, nullable: true}
+        name: {type: string}
+        code: {type: string}
+        bin: {type: string}
+        short_name: {type: string}
+        logo: {type: string, format: uri, nullable: true}
+        supported: {type: boolean}
+    BankListResponse:
+      type: object
+      required: [banks]
+      properties:
+        banks: {type: array, items: {$ref: "#/components/schemas/Bank"}}

@@ -24,9 +24,11 @@ Short rationale: a committed bank snapshot removes a runtime dependency from pro
 
 Bank code, account number, and holder form one group. Omitted fields are unchanged. Three explicit null values clear the group. Any partial or invalid group rejects the whole patch. Accept only a bank entry with `supported: true`, 6 to 19 ASCII account digits, and a holder of 1 to 100 Unicode characters after trim.
 
-### Bank snapshot
+### Bank snapshot & Directory API
 
 Commit the fetched JSON under a platform data package and embed it into the binary. Parse and validate it at startup. Startup fails loudly if the file is malformed, empty, has duplicate codes, or contains no supported banks. Updating the list is a reviewed repository change.
+
+Expose `GET /api/v1/banks` publicly to provide the client with the full VietQR bank list (including `id`, `name`, `code`, `bin`, `short_name`, `logo`, `supported`). Support optional filtering via query parameter `?supported=true` / `?supported=false`. Responses attach `Cache-Control: public, max-age=86400` so mobile clients and proxies can cache the directory without repeated fetches.
 
 ### Avatar upload
 

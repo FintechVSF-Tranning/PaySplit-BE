@@ -136,6 +136,7 @@ func New(ctx context.Context) (*App, error) {
 	adminRepo := adminpostgres.New(db)
 	adminService := adminusecase.NewService(adminRepo)
 	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
+	bankHandler := banks.NewHandler(bankDirectory)
 
 	platformmetrics.RegisterDBPool(db)
 
@@ -150,6 +151,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
+		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })
 	})
 
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
