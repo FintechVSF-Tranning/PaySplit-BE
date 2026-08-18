@@ -101,3 +101,78 @@ func TestHamilton_VAT_ServiceCharge_Discount(t *testing.T) {
 		t.Errorf("expected total sum 215000 VND, got %d VND", sum)
 	}
 }
+
+func TestHamilton_ZeroSubtotal_CreditorBearsFees(t *testing.T) {
+	// covers: AC-10 (If subtotal is zero, all service charge and VAT belong to the Creditor)
+	creditor := uuid.New()
+	member := uuid.New()
+
+	input := usecase.AllocationInput{
+		CreditorID:    creditor,
+		Subtotal:      0,
+		ServiceCharge: 15000,
+		VAT:           10000,
+		Discount:      0,
+		Total:         25000,
+		Items:         []usecase.ItemInput{},
+	}
+
+	res, err := usecase.CalculateHamiltonAllocation(input)
+	if err != nil {
+		t.Fatalf("CalculateHamiltonAllocation() error = %v", err)
+	}
+
+	if len(res) != 1 {
+		t.Fatalf("expected only creditor in allocation, got %d", len(res))
+	}
+	if res[0].MemberID != creditor {
+		t.Errorf("expected creditor %s, got %s", creditor, res[0].MemberID)
+	}
+	if res[0].FinalAmount != 25000 {
+		t.Errorf("expected creditor to bear full 25000, got %d", res[0].FinalAmount)
+	}
+	_ = member
+}
+
+func TestHamilton_DeterministicUUIDTieBreaking(t *testing.T) {
+	// covers: AC-6, AC-10 (Ascending UUID tie breaking)
+	u1 := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	u2 := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	input := usecase.AllocationInput{
+		CreditorID: u1,
+		Subtotal:   100001,
+		Total:      100001,
+		Items: []usecase.ItemInput{
+			{
+				ID:        uuid.New(),
+				LineTotal: 100001,
+				Assignments: []usecase.ItemAssignmentInput{
+					{MemberID: u2, Ratio: 0.5},
+					{MemberID: u1, Ratio: 0.5},
+				},
+			},
+		},
+	}
+
+	res, err := usecase.CalculateHamiltonAllocation(input)
+	if err != nil {
+		t.Fatalf("CalculateHamiltonAllocation() error = %v", err)
+	}
+
+	// Total 100,001 divided evenly = 50,000.5 each.
+	// Both have remainder 0.5. Ascending UUID means u1 gets the extra 1 VND -> 50,001 VND. u2 gets 50,000 VND.
+	var a1, a2 int64
+	for _, a := range res {
+		if a.MemberID == u1 {
+			a1 = a.FinalAmount
+		}
+		if a.MemberID == u2 {
+			a2 = a.FinalAmount
+		}
+	}
+
+	if a1 != 50001 || a2 != 50000 {
+		t.Errorf("expected u1=50001, u2=50000, got u1=%d, u2=%d", a1, a2)
+	}
+}

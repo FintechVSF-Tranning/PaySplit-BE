@@ -424,6 +424,12 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrImagesRequired):
 		status = http.StatusBadRequest
 		code = "IMAGES_REQUIRED"
+	case errors.Is(err, domain.ErrReviewRequired):
+		status = http.StatusBadRequest
+		code = "REVIEW_REQUIRED"
+	case errors.Is(err, domain.ErrBillNotReady):
+		status = http.StatusBadRequest
+		code = "BILL_NOT_READY"
 	case errors.Is(err, domain.ErrOcrAlreadyRunning):
 		status = http.StatusConflict
 		code = "OCR_ALREADY_RUNNING"
@@ -436,6 +442,24 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrOcrJobNotFound):
 		status = http.StatusNotFound
 		code = "OCR_JOB_NOT_FOUND"
+	case errors.Is(err, domain.ErrOcrResultStale):
+		status = http.StatusConflict
+		code = "OCR_RESULT_STALE"
+	case errors.Is(err, domain.ErrOcrAlreadyApplied):
+		status = http.StatusConflict
+		code = "OCR_ALREADY_APPLIED"
+	case errors.Is(err, domain.ErrOcrCandidateInvalid):
+		status = http.StatusBadRequest
+		code = "OCR_CANDIDATE_INVALID"
+	case errors.Is(err, domain.ErrOcrProviderUnavailable):
+		status = http.StatusServiceUnavailable
+		code = "OCR_PROVIDER_UNAVAILABLE"
+	case errors.Is(err, domain.ErrOcrSchemaInvalid):
+		status = http.StatusBadGateway
+		code = "OCR_SCHEMA_INVALID"
+	case errors.Is(err, domain.ErrOcrTimeout):
+		status = http.StatusGatewayTimeout
+		code = "OCR_TIMEOUT"
 	}
 
 	_ = helpers.WriteAPIError(w, status, code, msg, nil)

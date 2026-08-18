@@ -1237,6 +1237,7 @@ func (q *Queries) VoidBill(ctx context.Context, arg VoidBillParams) (Bill, error
 const voidDebtsByBillID = `-- name: VoidDebtsByBillID :exec
 UPDATE debts
 SET status = 'voided',
+    voided_at = now(),
     updated_at = now()
 WHERE bill_id = $1 AND status = 'awaiting'
 `

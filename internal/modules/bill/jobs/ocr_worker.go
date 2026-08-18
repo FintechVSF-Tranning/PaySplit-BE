@@ -144,6 +144,7 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	defer cancel()
 
 	candidate, rawJSON, err := w.ocrProvider.ExtractReceipt(extractCtx, imageBytes, "image/jpeg")
+	imageBytes = nil
 	if err != nil {
 		// Nếu lỗi do schema AI không đọc được hoặc cấu trúc sai -> đánh dấu failed, không retry
 		if errors.Is(err, domain.ErrOcrSchemaInvalid) {

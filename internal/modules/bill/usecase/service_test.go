@@ -73,6 +73,9 @@ func (m *mockServiceRepo) GetOCRJobByID(ctx context.Context, id uuid.UUID) (*dom
 }
 
 func (m *mockServiceRepo) UpdateDraftBill(ctx context.Context, params repository.UpdateDraftParams) (*domain.Bill, error) {
+	if m.bill != nil && params.ExpectedVersion != m.bill.Version {
+		return nil, domain.ErrBillConflict
+	}
 	m.updatedBill = params.Bill
 	m.updatedBill.Items = params.Items
 	return m.updatedBill, nil
@@ -276,5 +279,168 @@ func TestReviewAndFinalizeBill_Success(t *testing.T) {
 	}
 	if len(finalized.Shares) != 2 {
 		t.Errorf("expected 2 shares, got %d", len(finalized.Shares))
+	}
+}
+
+func TestApplyCandidate_StaleProtection(t *testing.T) {
+	// covers: AC-4 (Stale protection returns conflict if version changed)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+	jobID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		activeMembers: []*repository.GroupMember{
+			{
+				ID:      memberID,
+				GroupID: groupID,
+				UserID:  userID,
+				Role:    "captain",
+				Status:  "active",
+			},
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: memberID,
+			Status:           domain.BillStatusDraft,
+			Version:          2, // current version is 2
+		},
+		ocrJob: &domain.OCRJob{
+			ID:      jobID,
+			BillID:  billID,
+			Status:  domain.OCRJobStatusSucceeded,
+			Version: 1, // job started on version 1
+			Candidate: &domain.OCRCandidate{
+				Items: []domain.OCRCandidateItem{
+					{Name: "Item 1", Quantity: "1", UnitPrice: 50000, LineTotal: 50000},
+				},
+				Subtotal: 50000,
+				Total:    50000,
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	// Calling with stale expected version 1 should fail
+	_, err := service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 1)
+	if err == nil {
+		t.Error("expected conflict error when applying candidate with stale version, got nil")
+	}
+}
+
+func TestReviewBill_Mismatch_FailsWhenTotalsDoNotReconcile(t *testing.T) {
+	// covers: AC-7 (Review requires subtotal = sum(line_total) and total = subtotal + service + vat - discount)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusDraft,
+			Subtotal:         100000,
+			Total:            120000, // mismatch: subtotal 100k + 0 + 0 - 0 = 100k != 120k
+			Version:          1,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: creditorID, Weight: "1"},
+					},
+				},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.ReviewBill(context.Background(), userID, billID, groupID, 1)
+	if err == nil {
+		t.Error("expected error due to total mismatch, got nil")
+	}
+}
+
+func TestVoidBill_NonCaptain_ReturnsForbidden(t *testing.T) {
+	// covers: AC-8, AC-11 (Only Captain can void finalized bill)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      memberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member", // regular member, not captain
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: memberID,
+			Status:           domain.BillStatusFinalized,
+			Version:          2,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.VoidBill(context.Background(), userID, billID, groupID, 2, "Test void")
+	if err != domain.ErrForbidden {
+		t.Errorf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestDeleteDraftBill_FinalizedBill_ReturnsImmutable(t *testing.T) {
+	// covers: AC-13 (Deleting a finalized bill is rejected as immutable)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusFinalized, // cannot delete finalized bill
+			Version:          2,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	err := service.DeleteDraftBill(context.Background(), userID, billID, groupID)
+	if err != domain.ErrBillImmutable {
+		t.Errorf("expected ErrBillImmutable, got %v", err)
 	}
 }

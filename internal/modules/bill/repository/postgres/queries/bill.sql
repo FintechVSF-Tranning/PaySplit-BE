@@ -284,5 +284,6 @@ INSERT INTO debts (
 -- name: VoidDebtsByBillID :exec
 UPDATE debts
 SET status = 'voided',
+    voided_at = now(),
     updated_at = now()
 WHERE bill_id = $1 AND status = 'awaiting';

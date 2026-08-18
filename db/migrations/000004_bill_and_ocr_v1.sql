@@ -32,6 +32,10 @@ ALTER TABLE bills
 CREATE UNIQUE INDEX IF NOT EXISTS uq_bills_replacement ON bills(replaces_bill_id) WHERE replaces_bill_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bills_group_created ON bills(group_id, created_at DESC);
 
+-- Cập nhật ràng buộc debts cho phép status 'voided'
+ALTER TABLE debts DROP CONSTRAINT IF EXISTS debts_check1;
+ALTER TABLE debts ADD CONSTRAINT debts_check1 CHECK ((status IN ('awaiting', 'voided')) = (payment_id IS NULL));
+
 -- 3. Tạo bảng bill_images: Lưu trữ danh sách ảnh hóa đơn theo thứ tự (1-5 ảnh, Spec 3 AC-1)
 CREATE TABLE IF NOT EXISTS bill_images (
     id          UUID PRIMARY KEY DEFAULT uuidv7(),
