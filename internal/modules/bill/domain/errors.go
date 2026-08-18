@@ -6,6 +6,9 @@ var (
 	// ErrInvalidInput đánh dấu request không hợp lệ về mặt dữ liệu đầu vào.
 	ErrInvalidInput = errors.New("invalid input")
 
+	// ErrForbidden trả về khi caller không có quyền thực hiện hành động này.
+	ErrForbidden = errors.New("forbidden")
+
 	// ErrBillNotFound trả về khi hóa đơn không tồn tại hoặc caller không có quyền truy cập trong group.
 	ErrBillNotFound = errors.New("bill not found")
 

@@ -441,6 +441,9 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	if err != nil {
 		return nil, err
 	}
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return nil, domain.ErrForbidden
+	}
 	if bill.Status != domain.BillStatusDraft {
 		return nil, domain.ErrBillImmutable
 	}
@@ -507,6 +510,9 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 	if err != nil {
 		return nil, err
 	}
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return nil, domain.ErrForbidden
+	}
 	if bill.Status != domain.BillStatusDraft {
 		return nil, domain.ErrBillImmutable
 	}
@@ -534,13 +540,13 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	if err != nil || member.Status != "active" {
 		return nil, domain.ErrInvalidInput
 	}
-	if member.Role != "captain" && member.ID != member.ID { // Captain hoặc Creditor
-		return nil, errors.New("only captain or creditor can finalize bill")
-	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
 	if err != nil {
 		return nil, err
+	}
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return nil, domain.ErrForbidden
 	}
 	if bill.Status == domain.BillStatusFinalized {
 		return nil, domain.ErrBillImmutable
@@ -596,7 +602,7 @@ func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uu
 		return nil, domain.ErrInvalidInput
 	}
 	if member.Role != "captain" {
-		return nil, errors.New("only captain can void finalized bill")
+		return nil, domain.ErrForbidden
 	}
 
 	if strings.TrimSpace(reason) == "" || len(reason) > 500 {
@@ -621,6 +627,9 @@ func (s *Service) DeleteDraftBill(ctx context.Context, callerUserID, billID, gro
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
 	if err != nil {
 		return err
+	}
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return domain.ErrForbidden
 	}
 	if bill.Status != domain.BillStatusDraft {
 		return domain.ErrBillImmutable

@@ -22,9 +22,12 @@ ALTER TABLE bills ADD CONSTRAINT bills_finalized_check
     CHECK ((status IN ('finalized', 'voided')) = (finalized_at IS NOT NULL));
 
 -- Bổ sung CHECK constraints và Index cho bills
+UPDATE bills SET voided_at = now() WHERE status = 'voided' AND voided_at IS NULL;
+ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_split_method_check;
+ALTER TABLE bills DROP CONSTRAINT IF EXISTS bills_voided_check;
 ALTER TABLE bills 
     ADD CONSTRAINT bills_split_method_check CHECK (split_method IN ('even', 'item_ratio', 'exact', 'shares', 'percentage')),
-    ADD CONSTRAINT bills_voided_check CHECK ((status = 'voided') = (voided_at IS NOT NULL));
+    ADD CONSTRAINT bills_voided_check CHECK (status <> 'voided' OR voided_at IS NOT NULL);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_bills_replacement ON bills(replaces_bill_id) WHERE replaces_bill_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bills_group_created ON bills(group_id, created_at DESC);
@@ -75,11 +78,13 @@ ALTER TABLE ocr_jobs ALTER COLUMN provider SET DEFAULT 'llamaextract';
 
 -- Partial Unique Index: Mỗi bill chỉ được có tối đa 1 OCR Job đang chạy (queued/processing, Spec 3 AC-2)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ocr_jobs_active_bill ON ocr_jobs(bill_id) WHERE status IN ('queued', 'processing');
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_bill_created ON ocr_jobs(bill_id, created_at DESC);
 
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
+DROP INDEX IF EXISTS idx_ocr_jobs_bill_created;
 DROP INDEX IF EXISTS uq_ocr_jobs_active_bill;
 ALTER TABLE ocr_jobs 
     DROP COLUMN IF EXISTS version,

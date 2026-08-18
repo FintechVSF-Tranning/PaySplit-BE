@@ -409,6 +409,9 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrInvalidInput):
 		status = http.StatusBadRequest
 		code = "VALIDATION_FAILED"
+	case errors.Is(err, domain.ErrForbidden):
+		status = http.StatusForbidden
+		code = "FORBIDDEN"
 	case errors.Is(err, domain.ErrBillNotFound):
 		status = http.StatusNotFound
 		code = "BILL_NOT_FOUND"
