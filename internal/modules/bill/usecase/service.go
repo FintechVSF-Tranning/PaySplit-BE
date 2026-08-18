@@ -161,6 +161,30 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		return nil, fmt.Errorf("%w: maximum 5 receipt images allowed", domain.ErrInvalidInput)
 	}
 
+	// Kiểm tra tính hợp lệ của replaces_bill_id nếu được truyền (Spec 3 AC-11)
+	if req.ReplacesBillID != nil && *req.ReplacesBillID != uuid.Nil {
+		replacedBill, err := s.repo.GetBillByID(ctx, *req.ReplacesBillID, req.GroupID)
+		if err != nil {
+			if errors.Is(err, domain.ErrBillNotFound) {
+				return nil, fmt.Errorf("%w: replacement bill not found in group", domain.ErrInvalidInput)
+			}
+			return nil, err
+		}
+		if replacedBill.Status != domain.BillStatusVoided {
+			return nil, fmt.Errorf("%w: replaced bill must be voided", domain.ErrInvalidInput)
+		}
+	}
+
+	// Kiểm tra tính hợp lệ của trọng số assignments
+	for _, it := range req.Items {
+		for _, assign := range it.Assignments {
+			w, err := strconv.ParseFloat(assign.Weight, 64)
+			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
+			}
+		}
+	}
+
 	billID := uuid.Must(uuid.NewV7())
 	operationID := uuid.Must(uuid.NewV7())
 
@@ -248,6 +272,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		Discount:         req.Discount,
 		Total:            req.Total,
 		SplitMethod:      splitMethod,
+		ReplacesBillID:   req.ReplacesBillID,
 		Status:           domain.BillStatusDraft,
 		Version:          1,
 	}
@@ -260,6 +285,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 			BillID:   billID,
 			Status:   domain.OCRJobStatusQueued,
 			Provider: "llamaextract",
+			Version:  1,
 		}
 	}
 
@@ -405,6 +431,7 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 		BillID:   billID,
 		Status:   domain.OCRJobStatusQueued,
 		Provider: "llamaextract",
+		Version:  bill.Version,
 	}
 
 	createdJob, err := s.repo.CreateOCRJob(ctx, newJob)
@@ -543,6 +570,16 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	// Kiểm tra giá trị discount không được âm
 	if req.Discount < 0 {
 		return nil, domain.ErrInvalidInput
+	}
+
+	// Kiểm tra tính hợp lệ của trọng số assignments
+	for _, it := range req.Items {
+		for _, assign := range it.Assignments {
+			w, err := strconv.ParseFloat(assign.Weight, 64)
+			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
+			}
+		}
 	}
 
 	bill.MerchantName = req.MerchantName
@@ -782,10 +819,10 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 			if a.MemberID == bill.CreditorMemberID {
 				notifBody = fmt.Sprintf("Hóa đơn của bạn đã được chốt với tổng cộng %d đ.", bill.Total)
 			}
-			payloadBytes, _ := json.Marshal(map[string]any{
+			payloadBytes, _ := json.Marshal(map[string]string{
 				"bill_id":  billID.String(),
 				"group_id": groupID.String(),
-				"amount":   amount,
+				"amount":   strconv.FormatInt(amount, 10),
 			})
 			notifications = append(notifications, &repository.NotificationParam{
 				ID:      notifID,

@@ -64,7 +64,7 @@ type Querier interface {
 	ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, error)
 	UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams) (Bill, error)
 	UpdateOCRJobFailed(ctx context.Context, arg UpdateOCRJobFailedParams) (OcrJob, error)
-	UpdateOCRJobProcessing(ctx context.Context, arg UpdateOCRJobProcessingParams) (OcrJob, error)
+	UpdateOCRJobProcessing(ctx context.Context, id pgtype.UUID) (OcrJob, error)
 	UpdateOCRJobSuccess(ctx context.Context, arg UpdateOCRJobSuccessParams) (OcrJob, error)
 	VoidBill(ctx context.Context, arg VoidBillParams) (Bill, error)
 	VoidDebtsByBillID(ctx context.Context, billID pgtype.UUID) error

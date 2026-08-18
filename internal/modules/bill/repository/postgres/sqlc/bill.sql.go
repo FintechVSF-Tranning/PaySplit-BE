@@ -454,7 +454,7 @@ INSERT INTO ocr_jobs (
     created_at,
     updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, 1, now(), now()
+    $1, $2, $3, $4, $5, $6, $7, $8, now(), now()
 ) RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
@@ -466,6 +466,7 @@ type CreateOCRJobParams struct {
 	Attempts    int32       `json:"attempts"`
 	RawResponse []byte      `json:"raw_response"`
 	Candidate   []byte      `json:"candidate"`
+	Version     int32       `json:"version"`
 }
 
 // ============================================================================
@@ -480,6 +481,7 @@ func (q *Queries) CreateOCRJob(ctx context.Context, arg CreateOCRJobParams) (Ocr
 		arg.Attempts,
 		arg.RawResponse,
 		arg.Candidate,
+		arg.Version,
 	)
 	var i OcrJob
 	err := row.Scan(
@@ -1431,22 +1433,20 @@ func (q *Queries) UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams
 const updateOCRJobFailed = `-- name: UpdateOCRJobFailed :one
 UPDATE ocr_jobs
 SET status = 'failed',
-    error_message = $3,
-    version = version + 1,
+    error_message = $2,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status = 'processing'
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
 type UpdateOCRJobFailedParams struct {
 	ID           pgtype.UUID `json:"id"`
-	Version      int32       `json:"version"`
 	ErrorMessage pgtype.Text `json:"error_message"`
 }
 
 func (q *Queries) UpdateOCRJobFailed(ctx context.Context, arg UpdateOCRJobFailedParams) (OcrJob, error) {
-	row := q.db.QueryRow(ctx, updateOCRJobFailed, arg.ID, arg.Version, arg.ErrorMessage)
+	row := q.db.QueryRow(ctx, updateOCRJobFailed, arg.ID, arg.ErrorMessage)
 	var i OcrJob
 	err := row.Scan(
 		&i.ID,
@@ -1469,19 +1469,13 @@ const updateOCRJobProcessing = `-- name: UpdateOCRJobProcessing :one
 UPDATE ocr_jobs
 SET status = 'processing',
     attempts = attempts + 1,
-    version = version + 1,
     updated_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status IN ('queued', 'processing')
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
-type UpdateOCRJobProcessingParams struct {
-	ID      pgtype.UUID `json:"id"`
-	Version int32       `json:"version"`
-}
-
-func (q *Queries) UpdateOCRJobProcessing(ctx context.Context, arg UpdateOCRJobProcessingParams) (OcrJob, error) {
-	row := q.db.QueryRow(ctx, updateOCRJobProcessing, arg.ID, arg.Version)
+func (q *Queries) UpdateOCRJobProcessing(ctx context.Context, id pgtype.UUID) (OcrJob, error) {
+	row := q.db.QueryRow(ctx, updateOCRJobProcessing, id)
 	var i OcrJob
 	err := row.Scan(
 		&i.ID,
@@ -1503,29 +1497,22 @@ func (q *Queries) UpdateOCRJobProcessing(ctx context.Context, arg UpdateOCRJobPr
 const updateOCRJobSuccess = `-- name: UpdateOCRJobSuccess :one
 UPDATE ocr_jobs
 SET status = 'succeeded',
-    candidate = $3,
-    raw_response = $4,
-    version = version + 1,
+    candidate = $2,
+    raw_response = $3,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status = 'processing'
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
 type UpdateOCRJobSuccessParams struct {
 	ID          pgtype.UUID `json:"id"`
-	Version     int32       `json:"version"`
 	Candidate   []byte      `json:"candidate"`
 	RawResponse []byte      `json:"raw_response"`
 }
 
 func (q *Queries) UpdateOCRJobSuccess(ctx context.Context, arg UpdateOCRJobSuccessParams) (OcrJob, error) {
-	row := q.db.QueryRow(ctx, updateOCRJobSuccess,
-		arg.ID,
-		arg.Version,
-		arg.Candidate,
-		arg.RawResponse,
-	)
+	row := q.db.QueryRow(ctx, updateOCRJobSuccess, arg.ID, arg.Candidate, arg.RawResponse)
 	var i OcrJob
 	err := row.Scan(
 		&i.ID,

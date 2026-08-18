@@ -163,6 +163,11 @@ func (m *mockServiceRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID,
 }
 
 func (m *mockServiceRepo) FinalizeBill(ctx context.Context, params repository.FinalizeBillParams) (*domain.Bill, error) {
+	if params.BeforeCommit != nil {
+		if err := params.BeforeCommit(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
 	m.finalizedBill = m.bill
 	m.finalizedBill.Status = domain.BillStatusFinalized
 	m.finalizedBill.Shares = params.Shares
@@ -1312,5 +1317,190 @@ func TestFinalizeBill_EnqueuesNotifications(t *testing.T) {
 		t.Fatal("expected finalized bill, got nil")
 	}
 }
+
+func TestCreateBill_ReplacesBillID_Success(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	voidedBillID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:      voidedBillID,
+			GroupID: groupID,
+			Status:  domain.BillStatusVoided,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID:        groupID,
+		ReplacesBillID: &voidedBillID,
+		Total:          50000,
+	})
+	if err != nil {
+		t.Fatalf("CreateBill() unexpected error = %v", err)
+	}
+	if res.Bill.ReplacesBillID == nil || *res.Bill.ReplacesBillID != voidedBillID {
+		t.Errorf("expected ReplacesBillID to be %v, got %v", voidedBillID, res.Bill.ReplacesBillID)
+	}
+}
+
+func TestCreateBill_ReplacesBillID_NotVoided_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	activeBillID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:      activeBillID,
+			GroupID: groupID,
+			Status:  domain.BillStatusDraft, // Not voided
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID:        groupID,
+		ReplacesBillID: &activeBillID,
+		Total:          50000,
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput when replacing non-voided bill, got %v", err)
+	}
+}
+
+func TestCreateBill_InvalidWeight_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   50000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:      "Item 1",
+				LineTotal: 50000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "-5"}, // Invalid negative weight
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for negative weight, got %v", err)
+	}
+}
+
+func TestUpdateDraftBill_InvalidWeight_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version: 1,
+		Total:   50000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:      "Item 1",
+				LineTotal: 50000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "0"}, // Invalid zero weight
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for zero weight in UpdateDraftBill, got %v", err)
+	}
+}
+
+func TestRetryOCR_CapturesCurrentBillVersion(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          4, // Current bill version is 4
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), ImageKey: "bills/op/0"},
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	job, err := service.RetryOCR(context.Background(), userID, billID, groupID)
+	if err != nil {
+		t.Fatalf("RetryOCR() unexpected error = %v", err)
+	}
+	if job.Version != 4 {
+		t.Errorf("expected retry OCR job to capture bill version 4, got %d", job.Version)
+	}
+}
+
 
 

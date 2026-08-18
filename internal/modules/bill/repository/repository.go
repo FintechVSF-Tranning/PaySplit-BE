@@ -156,9 +156,9 @@ type Repository interface {
 	GetOCRJobByID(ctx context.Context, id uuid.UUID) (*domain.OCRJob, error)
 	GetActiveOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error)
-	UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID, version int32) error
-	UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, version int32, candidate *domain.OCRCandidate, raw []byte) error
-	UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, version int32, errReason string) error
+	UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID) error
+	UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, candidate *domain.OCRCandidate, raw []byte) error
+	UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error
 	CountManualOCRAttemptsInWindow(ctx context.Context, billID uuid.UUID, since time.Time) (int64, error)
 
 	// Media Cleanup

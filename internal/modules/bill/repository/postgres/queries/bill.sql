@@ -241,7 +241,7 @@ INSERT INTO ocr_jobs (
     created_at,
     updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, 1, now(), now()
+    $1, $2, $3, $4, $5, $6, $7, $8, now(), now()
 ) RETURNING *;
 
 -- name: GetOCRJobByID :one
@@ -263,30 +263,27 @@ LIMIT 1;
 UPDATE ocr_jobs
 SET status = 'processing',
     attempts = attempts + 1,
-    version = version + 1,
     updated_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status IN ('queued', 'processing')
 RETURNING *;
 
 -- name: UpdateOCRJobSuccess :one
 UPDATE ocr_jobs
 SET status = 'succeeded',
-    candidate = $3,
-    raw_response = $4,
-    version = version + 1,
+    candidate = $2,
+    raw_response = $3,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status = 'processing'
 RETURNING *;
 
 -- name: UpdateOCRJobFailed :one
 UPDATE ocr_jobs
 SET status = 'failed',
-    error_message = $3,
-    version = version + 1,
+    error_message = $2,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND status = 'processing'
 RETURNING *;
 
 -- name: CountManualOCRAttemptsInWindow :one

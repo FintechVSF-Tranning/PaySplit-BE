@@ -40,17 +40,17 @@ func (m *mockRepo) GetBillByID(ctx context.Context, id, groupID uuid.UUID) (*dom
 	return nil, domain.ErrBillNotFound
 }
 
-func (m *mockRepo) UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID, version int32) error {
+func (m *mockRepo) UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID) error {
 	m.updated = true
 	return nil
 }
 
-func (m *mockRepo) UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, version int32, candidate *domain.OCRCandidate, raw []byte) error {
+func (m *mockRepo) UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, candidate *domain.OCRCandidate, raw []byte) error {
 	m.success = true
 	return nil
 }
 
-func (m *mockRepo) UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, version int32, errReason string) error {
+func (m *mockRepo) UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error {
 	m.failed = true
 	m.failReason = errReason
 	return nil

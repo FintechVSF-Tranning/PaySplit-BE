@@ -101,9 +101,15 @@ func payloadToData(payload json.RawMessage) map[string]string {
 	if len(payload) == 0 {
 		return nil
 	}
-	data := make(map[string]string)
-	if err := json.Unmarshal(payload, &data); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
 		return nil
+	}
+	data := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if v != nil {
+			data[k] = fmt.Sprint(v)
+		}
 	}
 	return data
 }

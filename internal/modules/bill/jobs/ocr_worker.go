@@ -100,15 +100,13 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	}
 
 	// 2. Chuyển trạng thái sang processing
-	currentVersion := ocrJob.Version
-	if err := w.repo.UpdateOCRJobProcessing(ctx, jobID, currentVersion); err != nil {
+	if err := w.repo.UpdateOCRJobProcessing(ctx, jobID); err != nil {
 		if errors.Is(err, domain.ErrOcrJobConflict) {
 			// Job đã được worker khác nhận xử lý
 			return nil
 		}
 		return fmt.Errorf("update ocr job to processing: %w", err)
 	}
-	currentVersion++
 
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
@@ -122,14 +120,14 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	bill, err := w.repo.GetBillByID(ctx, billID, groupID)
 	if err != nil {
 		if errors.Is(err, domain.ErrBillNotFound) {
-			_ = w.failJob(ctx, jobID, billID, currentVersion, "bill not found")
+			_ = w.failJob(ctx, jobID, billID, "bill not found")
 			return nil
 		}
 		return fmt.Errorf("get bill by id: %w", err)
 	}
 
 	if len(bill.Images) == 0 {
-		_ = w.failJob(ctx, jobID, billID, currentVersion, "no images found for receipt")
+		_ = w.failJob(ctx, jobID, billID, "no images found for receipt")
 		return nil
 	}
 
@@ -139,7 +137,7 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		b, err := w.storage.Download(ctx, img.ImageKey)
 		if err != nil {
 			if job.Attempt >= job.MaxAttempts {
-				_ = w.failJob(ctx, jobID, billID, currentVersion, fmt.Sprintf("download receipt failed after max attempts: %v", err))
+				_ = w.failJob(ctx, jobID, billID, fmt.Sprintf("download receipt failed after max attempts: %v", err))
 				return nil
 			}
 			return fmt.Errorf("download receipt from storage: %w", err)
@@ -164,13 +162,13 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	if err != nil {
 		// Nếu lỗi do schema AI không đọc được hoặc cấu trúc sai -> đánh dấu failed, không retry
 		if errors.Is(err, domain.ErrOcrSchemaInvalid) {
-			_ = w.failJob(ctx, jobID, billID, currentVersion, "ocr schema invalid or unparseable receipt")
+			_ = w.failJob(ctx, jobID, billID, "ocr schema invalid or unparseable receipt")
 			return nil
 		}
 
 		// Nếu hết số lần retry tối đa của River Queue
 		if job.Attempt >= job.MaxAttempts {
-			_ = w.failJob(ctx, jobID, billID, currentVersion, fmt.Sprintf("ocr provider failed after %d attempts: %v", job.Attempt, err))
+			_ = w.failJob(ctx, jobID, billID, fmt.Sprintf("ocr provider failed after %d attempts: %v", job.Attempt, err))
 			return nil
 		}
 
@@ -179,7 +177,7 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	}
 
 	// 6. Ghi nhận kết quả bóc tách thành công vào database và phát SSE event
-	if err := w.repo.UpdateOCRJobSuccess(ctx, jobID, currentVersion, candidate, rawJSON); err != nil {
+	if err := w.repo.UpdateOCRJobSuccess(ctx, jobID, candidate, rawJSON); err != nil {
 		if errors.Is(err, domain.ErrOcrJobConflict) {
 			return nil
 		}
@@ -198,8 +196,8 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	return nil
 }
 
-func (w *OCRWorker) failJob(ctx context.Context, jobID, billID uuid.UUID, version int32, reason string) error {
-	err := w.repo.UpdateOCRJobFailed(ctx, jobID, version, reason)
+func (w *OCRWorker) failJob(ctx context.Context, jobID, billID uuid.UUID, reason string) error {
+	err := w.repo.UpdateOCRJobFailed(ctx, jobID, reason)
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
 			"job_id":  jobID,

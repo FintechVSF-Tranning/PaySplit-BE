@@ -174,6 +174,11 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 			candidateBytes, _ = json.Marshal(p.OCRJob.Candidate)
 		}
 
+		var jobVersion int32 = 1
+		if p.OCRJob.Version > 0 {
+			jobVersion = p.OCRJob.Version
+		}
+
 		_, err := q.CreateOCRJob(ctx, sqlc.CreateOCRJobParams{
 			ID:          pgtype.UUID{Bytes: p.OCRJob.ID, Valid: true},
 			BillID:      pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
@@ -182,6 +187,7 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 			Attempts:    p.OCRJob.Attempts,
 			RawResponse: p.OCRJob.RawResponse,
 			Candidate:   candidateBytes,
+			Version:     jobVersion,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create ocr job: %w", err)
@@ -932,6 +938,11 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 		provider = "llamaextract"
 	}
 
+	var jobVersion int32 = 1
+	if job.Version > 0 {
+		jobVersion = job.Version
+	}
+
 	dbJob, err := q.CreateOCRJob(ctx, sqlc.CreateOCRJobParams{
 		ID:          pgtype.UUID{Bytes: job.ID, Valid: true},
 		BillID:      pgtype.UUID{Bytes: job.BillID, Valid: true},
@@ -940,6 +951,7 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 		Attempts:    job.Attempts,
 		RawResponse: job.RawResponse,
 		Candidate:   candidateBytes,
+		Version:     jobVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ocr job: %w", err)
@@ -990,13 +1002,10 @@ func (r *postgresRepository) GetLatestOCRJobByBillID(ctx context.Context, billID
 	return toDomainOCRJob(&dbJob)
 }
 
-func (r *postgresRepository) UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID, version int32) error {
+func (r *postgresRepository) UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID) error {
 	q := sqlc.New(r.pool)
 
-	_, err := q.UpdateOCRJobProcessing(ctx, sqlc.UpdateOCRJobProcessingParams{
-		ID:      pgtype.UUID{Bytes: id, Valid: true},
-		Version: version,
-	})
+	_, err := q.UpdateOCRJobProcessing(ctx, pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrOcrJobConflict
@@ -1006,7 +1015,7 @@ func (r *postgresRepository) UpdateOCRJobProcessing(ctx context.Context, id uuid
 	return nil
 }
 
-func (r *postgresRepository) UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, version int32, candidate *domain.OCRCandidate, raw []byte) error {
+func (r *postgresRepository) UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, candidate *domain.OCRCandidate, raw []byte) error {
 	q := sqlc.New(r.pool)
 
 	var candidateBytes []byte
@@ -1016,7 +1025,6 @@ func (r *postgresRepository) UpdateOCRJobSuccess(ctx context.Context, id uuid.UU
 
 	_, err := q.UpdateOCRJobSuccess(ctx, sqlc.UpdateOCRJobSuccessParams{
 		ID:          pgtype.UUID{Bytes: id, Valid: true},
-		Version:     version,
 		Candidate:   candidateBytes,
 		RawResponse: raw,
 	})
@@ -1029,12 +1037,11 @@ func (r *postgresRepository) UpdateOCRJobSuccess(ctx context.Context, id uuid.UU
 	return nil
 }
 
-func (r *postgresRepository) UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, version int32, errReason string) error {
+func (r *postgresRepository) UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error {
 	q := sqlc.New(r.pool)
 
 	_, err := q.UpdateOCRJobFailed(ctx, sqlc.UpdateOCRJobFailedParams{
 		ID:           pgtype.UUID{Bytes: id, Valid: true},
-		Version:      version,
 		ErrorMessage: pgtype.Text{String: errReason, Valid: true},
 	})
 	if err != nil {
