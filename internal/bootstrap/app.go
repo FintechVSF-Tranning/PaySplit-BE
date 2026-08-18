@@ -21,6 +21,10 @@ import (
 	authjobs "paysplit-backend/internal/modules/auth/jobs"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	authusecase "paysplit-backend/internal/modules/auth/usecase"
+	billhttp "paysplit-backend/internal/modules/bill/delivery/http"
+	billjobs "paysplit-backend/internal/modules/bill/jobs"
+	billpostgres "paysplit-backend/internal/modules/bill/repository/postgres"
+	billusecase "paysplit-backend/internal/modules/bill/usecase"
 	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
 	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
 	groupusecase "paysplit-backend/internal/modules/group/usecase"
@@ -33,8 +37,10 @@ import (
 	"paysplit-backend/internal/platform/database"
 	"paysplit-backend/internal/platform/email/gmail"
 	avatarimage "paysplit-backend/internal/platform/image/avatar"
+	receiptimage "paysplit-backend/internal/platform/image/receipt"
 	platformmetrics "paysplit-backend/internal/platform/metrics"
 	"paysplit-backend/internal/platform/notification/fcm"
+	"paysplit-backend/internal/platform/ocr/llamaextract"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
@@ -56,7 +62,7 @@ type App struct {
 // 1. Tải cấu hình môi trường (.env / environment variables)
 // 2. Mở kết nối Database PostgreSQL pool
 // 3. Khởi tạo các adapter hạ tầng dùng chung (JWT, Banks, Email, Avatar Storage & Processing)
-// 4. Khởi tạo các module nghiệp vụ (Auth, Notification, Group, Admin)
+// 4. Khởi tạo các module nghiệp vụ (Auth, Notification, Group, Admin, Bill)
 // 5. Cấu hình River Queue (Background Job Worker) và router HTTP server
 func New(ctx context.Context) (*App, error) {
 	// 1. Nạp và kiểm tra cấu hình runtime (.env)
@@ -147,6 +153,19 @@ func New(ctx context.Context) (*App, error) {
 	}
 	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, notificationJobNotifier))
 
+	// Khởi tạo OCR Provider, Cloudinary Bill Storage, Receipt Processor và Bill Module
+	ocrClient := llamaextract.New(cfg.OCR)
+	billStorage, err := avatarstorage.NewBillStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create bill storage: %w", err)
+	}
+	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
+	billRepo := billpostgres.New(db)
+	billHub := billhttp.NewHub(db)
+	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
+	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout))
+
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
 	if err != nil {
 		db.Close()
@@ -157,6 +176,12 @@ func New(ctx context.Context) (*App, error) {
 	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
 	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
 	notificationHandler := notificationhttp.NewHandler(notificationService)
+
+	// Khởi tạo Module Bill
+	billEnqueuer := billjobs.NewEnqueuer(riverClient)
+	billService := billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
+	billService.SetManualOCRConfig(cfg.OCR.ManualLimit, cfg.OCR.ManualWindowHours)
+	billHandler := billhttp.NewHandler(billService, billSSEHandler)
 
 	// 8. Khởi tạo Module Group
 	groupRepo := grouppostgres.New(db)
@@ -182,8 +207,9 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })
+		api.Route("/bills", func(r chi.Router) { billHandler.RegisterRoutes(r, liveAuth) })
 	})
-	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, admin, banks)")
+	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, bills, admin, banks)")
 
 	// 11. Khởi chạy River Queue Worker Engine
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
@@ -210,6 +236,8 @@ func New(ctx context.Context) (*App, error) {
 	go func() { defer app.workers.Done(); cleanupWorkers.Run(workerCtx) }()
 	log.Printf("[Workers] Periodic cleanup workers started (interval: %v, media_interval: %v)", cfg.Cleanup.Interval, cfg.Cleanup.MediaWorkerInterval)
 
+	app.workers.Add(1)
+	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
 	return app, nil
 }
 

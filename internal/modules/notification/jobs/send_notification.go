@@ -24,7 +24,7 @@ type Repository interface {
 
 // PushNotifier định nghĩa cổng gửi push notification
 type PushNotifier interface {
-	SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error
+	SendToDevice(ctx context.Context, fcmToken string, msg domain.PushMessage) error
 }
 
 // NotificationJobArgs định nghĩa payload công việc gửi thông báo được lưu vào River Queue.
@@ -76,7 +76,7 @@ func (w *NotificationWorker) Work(ctx context.Context, job *river.Job[Notificati
 		return nil
 	}
 
-	msg := fcm.PushMessage{Title: notif.Title, Body: notif.Body, Data: payloadToData(notif.Payload)}
+	msg := domain.PushMessage{Title: notif.Title, Body: notif.Body, Data: payloadToData(notif.Payload)}
 
 	if sendErr := w.pushNotifier.SendToDevice(ctx, token, msg); sendErr != nil {
 		// Nếu token không còn hợp lệ (user gỡ app) -> Xóa khỏi DB và kết thúc job
@@ -101,9 +101,15 @@ func payloadToData(payload json.RawMessage) map[string]string {
 	if len(payload) == 0 {
 		return nil
 	}
-	data := make(map[string]string)
-	if err := json.Unmarshal(payload, &data); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
 		return nil
+	}
+	data := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if v != nil {
+			data[k] = fmt.Sprint(v)
+		}
 	}
 	return data
 }

@@ -82,6 +82,89 @@ var (
 			return 0
 		},
 	)
+
+	// Domain Metrics Module 3: Bill & OCR v1 (Spec 3 index.md:187, AC-14)
+	OCRQueueDepth = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "paysplit",
+			Subsystem: "ocr",
+			Name:      "queue_depth",
+			Help:      "Current number of queued OCR jobs.",
+		},
+	)
+
+	OCRProviderDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "paysplit",
+			Subsystem: "ocr",
+			Name:      "provider_duration_seconds",
+			Help:      "Histogram of OCR provider extraction latency in seconds.",
+			Buckets:   []float64{0.5, 1, 2, 3, 5, 8, 10, 15, 20},
+		},
+		[]string{"provider", "outcome"},
+	)
+
+	OCRJobsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "ocr",
+			Name:      "jobs_total",
+			Help:      "Total number of OCR jobs processed, labeled by final application state and error code.",
+		},
+		[]string{"state", "error_code"},
+	)
+
+	OCRStaleApplyTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "ocr",
+			Name:      "stale_apply_total",
+			Help:      "Total number of stale candidate apply rejections.",
+		},
+		[]string{"reason"},
+	)
+
+	BillMismatchBlockTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "bill",
+			Name:      "mismatch_block_total",
+			Help:      "Total number of review/finalize attempts blocked by mismatch.",
+		},
+		[]string{"reason"},
+	)
+
+	MediaCleanupFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "media",
+			Name:      "cleanup_failures_total",
+			Help:      "Total number of media cleanup job failures.",
+		},
+		[]string{"reason"},
+	)
+
+	BillFinalizeDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "paysplit",
+			Subsystem: "bill",
+			Name:      "finalize_duration_seconds",
+			Help:      "Histogram of bill finalize duration in seconds.",
+			Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2},
+		},
+		[]string{"outcome"},
+	)
+
+	BillPreviewDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "paysplit",
+			Subsystem: "bill",
+			Name:      "preview_duration_seconds",
+			Help:      "Histogram of bill preview calculation duration in seconds.",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1},
+		},
+		[]string{"outcome"},
+	)
 )
 
 var activePool *pgxpool.Pool
@@ -92,6 +175,49 @@ func init() {
 	prometheus.MustRegister(dbPoolAcquiredConns)
 	prometheus.MustRegister(dbPoolIdleConns)
 	prometheus.MustRegister(dbPoolTotalConns)
+
+	// Register Module 3 Domain Metrics
+	prometheus.MustRegister(OCRQueueDepth)
+	prometheus.MustRegister(OCRProviderDuration)
+	prometheus.MustRegister(OCRJobsTotal)
+	prometheus.MustRegister(OCRStaleApplyTotal)
+	prometheus.MustRegister(BillMismatchBlockTotal)
+	prometheus.MustRegister(MediaCleanupFailuresTotal)
+	prometheus.MustRegister(BillFinalizeDuration)
+	prometheus.MustRegister(BillPreviewDuration)
+}
+
+// Helper methods ghi nhận metrics cho Module 3
+func RecordOCRJob(state, errorCode string) {
+	OCRJobsTotal.WithLabelValues(state, errorCode).Inc()
+}
+
+func RecordOCRProviderDuration(provider, outcome string, duration time.Duration) {
+	OCRProviderDuration.WithLabelValues(provider, outcome).Observe(duration.Seconds())
+}
+
+func RecordOCRStaleApply(reason string) {
+	OCRStaleApplyTotal.WithLabelValues(reason).Inc()
+}
+
+func RecordBillMismatchBlock(reason string) {
+	BillMismatchBlockTotal.WithLabelValues(reason).Inc()
+}
+
+func RecordMediaCleanupFailure(reason string) {
+	MediaCleanupFailuresTotal.WithLabelValues(reason).Inc()
+}
+
+func RecordBillFinalize(outcome string, duration time.Duration) {
+	BillFinalizeDuration.WithLabelValues(outcome).Observe(duration.Seconds())
+}
+
+func RecordBillPreview(outcome string, duration time.Duration) {
+	BillPreviewDuration.WithLabelValues(outcome).Observe(duration.Seconds())
+}
+
+func SetOCRQueueDepth(depth float64) {
+	OCRQueueDepth.Set(depth)
 }
 
 // RegisterDBPool đăng ký pool database để đo lường metrics kết nối.

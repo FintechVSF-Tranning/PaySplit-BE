@@ -50,6 +50,50 @@ func TestValidateAcceptsADeepLinkInviteBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidOCR(t *testing.T) {
+	cfg := validConfig()
+	cfg.OCR.ProviderTimeout = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for invalid OCR provider timeout")
+	}
+}
+
+func TestValidateRejectsInvalidBillImage(t *testing.T) {
+	cfg := validConfig()
+	cfg.BillImage.MaxBytes = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for invalid BillImage MaxBytes")
+	}
+}
+
+func TestValidateRejectsInvalidBillSSE(t *testing.T) {
+	cfg := validConfig()
+	cfg.BillSSE.HeartbeatInterval = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for invalid BillSSE HeartbeatInterval")
+	}
+
+	cfg = validConfig()
+	cfg.BillSSE.HeartbeatInterval = 20 * time.Minute
+	cfg.BillSSE.MaxConnectionAge = 15 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error when HeartbeatInterval >= MaxConnectionAge")
+	}
+}
+
 func validConfig() *Config {
-	return &Config{App: AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 30}, Database: DatabaseConfig{URL: "postgres://local/test", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second}, Auth: AuthConfig{JWTSecret: "secret", JWTIssuer: "issuer", AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 7 * 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"}, SMTP: SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second}, Cloudinary: CloudinaryConfig{CloudName: "test", APIKey: "test", APISecret: "test"}, Avatar: AvatarConfig{UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, MaxConcurrentConversions: 2}, Cleanup: CleanupConfig{Interval: 24 * time.Hour, Retention: 30 * 24 * time.Hour, MediaWorkerInterval: time.Minute, MediaMaxAttempts: 10}, River: RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond}, Group: GroupConfig{InviteBaseURL: "paysplit://join"}}
+	return &Config{
+		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 30},
+		Database:   DatabaseConfig{URL: "postgres://local/test", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
+		Auth:       AuthConfig{JWTSecret: "secret", JWTIssuer: "issuer", AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 7 * 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
+		SMTP:       SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second},
+		Cloudinary: CloudinaryConfig{CloudName: "test", APIKey: "test", APISecret: "test"},
+		Avatar:     AvatarConfig{UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, MaxConcurrentConversions: 2},
+		Cleanup:    CleanupConfig{Interval: 24 * time.Hour, Retention: 30 * 24 * time.Hour, MediaWorkerInterval: time.Minute, MediaMaxAttempts: 10},
+		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond},
+		Group:      GroupConfig{InviteBaseURL: "paysplit://join"},
+		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
+		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
+		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
+	}
 }
