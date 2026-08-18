@@ -40,3 +40,13 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/admin/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/admin/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true

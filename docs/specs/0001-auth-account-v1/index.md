@@ -25,15 +25,15 @@ PaySplit v1 uses email and password for identity, database backed sessions for i
 **Acceptance criteria**:
 
 1. **AC-1**: Sign up requires a syntactically valid unique email, a required unique phone number normalized to E.164 with region `VN`, a nonempty display name, and a password of 8 to 72 bytes containing lowercase, uppercase, and a digit.
-2. **AC-2**: Successful sign up creates a `pending_verification` user, sends an email verification token when Gmail is available, returns `201`, never returns auth tokens, and reports `verification_email_sent` without rolling back the account when email delivery fails.
-3. **AC-3**: Email verification uses a random single use token valid for 10 minutes, activates the account, is idempotent after success while the consumed token record remains in the 30 day retention window, and does not sign the user in automatically. Superseded and expired tokens return an invalid token response.
+2. **AC-2**: Successful sign up creates a `pending_verification` user, sends a 6-digit numeric verification OTP by email when Gmail is available, returns `201`, never returns auth tokens, and reports `verification_email_sent` without rolling back the account when email delivery fails.
+3. **AC-3**: Email verification accepts `email` and a 6-digit numeric OTP valid for 10 minutes (maximum 5 failed attempts), activates the account, is idempotent after success while the consumed token record remains in the 30 day retention window, and does not sign the user in automatically. Superseded, expired, or incorrect OTPs after 5 failed attempts return an invalid token response.
 4. **AC-4**: Resend verification and forgot password return the same `202` response for existing, missing, active, and pending accounts, while only eligible accounts receive email.
 5. **AC-5**: Sign in accepts only email, password, required `device_id`, and optional `device_name`; only active users receive tokens and all old active sessions are revoked before the new session is committed.
 6. **AC-6**: Five failed sign in attempts within 15 minutes block the account identifier for 15 minutes, return `429` with `Retry-After`, persist in PostgreSQL, and reset after successful sign in.
 7. **AC-7**: Access tokens expire after 15 minutes and include user ID, role, issuer, expiry, and session ID claim `sid`; every protected request rejects a revoked session or a nonactive user even when the JWT signature is valid.
 8. **AC-8**: Opaque refresh tokens are stored only as SHA 256 hashes, rotate atomically, and revoke the session when an already used token is presented again. A session has an absolute lifetime of 7 days from sign in, and rotation never extends a replacement refresh token beyond that session expiry.
 9. **AC-9**: Sign out is idempotent, revokes the current session and all its refresh tokens, and returns `204`.
-10. **AC-10**: Password reset tokens expire after 10 minutes, are single use, and a successful reset changes the password and revokes every session in one transaction.
+10. **AC-10**: Password reset accepts `email`, a 6-digit numeric OTP valid for 10 minutes (maximum 5 failed attempts), and a new password adhering to the password policy. A successful reset changes the password and revokes every session in one transaction.
 11. **AC-11**: Change password requires the current password, applies the shared password policy, keeps the current session and its current refresh tokens, revokes every other session and their refresh tokens, and returns `204`.
 12. **AC-12**: The authenticated user can read and patch their own safe profile; email cannot change in v1, phone remains unique E.164, and bank fields update or clear as one validated group.
 13. **AC-13**: Bank validation loads the committed snapshot sourced from `https://vietqr.app/banks.json`, accepts only `supported: true`, requires an account number of 6 to 19 digits, and requires a nonempty account holder.
@@ -59,9 +59,9 @@ PaySplit v1 uses email and password for identity, database backed sessions for i
 | `users` | UUID v7 `id`, email, E.164 phone, password hash, profile fields, role, status, verification timestamp, failed sign in count, failure window start, blocked until, timestamps | Email and phone are required and unique. Primary ID defaults to `uuidv7()`. Text lengths follow the input contract below |
 | `sessions` | UUID v7 `id`, user ID, device ID, nullable device name, issued and absolute expiry times, revoked time and reason | FK to users with an index. Device ID is a canonical UUID string. A partial unique index permits one row per user where `revoked_at IS NULL` |
 | `session_refresh_tokens` | UUID v7 `id`, session ID, token hash, issued, expiry, used, and revoked times | FK to sessions with cascade and an index. Token hash is unique |
-| `user_tokens` | UUID v7 `id`, user ID, type, token hash, expiry, used time, superseded time, created time | Type is email verification or password reset. Token hash is unique. FK to users is indexed. A partial unique index permits one unsuperseded and unused token for each user and type |
+| `user_tokens` | UUID v7 `id`, user ID, type, token hash, attempt count, expiry, used time, superseded time, created time | Type is email verification or password reset. Token hash is SHA 256 of the 6-digit OTP. attempt_count tracks failed attempts (supersedes at 5). FK to users is indexed. A partial unique index permits one unsuperseded and unused token for each user and type |
 | `auth_rate_limit_events` | UUID v7 `id`, action, dimension, hashed key, occurred time | Supports exact rolling windows. An index covers action, dimension, hashed key, and descending occurrence time |
-| `media_cleanup_jobs` | UUID v7 `id`, provider, object key, attempt count, next attempt, last error code, completion time, timestamps | A partial unique index prevents duplicate open cleanup jobs for the same provider object |
+| `media_cleanup_jobs` | UUID v7 `id`, provider, object key, attempt count, next attempt, last last error code, completion time, timestamps | A partial unique index prevents duplicate open cleanup jobs for the same provider object |
 | `banks.json` | Code, BIN, short name, supported flag | Embedded repository snapshot, not a database table |
 
 All UUID primary keys in the whole initial schema receive `DEFAULT uuidv7()`, not only auth tables. The old `sessions.refresh_token_hash` column is replaced by `session_refresh_tokens`.
@@ -82,24 +82,25 @@ Only admin workflows may change `suspended` or administrative `locked`. Temporar
 | Endpoint | Method | Key inputs | Key outputs | Auth | Key errors |
 |---|---|---|---|---|---|
 | `/api/v1/auth/sign-up` | POST | email, phone, display name, password | safe user, status, verification send result and expiry | public | `VALIDATION_FAILED`, `EMAIL_EXISTS`, `PHONE_EXISTS`, `RATE_LIMITED` |
-| `/api/v1/auth/verify-email` | POST | token | active status | public | `INVALID_OR_EXPIRED_TOKEN` |
+| `/api/v1/auth/verify-email` | POST | email, otp (6 digits) | active status | public | `VALIDATION_FAILED`, `INVALID_OR_EXPIRED_TOKEN` |
 | `/api/v1/auth/resend-verification` | POST | email | generic accepted message | public | `VALIDATION_FAILED`, `RATE_LIMITED` |
 | `/api/v1/auth/sign-in` | POST | email, password, device ID, optional device name | safe user, access token, refresh token, expiries | public | `INVALID_CREDENTIALS`, `EMAIL_NOT_VERIFIED`, `ACCOUNT_UNAVAILABLE`, `RATE_LIMITED` |
 | `/api/v1/auth/refresh` | POST | refresh token, device ID | rotated access and refresh tokens, expiries | refresh token | `INVALID_OR_EXPIRED_TOKEN`, `SESSION_REVOKED` |
 | `/api/v1/auth/sign-out` | POST | bearer token | no body | bearer and live session | `AUTHENTICATION_REQUIRED` |
 | `/api/v1/auth/forgot-password` | POST | email | generic accepted message | public | `VALIDATION_FAILED`, `RATE_LIMITED` |
-| `/api/v1/auth/reset-password` | POST | token, new password | no body | reset token | `INVALID_OR_EXPIRED_TOKEN`, `VALIDATION_FAILED` |
+| `/api/v1/auth/reset-password` | POST | email, otp (6 digits), new password | no body | public | `VALIDATION_FAILED`, `INVALID_OR_EXPIRED_TOKEN` |
 | `/api/v1/users/me/password` | PUT | current password, new password | no body | bearer and live session | `INVALID_CURRENT_PASSWORD`, `VALIDATION_FAILED`, `ACCOUNT_UNAVAILABLE` |
 | `/api/v1/users/me` | GET | none | safe profile and derived avatar URL | bearer and live session | `AUTHENTICATION_REQUIRED` |
 | `/api/v1/users/me` | PATCH | profile and bank fields | updated safe profile | bearer and live session | `VALIDATION_FAILED`, `PHONE_EXISTS`, `UNSUPPORTED_BANK` |
 | `/api/v1/users/me/avatar` | PUT | multipart avatar | avatar URL | bearer and live session | `INVALID_IMAGE`, `PAYLOAD_TOO_LARGE`, `IMAGE_STORAGE_FAILED` |
 | `/api/v1/users/me/avatar` | DELETE | none | no body | bearer and live session | `AUTHENTICATION_REQUIRED` |
+| `/api/v1/banks` | GET | optional `supported` query param | list of VietQR banks | public | none |
 
 The old `/api/v1/auth/register` and `/api/v1/auth/login` routes are removed without aliases.
 
 ### HTTP contract
 
-All JSON endpoints reject unknown fields and request bodies over 64 KB. Time values use UTC RFC 3339 strings. Token inputs are JSON strings no longer than 128 characters. `verify-email` accepts only `token`. `reset-password` accepts `token` and `new_password`. `refresh` accepts `refresh_token` and `device_id`.
+All JSON endpoints reject unknown fields and request bodies over 64 KB. Time values use UTC RFC 3339 strings. `verify-email` accepts `email` and 6-digit `otp`. `reset-password` accepts `email`, 6-digit `otp`, and `new_password`. `refresh` accepts `refresh_token` and `device_id`.
 
 The canonical safe user object contains `id`, `email`, `phone_number`, `display_name`, `role`, `status`, `email_verified_at`, `bank_code`, `bank_account_number`, `bank_account_holder`, `avatar_url`, `created_at`, and `updated_at`. Nullable values are JSON `null`. Password hashes, token data, Cloudinary keys, login counters, and internal revocation fields never appear.
 
@@ -118,6 +119,7 @@ The canonical safe user object contains `id`, `email`, `phone_number`, `display_
 | `PATCH /users/me` | `200` with updated `user` |
 | `PUT /users/me/avatar` | `200` with `avatar_url` |
 | `DELETE /users/me/avatar` | `204` with no body |
+| `GET /banks` | `200` with `banks` array and `Cache-Control: public, max-age=86400` |
 
 Input strings are trimmed before validation except passwords and token material. Email is at most 254 bytes after normalization. Display name is 1 to 100 Unicode characters after trim. Phone is stored in E.164 and is at most 16 characters including `+`. Device ID is a canonical UUID generated once per app installation. Optional device name is at most 120 Unicode characters after trim. Bank account holder is 1 to 100 Unicode characters after trim. Bank account number is 6 to 19 ASCII digits.
 

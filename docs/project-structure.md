@@ -54,7 +54,7 @@ PaySplit-BE/
 │   │
 │   ├── platform/
 │   │   ├── auth/jwt/                       # Phát hành và xác thực JWT access token
-│   │   ├── banks/                          # Snapshot VietQR được embed và kiểm tra startup
+│   │   ├── banks/                          # Snapshot VietQR được embed, kiểm tra startup và phục vụ API /api/v1/banks
 │   │   ├── database/                       # Khởi tạo pgx connection pool
 │   │   ├── email/gmail/                    # Gmail SMTP adapter
 │   │   ├── image/avatar/                   # EXIF, resize và WebP converter

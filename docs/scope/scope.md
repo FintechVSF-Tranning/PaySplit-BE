@@ -33,10 +33,10 @@ Provide registration, email verification, email password sign in, one active dev
   - [x] Email verification, password recovery, password change, and persisted rate limits (AC-2 through AC-4, AC-10, AC-11, AC-16, AC-17)
   - [x] Profile, bank snapshot, avatar conversion, Cloudinary storage, and durable cleanup (AC-12 through AC-15, AC-17)
   - [x] Cleanup workers, integration coverage, OpenAPI, environment guide, and module documentation (AC-15 through AC-19)
-- [ ] Verify it: `/check verify auth and account v1`
-- [ ] Test it: `/test auth and account v1`
-- [ ] Review it (fresh model): `/check review auth and account v1`
-- [ ] Document it: `/document auth and account v1`
+- [x] Verify it: `/check verify auth and account v1`
+- [x] Test it: `/test auth and account v1`
+- [x] Review it (fresh model): `/check review auth and account v1`
+- [x] Document it: `/document auth and account v1`
 
 Spec [0001](../specs/0001-auth-account-v1/index.md) · code in `internal/modules/auth/`, `internal/platform/`, `internal/transport/http/`, and `internal/bootstrap/`
 
@@ -116,18 +116,18 @@ Provide account search, filtering, and pagination, account detail inspection wit
 **Done when:** all eight acceptance criteria in spec 0005 pass against PostgreSQL 18, administrative routes strictly require live admin sessions, account status transitions immediately revoke all active sessions and refresh tokens, audit logs record every mutation reason, and health/metrics endpoints operate reliably.
 
 - [x] Design it (spec): `/architect admin v1`
-- [ ] Build it: `/develop admin v1`
-  - [ ] PostgreSQL 18 schema queries, admin repository adapter, and bank detail masking (satisfies AC-1, AC-2, AC-3, AC-4)
-  - [ ] Admin usecase service, self protection guard, admin role guard, and atomic session revocation (satisfies AC-1, AC-2, AC-3, AC-4)
-  - [ ] Admin HTTP delivery handlers, DTO validation, and route registration with liveAuth (satisfies AC-1, AC-2, AC-3, AC-4, AC-5, AC-7)
-  - [ ] Health liveness/readiness probes and Prometheus metrics exporter integration (satisfies AC-6, AC-7, AC-8)
-  - [ ] Operational verification, integration test coverage, and documentation (satisfies AC-1 through AC-8)
-- [ ] Verify it: `/check verify admin v1`
-- [ ] Test it: `/test admin v1`
-- [ ] Review it (fresh model): `/check review admin v1`
-- [ ] Document it: `/document admin v1`
+- [x] Build it: `/develop admin v1`
+  - [x] PostgreSQL 18 schema queries, admin repository adapter, and bank detail masking (satisfies AC-1, AC-2, AC-3, AC-4)
+  - [x] Admin usecase service, self protection guard, admin role guard, and atomic session revocation (satisfies AC-1, AC-2, AC-3, AC-4)
+  - [x] Admin HTTP delivery handlers, DTO validation, and route registration with liveAuth (satisfies AC-1, AC-2, AC-3, AC-4, AC-5, AC-7)
+  - [x] Health liveness/readiness probes and Prometheus metrics exporter integration (satisfies AC-6, AC-7, AC-8)
+  - [x] Operational verification, integration test coverage, and documentation (satisfies AC-1 through AC-8)
+- [x] Verify it: `/check verify admin v1`
+- [x] Test it: `/test admin v1`
+- [x] Review it (fresh model): `/check review admin v1`
+- [x] Document it: `/document admin v1`
 
-Spec [0005](../specs/0005-admin-v1/index.md) · planned code in `internal/modules/admin/`, `internal/transport/http/router/`, and `internal/bootstrap/`
+Spec [0005](../specs/0005-admin-v1/index.md) · code in `internal/modules/admin/`, `internal/platform/metrics/`, `internal/transport/http/router/`, and `internal/bootstrap/`
 
 ## Slice 6: Notification and background queue
 

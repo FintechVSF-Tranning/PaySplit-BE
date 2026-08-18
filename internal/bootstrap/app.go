@@ -1,225 +1,126 @@
-package bootstrap
+    Bank:
+      type: object
+      required: [name, code, bin, short_name, supported]
+      properties:
+        id: {type: integer, nullable: true}
+        name: {type: string}
+        code: {type: string}
+        bin: {type: string}
+        short_name: {type: string}
+        logo: {type: string, format: uri, nullable: true}
+        supported: {type: boolean}
+    BankListResponse:
+      type: object
+      required: [banks]
+      properties:
+        banks: {type: array, items: {$ref: "#/components/schemas/Bank"}}
 
-import (
-	"context"
-	"errors"
-	"fmt"
-	"net/http"
-	"sync"
+    Bill:
+      type: object
+      required: [id, group_id, creditor_member_id, status, subtotal, service_charge, vat, discount, total, version]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        creditor_member_id: {type: string, format: uuid}
+        status: {type: string, enum: [draft, reviewed, finalized, voided]}
+        merchant_name: {type: string, nullable: true}
+        bill_date: {type: string, format: date-time, nullable: true}
+        subtotal: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        vat: {type: integer, format: int64}
+        discount: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+        split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
+        mismatch_codes: {type: array, items: {type: string}}
+        replaces_bill_id: {type: string, format: uuid, nullable: true}
+        version: {type: integer}
+        finalized_at: {type: string, format: date-time, nullable: true}
+        voided_at: {type: string, format: date-time, nullable: true}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        reviewed_by_member_id: {type: string, format: uuid, nullable: true}
+        images: {type: array, items: {$ref: "#/components/schemas/BillImage"}}
+        items: {type: array, items: {$ref: "#/components/schemas/BillItem"}}
+        shares: {type: array, items: {$ref: "#/components/schemas/BillShare"}}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
 
-	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
+    BillImage:
+      type: object
+      required: [id, bill_id, image_key, position]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        image_key: {type: string}
+        position: {type: integer}
+        created_at: {type: string, format: date-time}
 
-	"paysplit-backend/internal/config"
-	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
-	authjobs "paysplit-backend/internal/modules/auth/jobs"
-	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
-	authusecase "paysplit-backend/internal/modules/auth/usecase"
-	billhttp "paysplit-backend/internal/modules/bill/delivery/http"
-	billjobs "paysplit-backend/internal/modules/bill/jobs"
-	billpostgres "paysplit-backend/internal/modules/bill/repository/postgres"
-	billusecase "paysplit-backend/internal/modules/bill/usecase"
-	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
-	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
-	groupusecase "paysplit-backend/internal/modules/group/usecase"
-	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
-	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
-	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
-	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
-	"paysplit-backend/internal/platform/auth/jwt"
-	"paysplit-backend/internal/platform/banks"
-	"paysplit-backend/internal/platform/database"
-	"paysplit-backend/internal/platform/email/gmail"
-	avatarimage "paysplit-backend/internal/platform/image/avatar"
-	receiptimage "paysplit-backend/internal/platform/image/receipt"
-	"paysplit-backend/internal/platform/notification/fcm"
-	"paysplit-backend/internal/platform/ocr/llamaextract"
-	riverpkg "paysplit-backend/internal/platform/queue/river"
-	"paysplit-backend/internal/platform/security/password"
-	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
-	transportmw "paysplit-backend/internal/transport/http/middleware"
-	"paysplit-backend/internal/transport/http/router"
-)
+    BillItem:
+      type: object
+      required: [id, bill_id, name, quantity, unit_price, line_total, position]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        name: {type: string}
+        quantity: {type: string}
+        unit_price: {type: integer, format: int64}
+        line_total: {type: integer, format: int64}
+        position: {type: integer}
+        assignments: {type: array, items: {$ref: "#/components/schemas/BillItemAssignment"}}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
 
-// App đại diện cho ứng dụng API đã được khởi tạo và sở hữu HTTP server cùng
-// database pool và job queue; các tài nguyên này phải được giải phóng khi ứng dụng dừng.
-type App struct {
-	server        *http.Server
-	db            *pgxpool.Pool
-	riverClient   *river.Client[pgx.Tx]
-	cancelWorkers context.CancelFunc
-	workers       sync.WaitGroup
-}
+    BillItemAssignment:
+      type: object
+      required: [id, bill_item_id, member_id, weight]
+      properties:
+        id: {type: string, format: uuid}
+        bill_item_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        member_id: {type: string, format: uuid}
+        weight: {type: string}
+        created_at: {type: string, format: date-time}
 
-// New khởi tạo ứng dụng API bằng cách tải cấu hình, mở hạ tầng dùng chung,
-// kết nối các dependency của module và xây dựng HTTP server.
-func New(ctx context.Context) (*App, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
+    BillShare:
+      type: object
+      required: [id, bill_id, member_id, final_amount]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        member_id: {type: string, format: uuid}
+        item_subtotal: {type: integer, format: int64}
+        service_charge_share: {type: integer, format: int64}
+        vat_share: {type: integer, format: int64}
+        discount_share: {type: integer, format: int64}
+        rounding_adjustment: {type: integer, format: int64}
+        final_amount: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
 
-	db, err := database.NewPostgresPool(ctx, cfg.Database)
-	if err != nil {
-		return nil, err
-	}
+    MemberAllocation:
+      type: object
+      required: [member_id, item_subtotal, service_charge_share, vat_share, discount_share, final_amount]
+      properties:
+        member_id: {type: string, format: uuid}
+        item_subtotal: {type: integer, format: int64}
+        service_charge_share: {type: integer, format: int64}
+        vat_share: {type: integer, format: int64}
+        discount_share: {type: integer, format: int64}
+        final_amount: {type: integer, format: int64}
 
-	tokens, err := jwt.NewAccessTokenManager(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.AccessTokenTTL)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create JWT issuer: %w", err)
-	}
-	authRepo := authpostgres.New(db)
-	bankDirectory, err := banks.Load()
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("load banks: %w", err)
-	}
-	mailer, err := gmail.New(cfg.SMTP, cfg.Auth.EmailVerificationURL, cfg.Auth.PasswordResetURL)
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-	avatarStore, err := avatarstorage.New(cfg.Cloudinary, cfg.Avatar.UploadTimeout)
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-	imageProcessor := avatarimage.NewProcessor(cfg.Avatar.ProcessingTimeout, cfg.Avatar.MaxConcurrentConversions)
-	authService := authusecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
-	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
-
-	fcmClient, err := fcm.New(ctx, cfg.Firebase.CredentialsFile, cfg.Firebase.CredentialsJSON, cfg.Firebase.Timeout)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create FCM notifier: %w", err)
-	}
-	// fcm.New trả về (*fcm.Notifier)(nil) khi FCM bị tắt (thiếu credentials). Phải kiểm tra bằng
-	// so sánh con trỏ cụ thể TRƯỚC khi gán vào các tham số kiểu interface bên dưới, vì một con
-	// trỏ nil được đặt vào interface sẽ tạo ra "typed nil" khiến các so sánh `== nil` sau đó trên
-	// interface luôn trả về false, làm ẩn đi các nhánh xử lý khi FCM bị tắt.
-	fcmEnabled := fcmClient != nil
-
-	notificationRepo := notificationpostgres.New(db)
-
-	// Khởi tạo River Queue & Worker
-	if err := riverpkg.AutoMigrate(ctx, db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("auto-migrate river: %w", err)
-	}
-	riverWorkers := river.NewWorkers()
-	var fcmNotifier notificationusecase.PushNotifier
-	var notificationJobNotifier notificationjobs.PushNotifier
-	if fcmEnabled {
-		fcmNotifier = fcmClient
-		notificationJobNotifier = fcmClient
-		river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, notificationJobNotifier))
-	}
-
-	// Khởi tạo OCR Provider, Cloudinary Bill Storage, Receipt Processor và Bill Module
-	ocrClient := llamaextract.New(cfg.OCR)
-	billStorage, err := avatarstorage.NewBillStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create bill storage: %w", err)
-	}
-	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
-	billRepo := billpostgres.New(db)
-	billHub := billhttp.NewHub(db)
-	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
-	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout))
-
-	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create river client: %w", err)
-	}
-
-	var notificationEnqueuer notificationusecase.JobEnqueuer
-	if fcmEnabled {
-		notificationEnqueuer = notificationjobs.NewEnqueuer(riverClient)
-	}
-	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
-	notificationHandler := notificationhttp.NewHandler(notificationService)
-
-	billEnqueuer := billjobs.NewEnqueuer(riverClient)
-	billService := billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
-	billService.SetManualOCRConfig(cfg.OCR.ManualLimit, cfg.OCR.ManualWindowHours)
-	billHandler := billhttp.NewHandler(billService, billSSEHandler)
-
-	groupRepo := grouppostgres.New(db)
-	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
-	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
-
-	appRouter := router.New(cfg.App)
-	// Đăng ký toàn bộ route trước khi server bắt đầu nhận request. Module mới
-	// chỉ cần mount tại đây, không phải thêm tham số vào router.New.
-	liveAuth := transportmw.Auth(tokens, authRepo)
-	tokenAuth := transportmw.TokenAuth(tokens)
-	appRouter.Route("/api/v1", func(api chi.Router) {
-		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
-		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
-		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
-		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
-		api.Route("/bills", func(r chi.Router) { billHandler.RegisterRoutes(r, liveAuth) })
-	})
-
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
-	if err := riverClient.Start(workerCtx); err != nil {
-		cancelWorkers()
-		db.Close()
-		return nil, fmt.Errorf("start river client: %w", err)
-	}
-
-	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
-
-	app := &App{
-		db:            db,
-		riverClient:   riverClient,
-		cancelWorkers: cancelWorkers,
-		server: &http.Server{
-			Addr:    cfg.App.Address,
-			Handler: appRouter,
-		},
-	}
-	app.workers.Add(1)
-	go func() { defer app.workers.Done(); cleanupWorkers.Run(workerCtx) }()
-	app.workers.Add(1)
-	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
-	return app, nil
-}
-
-// Address trả về địa chỉ mạng đã cấu hình cho HTTP server.
-func (a *App) Address() string {
-	return a.server.Addr
-}
-
-// Start phục vụ HTTP request và chặn luồng cho đến khi server dừng hoặc gặp
-// lỗi ngoài dự kiến.
-func (a *App) Start() error {
-	if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serve HTTP: %w", err)
-	}
-	return nil
-}
-
-// Shutdown chờ HTTP server xử lý xong các request đang chạy trước khi đóng
-// River queue, workers và database pool dùng chung; ctx giới hạn thời gian chờ quá trình này.
-// Việc dừng River/workers/pool luôn chạy, kể cả khi HTTP server drain quá thời hạn ctx, để
-// không rò rỉ tài nguyên đúng vào lúc quá trình tắt orderly quan trọng nhất.
-func (a *App) Shutdown(ctx context.Context) error {
-	httpErr := a.server.Shutdown(ctx)
-	if a.riverClient != nil {
-		_ = a.riverClient.Stop(ctx)
-	}
-	a.cancelWorkers()
-	a.workers.Wait()
-	// Giữ pool hoạt động cho đến khi các handler đang xử lý request hoàn tất.
-	a.db.Close()
-	if httpErr != nil {
-		return fmt.Errorf("shutdown HTTP server: %w", httpErr)
-	}
-	return nil
-}
+    OCRJob:
+      type: object
+      required: [id, bill_id, status, provider, attempts, version]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        status: {type: string, enum: [queued, processing, succeeded, failed]}
+        provider: {type: string}
+        attempts: {type: integer}
+        candidate: {type: object}
+        error_message: {type: string, nullable: true}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time, nullable: true}
