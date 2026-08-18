@@ -65,6 +65,7 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req usecase.CreateBillRequest
+	var reqBodyBytes []byte
 	contentType := r.Header.Get("Content-Type")
 
 	if strings.HasPrefix(contentType, "multipart/form-data") {
@@ -107,11 +108,28 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		reqBodyBytes, _ = json.Marshal(map[string]any{
+			"group_id":    req.GroupID,
+			"merchant":    req.MerchantName,
+			"items_count": len(req.Items),
+			"files_count": len(req.Files),
+		})
 	} else {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "cannot read request body", nil)
+			return
+		}
+		reqBodyBytes = bodyBytes
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body", nil)
 			return
 		}
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "create_bill", reqBodyBytes)
+	if handled {
+		return
 	}
 
 	result, err := h.service.CreateBill(r.Context(), callerUserID, req)
@@ -124,6 +142,12 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 	if result.IsAccepted {
 		statusCode = http.StatusAccepted
 	}
+
+	var resourceID *uuid.UUID
+	if result.Bill != nil {
+		resourceID = &result.Bill.ID
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "create_bill", rawKey, statusCode, result, resourceID)
 
 	_ = helpers.WriteJSON(w, statusCode, result)
 }
@@ -225,15 +249,27 @@ func (h *Handler) RetryOCR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "retry_ocr", []byte(billID.String()+groupID.String()))
+	if handled {
+		return
+	}
+
 	job, err := h.service.RetryOCR(r.Context(), callerUserID, billID, groupID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusAccepted, map[string]any{
+	resp := map[string]any{
 		"ocr_job": job,
-	})
+	}
+	var resID *uuid.UUID
+	if job != nil {
+		resID = &job.ID
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "retry_ocr", rawKey, http.StatusAccepted, resp, resID)
+
+	_ = helpers.WriteJSON(w, http.StatusAccepted, resp)
 }
 
 // ApplyCandidate xử lý POST /api/v1/bills/{id}/apply-candidate?group_id=...
@@ -252,12 +288,23 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "cannot read request body", nil)
+		return
+	}
+
 	var body struct {
 		JobID   uuid.UUID `json:"job_id"`
 		Version int32     `json:"version"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body", nil)
+		return
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "apply_candidate", bodyBytes)
+	if handled {
 		return
 	}
 
@@ -267,9 +314,12 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"bill": updatedBill,
-	})
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "apply_candidate", rawKey, http.StatusOK, resp, &billID)
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // UpdateDraftBill xử lý PUT /api/v1/bills/{id}?group_id=...
@@ -288,9 +338,20 @@ func (h *Handler) UpdateDraftBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "cannot read request body", nil)
+		return
+	}
+
 	var req usecase.UpdateDraftRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body", nil)
+		return
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "update_draft", bodyBytes)
+	if handled {
 		return
 	}
 
@@ -300,9 +361,12 @@ func (h *Handler) UpdateDraftBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"bill": updatedBill,
-	})
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "update_draft", rawKey, http.StatusOK, resp, &billID)
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // ReviewBill xử lý POST /api/v1/bills/{id}/review?group_id=...
@@ -321,11 +385,22 @@ func (h *Handler) ReviewBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "cannot read request body", nil)
+		return
+	}
+
 	var body struct {
 		Version int32 `json:"version"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "review_bill", bodyBytes)
+	if handled {
 		return
 	}
 
@@ -335,9 +410,12 @@ func (h *Handler) ReviewBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"bill": reviewedBill,
-	})
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "review_bill", rawKey, http.StatusOK, resp, &billID)
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // FinalizeBill xử lý POST /api/v1/bills/{id}/finalize?group_id=...
@@ -356,11 +434,22 @@ func (h *Handler) FinalizeBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "cannot read request body", nil)
+		return
+	}
+
 	var body struct {
 		Version int32 `json:"version"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "finalize_bill", bodyBytes)
+	if handled {
 		return
 	}
 
@@ -370,9 +459,12 @@ func (h *Handler) FinalizeBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"bill": finalizedBill,
-	})
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "finalize_bill", rawKey, http.StatusOK, resp, &billID)
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // VoidBill xử lý POST /api/v1/bills/{id}/void?group_id=...
@@ -391,12 +483,23 @@ func (h *Handler) VoidBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "cannot read request body", nil)
+		return
+	}
+
 	var body struct {
 		Version int32  `json:"version"`
 		Reason  string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
+
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "void_bill", bodyBytes)
+	if handled {
 		return
 	}
 
@@ -406,9 +509,12 @@ func (h *Handler) VoidBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"bill": voidedBill,
-	})
+	}
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "void_bill", rawKey, http.StatusOK, resp, &billID)
+
+	_ = helpers.WriteJSON(w, http.StatusOK, resp)
 }
 
 // DeleteDraftBill xử lý DELETE /api/v1/bills/{id}?group_id=...
@@ -427,13 +533,44 @@ func (h *Handler) DeleteDraftBill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	handled, rawKey := h.checkIdempotency(w, r, callerUserID, "delete_draft", []byte(billID.String()+groupID.String()))
+	if handled {
+		return
+	}
+
 	err = h.service.DeleteDraftBill(r.Context(), callerUserID, billID, groupID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 
+	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "delete_draft", rawKey, http.StatusNoContent, nil, &billID)
+
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) checkIdempotency(w http.ResponseWriter, r *http.Request, actorUserID uuid.UUID, operation string, reqBody []byte) (bool, string) {
+	rawKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if rawKey == "" {
+		return false, ""
+	}
+
+	rec, err := h.service.CheckOrReserveIdempotency(r.Context(), actorUserID, operation, rawKey, reqBody)
+	if err != nil {
+		writeDomainError(w, err)
+		return true, ""
+	}
+
+	if rec != nil && rec.State == "completed" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rec.ResponseCode)
+		if len(rec.ResponseBody) > 0 {
+			_, _ = w.Write(rec.ResponseBody)
+		}
+		return true, ""
+	}
+
+	return false, rawKey
 }
 
 func getUserID(r *http.Request) uuid.UUID {
@@ -479,8 +616,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 		code = "IMAGES_REQUIRED"
 	case errors.Is(err, domain.ErrReviewRequired):
-		status = http.StatusBadRequest
-		code = "REVIEW_REQUIRED"
+		status = http.StatusUnprocessableEntity
+		code = "BILL_NOT_READY"
 	case errors.Is(err, domain.ErrBillNotReady):
 		status = http.StatusUnprocessableEntity
 		code = "BILL_NOT_READY"
@@ -491,7 +628,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		status = http.StatusTooManyRequests
 		code = "OCR_LIMIT_REACHED"
 	case errors.Is(err, domain.ErrOcrNotReady):
-		status = http.StatusBadRequest
+		status = http.StatusConflict
 		code = "OCR_NOT_READY"
 	case errors.Is(err, domain.ErrOcrJobNotFound):
 		status = http.StatusNotFound
@@ -503,7 +640,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 		code = "OCR_ALREADY_APPLIED"
 	case errors.Is(err, domain.ErrOcrCandidateInvalid):
-		status = http.StatusBadRequest
+		status = http.StatusUnprocessableEntity
 		code = "OCR_CANDIDATE_INVALID"
 	case errors.Is(err, domain.ErrOcrProviderUnavailable):
 		status = http.StatusServiceUnavailable
@@ -517,6 +654,12 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrPaymentAlreadyStarted):
 		status = http.StatusConflict
 		code = "PAYMENT_ALREADY_STARTED"
+	case errors.Is(err, domain.ErrIdempotencyInProgress):
+		status = http.StatusConflict
+		code = "IDEMPOTENCY_IN_PROGRESS"
+	case errors.Is(err, domain.ErrIdempotencyKeyReused):
+		status = http.StatusConflict
+		code = "IDEMPOTENCY_KEY_REUSED"
 	}
 
 	_ = helpers.WriteAPIError(w, status, code, msg, nil)

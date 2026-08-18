@@ -111,6 +111,43 @@ type DeleteDraftBillParams struct {
 	ImageKeys     []string
 }
 
+// IdempotencyRecord đại diện cho bản ghi quản lý tính lũy đẳng (Spec 3 AC-1, AC-9).
+type IdempotencyRecord struct {
+	ActorUserID          uuid.UUID
+	Operation            string
+	KeyHash              string
+	CanonicalRequestHash string
+	OperationID          uuid.UUID
+	State                string // "in_progress", "completed"
+	ResponseCode         int
+	ResponseBody         []byte
+	ResourceID           *uuid.UUID
+	RetryAfter           *time.Time
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
+}
+
+// ReserveIdempotencyParams tham số giữ chỗ trước khi thực hiện mutation.
+type ReserveIdempotencyParams struct {
+	ActorUserID          uuid.UUID
+	Operation            string
+	KeyHash              string
+	CanonicalRequestHash string
+	OperationID          uuid.UUID
+	RetryAfter           *time.Time
+	TTL                  time.Duration
+}
+
+// CompleteIdempotencyParams tham số ghi nhận kết quả hoàn thành mutation.
+type CompleteIdempotencyParams struct {
+	ActorUserID  uuid.UUID
+	Operation    string
+	KeyHash      string
+	ResponseCode int
+	ResponseBody []byte
+	ResourceID   *uuid.UUID
+}
+
 // Repository định nghĩa các phương thức thao tác dữ liệu của module Bill & OCR.
 type Repository interface {
 	// Group Members
@@ -160,7 +197,13 @@ type Repository interface {
 	UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, candidate *domain.OCRCandidate, raw []byte) error
 	UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error
 	CountManualOCRAttemptsInWindow(ctx context.Context, billID uuid.UUID, since time.Time) (int64, error)
+	PurgeExpiredRawOCRResponses(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Media Cleanup
 	EnqueueMediaCleanup(ctx context.Context, prefix, kind string) error
+
+	// Idempotency (Spec 3 AC-1, AC-9, AC-11, AC-13)
+	ReserveIdempotencyKey(ctx context.Context, params ReserveIdempotencyParams) (*IdempotencyRecord, error)
+	CompleteIdempotencyKey(ctx context.Context, params CompleteIdempotencyParams) error
+	GetIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) (*IdempotencyRecord, error)
 }

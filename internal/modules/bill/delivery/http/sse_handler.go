@@ -106,18 +106,36 @@ func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
 	eventCh, unsubscribe := h.hub.Subscribe(billID)
 	defer unsubscribe()
 
-	// 3. Gửi Snapshot ban đầu (Current Snapshot on Connect - không lộ raw OCR hay item text)
-	latestJob, _ := h.repo.GetLatestOCRJobByBillID(r.Context(), billID)
+	// 3. Gửi Snapshot ban đầu (Current Snapshot on Connect - không lộ raw OCR hay item text, Spec 3 0001:70)
+	bill, _ := h.repo.GetBillByID(r.Context(), billID, groupID)
 	snapshotData := map[string]any{
 		"bill_id": billID,
 	}
+	if bill != nil {
+		snapshotData["version"] = bill.Version
+		snapshotData["status"] = bill.Status
+		snapshotData["reviewed_at"] = bill.ReviewedAt
+		snapshotData["reviewed_by_member_id"] = bill.ReviewedByMemberID
+		snapshotData["subtotal"] = bill.Subtotal
+		snapshotData["total"] = bill.Total
+		snapshotData["mismatch_codes"] = bill.MismatchCodes
+	}
+
+	latestJob, _ := h.repo.GetLatestOCRJobByBillID(r.Context(), billID)
 	if latestJob != nil {
-		snapshotData["ocr_job"] = map[string]any{
-			"id":       latestJob.ID,
-			"status":   latestJob.Status,
-			"attempts": latestJob.Attempts,
-			"error":    latestJob.ErrorMessage,
+		ocrJobSummary := map[string]any{
+			"id":           latestJob.ID,
+			"status":       latestJob.Status,
+			"attempts":     latestJob.Attempts,
+			"error":        latestJob.ErrorMessage,
+			"version":      latestJob.Version,
+			"created_at":   latestJob.CreatedAt,
+			"completed_at": latestJob.CompletedAt,
 		}
+		if latestJob.Candidate != nil {
+			ocrJobSummary["warnings"] = latestJob.Candidate.Warnings
+		}
+		snapshotData["ocr_job"] = ocrJobSummary
 	}
 	_ = writeSSEEvent(w, flusher, "snapshot", snapshotData)
 

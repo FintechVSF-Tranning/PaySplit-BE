@@ -790,7 +790,7 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 	return result, nil
 }
 
-// VoidBill chuyển trạng thái hóa đơn sang voided và hủy debts (Spec 3 AC-10).
+// VoidBill chuyển trạng thái hóa đơn sang voided và hủy debts (Spec 3 AC-11).
 func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBillParams) (*domain.Bill, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -800,7 +800,29 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 
 	q := sqlc.New(tx)
 
-	// 1. Khóa toàn bộ các dòng nợ debts của bill theo thứ tự UUID tăng dần (FOR UPDATE)
+	// 1. Khóa bản ghi bills trước (bills FOR UPDATE) tuân thủ lock ordering hierarchy
+	// để ngăn ngừa deadlock với luồng finalize và module thanh toán (Spec 3 index.md:88, 0003:50, Invariant 12).
+	billRow, err := q.GetBillByIDForUpdate(ctx, sqlc.GetBillByIDForUpdateParams{
+		ID:      pgtype.UUID{Bytes: p.BillID, Valid: true},
+		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrBillNotFound
+		}
+		return nil, fmt.Errorf("lock bill for void: %w", err)
+	}
+	if billRow.Status == "voided" {
+		return nil, domain.ErrBillAlreadyVoided
+	}
+	if billRow.Status != "finalized" {
+		return nil, domain.ErrBillNotFinalized
+	}
+	if billRow.Version != p.ExpectedVersion {
+		return nil, domain.ErrVersionConflict
+	}
+
+	// 2. Sau khi đã giữ lock bill, tiến hành khóa toàn bộ các dòng nợ debts của bill theo thứ tự UUID tăng dần (FOR UPDATE)
 	// để ngăn chặn race condition với luồng bắt đầu thanh toán ở Module 4 (Spec 3 AC-11, Invariant 12).
 	debts, err := q.ListDebtsByBillIDForUpdate(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true})
 	if err != nil {
@@ -813,7 +835,7 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		}
 	}
 
-	// 2. Chuyển trạng thái bill sang voided
+	// 3. Chuyển trạng thái bill sang voided
 	dbBill, err := q.VoidBill(ctx, sqlc.VoidBillParams{
 		ID:      pgtype.UUID{Bytes: p.BillID, Valid: true},
 		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
@@ -826,12 +848,12 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
 
-	// 3. Hủy bỏ toàn bộ các khoản nợ awaiting liên quan đến bill này
+	// 4. Hủy bỏ toàn bộ các khoản nợ awaiting liên quan đến bill này
 	if err := q.VoidDebtsByBillID(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true}); err != nil {
 		return nil, fmt.Errorf("void debts: %w", err)
 	}
 
-	// 4. Ghi nhận hoạt động hủy hóa đơn vào group_activities (Spec 3 AC-11)
+	// 5. Ghi nhận hoạt động hủy hóa đơn vào group_activities (Spec 3 AC-11)
 	metaBytes, _ := json.Marshal(map[string]any{
 		"bill_id": p.BillID.String(),
 		"reason":  p.Reason,
@@ -1296,3 +1318,142 @@ func decodeCursor(s string) (time.Time, uuid.UUID, error) {
 	}
 	return t, id, nil
 }
+
+// ============================================================================
+// IDEMPOTENCY & RETENTION (Spec 3 AC-1, AC-9, AC-11, AC-13, AC-14)
+// ============================================================================
+
+func (r *postgresRepository) ReserveIdempotencyKey(ctx context.Context, p repository.ReserveIdempotencyParams) (*repository.IdempotencyRecord, error) {
+	ttl := p.TTL
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	expiresAt := time.Now().Add(ttl)
+
+	query := `
+		INSERT INTO bill_idempotency_keys (
+			actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state, retry_after, expires_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, 'in_progress', $6, $7, now(), now()
+		)
+		ON CONFLICT (actor_user_id, operation, key_hash) DO NOTHING
+		RETURNING actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state, response_code, response_body, resource_id, retry_after, expires_at, created_at;
+	`
+
+	var rec repository.IdempotencyRecord
+	var resID pgtype.UUID
+	var respCode pgtype.Int4
+	var respBody []byte
+	var retryAfter pgtype.Timestamptz
+
+	err := r.pool.QueryRow(ctx, query,
+		p.ActorUserID, p.Operation, p.KeyHash, p.CanonicalRequestHash, p.OperationID, p.RetryAfter, expiresAt,
+	).Scan(
+		&rec.ActorUserID, &rec.Operation, &rec.KeyHash, &rec.CanonicalRequestHash, &rec.OperationID,
+		&rec.State, &respCode, &respBody, &resID, &retryAfter, &rec.ExpiresAt, &rec.CreatedAt,
+	)
+	if err == nil {
+		if respCode.Valid {
+			rec.ResponseCode = int(respCode.Int32)
+		}
+		rec.ResponseBody = respBody
+		if resID.Valid {
+			u := uuid.UUID(resID.Bytes)
+			rec.ResourceID = &u
+		}
+		if retryAfter.Valid {
+			t := retryAfter.Time
+			rec.RetryAfter = &t
+		}
+		return &rec, nil
+	}
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, err := r.GetIdempotencyKey(ctx, p.ActorUserID, p.Operation, p.KeyHash)
+		if err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+
+	return nil, fmt.Errorf("reserve idempotency key: %w", err)
+}
+
+func (r *postgresRepository) CompleteIdempotencyKey(ctx context.Context, p repository.CompleteIdempotencyParams) error {
+	query := `
+		UPDATE bill_idempotency_keys
+		SET state = 'completed',
+		    response_code = $4,
+		    response_body = $5,
+		    resource_id = $6,
+		    updated_at = now()
+		WHERE actor_user_id = $1 AND operation = $2 AND key_hash = $3;
+	`
+	var resID pgtype.UUID
+	if p.ResourceID != nil {
+		resID = pgtype.UUID{Bytes: *p.ResourceID, Valid: true}
+	}
+
+	_, err := r.pool.Exec(ctx, query, p.ActorUserID, p.Operation, p.KeyHash, p.ResponseCode, p.ResponseBody, resID)
+	if err != nil {
+		return fmt.Errorf("complete idempotency key: %w", err)
+	}
+	return nil
+}
+
+func (r *postgresRepository) GetIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) (*repository.IdempotencyRecord, error) {
+	query := `
+		SELECT actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state, response_code, response_body, resource_id, retry_after, expires_at, created_at
+		FROM bill_idempotency_keys
+		WHERE actor_user_id = $1 AND operation = $2 AND key_hash = $3 AND expires_at > now();
+	`
+	var rec repository.IdempotencyRecord
+	var resID pgtype.UUID
+	var respCode pgtype.Int4
+	var respBody []byte
+	var retryAfter pgtype.Timestamptz
+
+	err := r.pool.QueryRow(ctx, query, actorUserID, operation, keyHash).Scan(
+		&rec.ActorUserID, &rec.Operation, &rec.KeyHash, &rec.CanonicalRequestHash, &rec.OperationID,
+		&rec.State, &respCode, &respBody, &resID, &retryAfter, &rec.ExpiresAt, &rec.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get idempotency key: %w", err)
+	}
+
+	if respCode.Valid {
+		rec.ResponseCode = int(respCode.Int32)
+	}
+	rec.ResponseBody = respBody
+	if resID.Valid {
+		u := uuid.UUID(resID.Bytes)
+		rec.ResourceID = &u
+	}
+	if retryAfter.Valid {
+		t := retryAfter.Time
+		rec.RetryAfter = &t
+	}
+	return &rec, nil
+}
+
+func (r *postgresRepository) PurgeExpiredRawOCRResponses(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		olderThan = 30 * 24 * time.Hour
+	}
+	threshold := time.Now().Add(-olderThan)
+	query := `
+		UPDATE ocr_jobs
+		SET raw_response = NULL,
+		    updated_at = now()
+		WHERE completed_at < $1 AND raw_response IS NOT NULL AND status IN ('succeeded', 'failed');
+	`
+	tag, err := r.pool.Exec(ctx, query, threshold)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired raw ocr responses: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+

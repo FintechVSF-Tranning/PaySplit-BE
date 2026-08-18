@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -783,7 +785,7 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 		if amount < 0 {
 			amount = 0
 		}
-		roundingAdj := a.FinalAmount - (a.ItemSubtotal + a.ServiceChargeShare + a.VATShare - a.DiscountShare)
+		roundingAdj := a.RoundingAdjustment
 		shares = append(shares, &domain.BillShare{
 			ID:                 uuid.Must(uuid.NewV7()),
 			BillID:             billID,
@@ -992,3 +994,75 @@ func computeLineTotal(unitPrice int64, quantityStr string) int64 {
 	}
 	return int64(math.Round(totalFloat))
 }
+
+// CheckOrReserveIdempotency kiểm tra hoặc giữ chỗ khóa Idempotency trước khi thực hiện mutation (Spec 3 AC-1, AC-9).
+func (s *Service) CheckOrReserveIdempotency(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	operation, rawKey string,
+	reqBody []byte,
+) (*repository.IdempotencyRecord, error) {
+	if strings.TrimSpace(rawKey) == "" {
+		return nil, nil
+	}
+	keyHash := HashSHA256([]byte(rawKey))
+	reqHash := HashSHA256(reqBody)
+	opID := uuid.Must(uuid.NewV7())
+
+	rec, err := s.repo.ReserveIdempotencyKey(ctx, repository.ReserveIdempotencyParams{
+		ActorUserID:          actorUserID,
+		Operation:            operation,
+		KeyHash:              keyHash,
+		CanonicalRequestHash: reqHash,
+		OperationID:          opID,
+		TTL:                  24 * time.Hour,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if rec.CanonicalRequestHash != reqHash {
+		return nil, domain.ErrIdempotencyKeyReused
+	}
+
+	if rec.State == "in_progress" && rec.OperationID != opID {
+		return nil, domain.ErrIdempotencyInProgress
+	}
+
+	return rec, nil
+}
+
+// CompleteIdempotency hoàn tất ghi nhận response cho khóa Idempotency.
+func (s *Service) CompleteIdempotency(
+	ctx context.Context,
+	actorUserID uuid.UUID,
+	operation, rawKey string,
+	statusCode int,
+	response any,
+	resourceID *uuid.UUID,
+) error {
+	if strings.TrimSpace(rawKey) == "" {
+		return nil
+	}
+	keyHash := HashSHA256([]byte(rawKey))
+	respBytes, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+
+	return s.repo.CompleteIdempotencyKey(ctx, repository.CompleteIdempotencyParams{
+		ActorUserID:  actorUserID,
+		Operation:    operation,
+		KeyHash:      keyHash,
+		ResponseCode: statusCode,
+		ResponseBody: respBytes,
+		ResourceID:   resourceID,
+	})
+}
+
+// HashSHA256 tính mã băm SHA-256 dạng hex.
+func HashSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+

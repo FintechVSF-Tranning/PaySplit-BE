@@ -24,6 +24,13 @@ type mockSSERepo struct {
 	groupID uuid.UUID
 }
 
+func (m *mockSSERepo) GetBillByID(ctx context.Context, billID, groupID uuid.UUID) (*domain.Bill, error) {
+	if m.bill != nil {
+		return m.bill, nil
+	}
+	return &domain.Bill{ID: billID, GroupID: groupID, Version: 1, Status: domain.BillStatusDraft}, nil
+}
+
 func (m *mockSSERepo) GetBillOnlyByID(ctx context.Context, billID uuid.UUID) (*domain.Bill, error) {
 	if m.bill != nil {
 		return m.bill, nil

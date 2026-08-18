@@ -29,6 +29,10 @@ func testPool(t *testing.T) *pgxpool.Pool {
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
+		t.Skipf("Không thể khởi tạo pool database: %v", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
 		t.Skipf("Không thể kết nối database: %v", err)
 	}
 	t.Cleanup(pool.Close)

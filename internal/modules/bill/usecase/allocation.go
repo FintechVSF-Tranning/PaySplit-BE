@@ -16,6 +16,7 @@ type MemberAllocation struct {
 	ServiceChargeShare int64     `json:"service_charge_share"`
 	VATShare           int64     `json:"vat_share"`
 	DiscountShare      int64     `json:"discount_share"`
+	RoundingAdjustment int64     `json:"rounding_adjustment"`
 	FinalAmount        int64     `json:"final_amount"`
 }
 
@@ -72,8 +73,13 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 	// Sắp xếp danh sách thành viên theo thứ tự 16-byte UUID chuẩn (deterministic tie-breaking)
 	sortUUIDs(allMembers)
 
-	// Khởi tạo map phân bổ
+	// Khởi tạo map phân bổ và map lưu trữ floor exact để tính RoundingAdjustment
 	allocMap := make(map[uuid.UUID]*MemberAllocation, len(allMembers))
+	itemFloorMap := make(map[uuid.UUID]int64, len(allMembers))
+	scFloorMap := make(map[uuid.UUID]int64, len(allMembers))
+	vatFloorMap := make(map[uuid.UUID]int64, len(allMembers))
+	discFloorMap := make(map[uuid.UUID]int64, len(allMembers))
+
 	for _, m := range allMembers {
 		allocMap[m] = &MemberAllocation{
 			MemberID: m,
@@ -106,6 +112,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 				remainder: rem,
 			})
 			sumFloor += floor
+			itemFloorMap[a.MemberID] += floor
 		}
 
 		undistributed := it.LineTotal - sumFloor
@@ -136,40 +143,54 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 	if totalItemSubtotal > 0 {
 		// Hamilton allocation cho ServiceCharge
 		if in.ServiceCharge > 0 {
-			scShares := runHamiltonForTotal(in.ServiceCharge, totalItemSubtotal, allMembers, allocMap)
+			scShares, scFloors := runHamiltonForTotal(in.ServiceCharge, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range scShares {
 				allocMap[m].ServiceChargeShare = v
+				scFloorMap[m] = scFloors[m]
 			}
 		}
 
 		// Hamilton allocation cho VAT
 		if in.VAT > 0 {
-			vatShares := runHamiltonForTotal(in.VAT, totalItemSubtotal, allMembers, allocMap)
+			vatShares, vatFloors := runHamiltonForTotal(in.VAT, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range vatShares {
 				allocMap[m].VATShare = v
+				vatFloorMap[m] = vatFloors[m]
 			}
 		}
 
 		// Hamilton allocation cho Discount
 		if in.Discount > 0 {
-			discShares := runHamiltonForTotal(in.Discount, totalItemSubtotal, allMembers, allocMap)
+			discShares, discFloors := runHamiltonForTotal(in.Discount, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range discShares {
 				allocMap[m].DiscountShare = v
+				discFloorMap[m] = discFloors[m]
 			}
 		}
 	} else if in.CreditorID != uuid.Nil {
-		// Nếu không có món ăn nào (subtotal = 0), toàn bộ thuế/phí/giảm giá quy về Creditor
+		// Nếu không có món ăn nào (subtotal = 0), toàn bộ thuế/phí/giảm giá quy về Creditor (Spec 3 AC-10)
 		allocMap[in.CreditorID].ServiceChargeShare = in.ServiceCharge
 		allocMap[in.CreditorID].VATShare = in.VAT
 		allocMap[in.CreditorID].DiscountShare = in.Discount
+		scFloorMap[in.CreditorID] = in.ServiceCharge
+		vatFloorMap[in.CreditorID] = in.VAT
+		discFloorMap[in.CreditorID] = in.Discount
 	}
 
-	// 4. Bước 3: Tính FinalAmount cho từng thành viên và kiểm tra tổng
+	// 4. Bước 3: Tính RoundingAdjustment và FinalAmount cho từng thành viên (Spec 3 index.md:130, 0002:41, 0003:42)
 	result := make([]*MemberAllocation, 0, len(allMembers))
 	var computedTotalSum int64
 
 	for _, m := range allMembers {
 		a := allocMap[m]
+
+		// rounding_adjustment = (item_alloc - item_floor) + (sc_alloc - sc_floor) + (vat_alloc - vat_floor) - (disc_alloc - disc_floor)
+		itemAdj := a.ItemSubtotal - itemFloorMap[m]
+		scAdj := a.ServiceChargeShare - scFloorMap[m]
+		vatAdj := a.VATShare - vatFloorMap[m]
+		discAdj := a.DiscountShare - discFloorMap[m]
+		a.RoundingAdjustment = itemAdj + scAdj + vatAdj - discAdj
+
 		a.FinalAmount = a.ItemSubtotal + a.ServiceChargeShare + a.VATShare - a.DiscountShare
 		if a.FinalAmount < 0 {
 			a.FinalAmount = 0
@@ -178,7 +199,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		result = append(result, a)
 	}
 
-	// Nếu có độ lệch nhỏ do discount/rounding thì điều chỉnh an toàn để tổng bằng in.Total mà không có FinalAmount âm
+	// Nếu có độ lệch do discount lớn hơn tổng thành phần thì điều chỉnh an toàn để tổng bằng in.Total
 	if computedTotalSum != in.Total && len(result) > 0 {
 		diff := in.Total - computedTotalSum
 		if diff > 0 {
@@ -189,6 +210,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 				}
 			}
 			result[maxIdx].FinalAmount += diff
+			result[maxIdx].RoundingAdjustment += diff
 		} else if diff < 0 {
 			remaining := -diff
 			for remaining > 0 {
@@ -208,6 +230,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 					deduct = maxAmount
 				}
 				result[maxIdx].FinalAmount -= deduct
+				result[maxIdx].RoundingAdjustment -= deduct
 				remaining -= deduct
 			}
 		}
@@ -221,7 +244,7 @@ func runHamiltonForTotal(
 	totalBase int64,
 	members []uuid.UUID,
 	allocMap map[uuid.UUID]*MemberAllocation,
-) map[uuid.UUID]int64 {
+) (map[uuid.UUID]int64, map[uuid.UUID]int64) {
 	type memberShare struct {
 		memberID  uuid.UUID
 		floorVal  int64
@@ -229,6 +252,7 @@ func runHamiltonForTotal(
 	}
 
 	shares := make([]memberShare, 0, len(members))
+	floors := make(map[uuid.UUID]int64, len(members))
 	var sumFloor int64
 
 	for _, m := range members {
@@ -242,6 +266,7 @@ func runHamiltonForTotal(
 			floorVal:  floor,
 			remainder: rem,
 		})
+		floors[m] = floor
 		sumFloor += floor
 	}
 
@@ -264,7 +289,7 @@ func runHamiltonForTotal(
 		out[shares[i].memberID] = shares[i].floorVal + add
 	}
 
-	return out
+	return out, floors
 }
 
 func sortUUIDs(uuids []uuid.UUID) {
@@ -272,3 +297,4 @@ func sortUUIDs(uuids []uuid.UUID) {
 		return bytes.Compare(uuids[i][:], uuids[j][:]) < 0
 	})
 }
+

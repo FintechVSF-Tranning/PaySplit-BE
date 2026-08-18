@@ -19,6 +19,7 @@ import (
 	"paysplit-backend/internal/modules/bill/domain"
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/modules/bill/usecase"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
 
 // OCRJobArgs định nghĩa payload công việc bóc tách hóa đơn trong River Queue (Spec 3 AC-2).
@@ -157,9 +158,12 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	extractCtx, cancel := context.WithTimeout(ctx, w.timeout)
 	defer cancel()
 
+	startExtract := time.Now()
 	candidate, rawJSON, err := w.ocrProvider.ExtractReceipt(extractCtx, imageBytes, "image/jpeg")
+	extractDur := time.Since(startExtract)
 	imageBytes = nil
 	if err != nil {
+		platformmetrics.RecordOCRProviderDuration("llamaextract", "failure", extractDur)
 		// Nếu lỗi do schema AI không đọc được hoặc cấu trúc sai -> đánh dấu failed, không retry
 		if errors.Is(err, domain.ErrOcrSchemaInvalid) {
 			_ = w.failJob(ctx, jobID, billID, "ocr schema invalid or unparseable receipt")
@@ -175,6 +179,9 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		// Trả về error để River Queue tự động retry với exponential backoff
 		return fmt.Errorf("extract receipt: %w", err)
 	}
+
+	platformmetrics.RecordOCRProviderDuration("llamaextract", "success", extractDur)
+	platformmetrics.RecordOCRJob("succeeded", "none")
 
 	// 6. Ghi nhận kết quả bóc tách thành công vào database và phát SSE event
 	if err := w.repo.UpdateOCRJobSuccess(ctx, jobID, candidate, rawJSON); err != nil {
@@ -197,6 +204,7 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 }
 
 func (w *OCRWorker) failJob(ctx context.Context, jobID, billID uuid.UUID, reason string) error {
+	platformmetrics.RecordOCRJob("failed", reason)
 	err := w.repo.UpdateOCRJobFailed(ctx, jobID, reason)
 	if w.broadcaster != nil {
 		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
@@ -206,6 +214,39 @@ func (w *OCRWorker) failJob(ctx context.Context, jobID, billID uuid.UUID, reason
 			"error":   reason,
 		})
 	}
+	return err
+}
+
+// OCRRetentionJobArgs định nghĩa payload công việc dọn dẹp raw OCR cũ hơn 30 ngày (Spec 3 index.md:176, 0001:50).
+type OCRRetentionJobArgs struct {
+	OlderThanHours int `json:"older_than_hours"`
+}
+
+// Kind định danh loại job trong River Queue.
+func (OCRRetentionJobArgs) Kind() string { return "ocr_raw_retention_cleanup" }
+
+// OCRRetentionWorker là worker định kỳ dọn dẹp raw_response của các job OCR đã hoàn tất sau 30 ngày.
+type OCRRetentionWorker struct {
+	river.WorkerDefaults[OCRRetentionJobArgs]
+	repo repository.Repository
+}
+
+// NewOCRRetentionWorker khởi tạo OCRRetentionWorker.
+func NewOCRRetentionWorker(repo repository.Repository) *OCRRetentionWorker {
+	return &OCRRetentionWorker{repo: repo}
+}
+
+// Work thực hiện xóa dữ liệu raw_response của các job đã hoàn tất quá thời hạn retention.
+func (w *OCRRetentionWorker) Work(ctx context.Context, job *river.Job[OCRRetentionJobArgs]) error {
+	if w.repo == nil {
+		return nil
+	}
+	hours := job.Args.OlderThanHours
+	if hours <= 0 {
+		hours = 24 * 30 // 30 ngày mặc định
+	}
+	retention := time.Duration(hours) * time.Hour
+	_, err := w.repo.PurgeExpiredRawOCRResponses(ctx, retention)
 	return err
 }
 

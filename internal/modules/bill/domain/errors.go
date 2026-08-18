@@ -77,4 +77,10 @@ var (
 
 	// ErrInvalidCursor trả về khi cursor phân trang không hợp lệ (Spec 3 AC-12).
 	ErrInvalidCursor = errors.New("invalid cursor")
+
+	// ErrIdempotencyInProgress trả về khi request cùng idempotency key đang được xử lý (Spec 3 AC-1, AC-9).
+	ErrIdempotencyInProgress = errors.New("idempotency in progress")
+
+	// ErrIdempotencyKeyReused trả về khi idempotency key bị tái sử dụng với request payload khác (Spec 3 AC-1, AC-9).
+	ErrIdempotencyKeyReused = errors.New("idempotency key reused with different request payload")
 )

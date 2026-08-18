@@ -94,10 +94,37 @@ ALTER TABLE ocr_jobs ALTER COLUMN provider SET DEFAULT 'llamaextract';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ocr_jobs_active_bill ON ocr_jobs(bill_id) WHERE status IN ('queued', 'processing');
 CREATE INDEX IF NOT EXISTS idx_ocr_jobs_bill_created ON ocr_jobs(bill_id, created_at DESC);
 
+-- 7. Tạo bảng bill_idempotency_keys: Quản lý tính lũy đẳng 24h cho các thao tác mutation (Spec 3 AC-1, AC-2, AC-9, AC-11, AC-13)
+DO $$ BEGIN
+    CREATE TYPE idempotency_state AS ENUM ('in_progress', 'completed');
+EXCEPTION WHEN duplicate_object THEN null;
+END $$;
+
+CREATE TABLE IF NOT EXISTS bill_idempotency_keys (
+    actor_user_id           UUID NOT NULL REFERENCES users(id),
+    operation               TEXT NOT NULL,
+    key_hash                TEXT NOT NULL,
+    canonical_request_hash  TEXT NOT NULL,
+    operation_id            UUID,
+    state                   idempotency_state NOT NULL DEFAULT 'in_progress',
+    response_code           INT,
+    response_body           JSONB,
+    resource_id             UUID,
+    retry_after             TIMESTAMPTZ,
+    expires_at              TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '24 hours'),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (actor_user_id, operation, key_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_bill_idempotency_keys_expiry ON bill_idempotency_keys(expires_at);
+
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
+DROP TABLE IF EXISTS bill_idempotency_keys CASCADE;
+DO $$ BEGIN DROP TYPE IF EXISTS idempotency_state; EXCEPTION WHEN undefined_object THEN null; END $$;
+
 DROP INDEX IF EXISTS idx_ocr_jobs_bill_created;
 DROP INDEX IF EXISTS uq_ocr_jobs_active_bill;
 ALTER TABLE ocr_jobs 

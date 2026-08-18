@@ -98,7 +98,8 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 
 	if h.pool != nil {
 		go func() {
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
 			payloadBytes, err := json.Marshal(event)
 			if err != nil {
 				return
