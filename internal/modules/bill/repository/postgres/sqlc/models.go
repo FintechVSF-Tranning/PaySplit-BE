@@ -258,7 +258,6 @@ type UserToken struct {
 	UsedAt       pgtype.Timestamptz `json:"used_at"`
 	SupersededAt pgtype.Timestamptz `json:"superseded_at"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	AttemptCount int32              `json:"attempt_count"`
 }
 
 type VMemberBalance struct {
