@@ -66,7 +66,14 @@ func (c *Client) ExtractReceipt(ctx context.Context, imageBytes []byte, mimeType
 		mimeType = "image/jpeg"
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	effectiveTimeout := c.timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < effectiveTimeout {
+			effectiveTimeout = remaining
+		}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, effectiveTimeout)
 	defer cancel()
 
 	// Bước 1: Upload file ảnh tạm thời lên LlamaCloud

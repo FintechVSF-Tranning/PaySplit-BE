@@ -176,3 +176,46 @@ func TestHamilton_DeterministicUUIDTieBreaking(t *testing.T) {
 		t.Errorf("expected u1=50001, u2=50000, got u1=%d, u2=%d", a1, a2)
 	}
 }
+
+func TestHamilton_LargeDiscount_NeverProducesNegativeFinalAmount(t *testing.T) {
+	// covers: AC-6, AC-10 (Discount clamping and rounding diff balancing never produce negative FinalAmount)
+	m1 := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	m2 := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+
+	input := usecase.AllocationInput{
+		CreditorID:    m1,
+		Subtotal:      100000,
+		ServiceCharge: 0,
+		VAT:           0,
+		Discount:      99999,
+		Total:         1,
+		Items: []usecase.ItemInput{
+			{
+				ID:        uuid.New(),
+				LineTotal: 100000,
+				Assignments: []usecase.ItemAssignmentInput{
+					{MemberID: m1, Ratio: 0.99},
+					{MemberID: m2, Ratio: 0.01},
+				},
+			},
+		},
+	}
+
+	res, err := usecase.CalculateHamiltonAllocation(input)
+	if err != nil {
+		t.Fatalf("CalculateHamiltonAllocation() error = %v", err)
+	}
+
+	var sum int64
+	for _, a := range res {
+		if a.FinalAmount < 0 {
+			t.Errorf("member %s received negative final amount: %d", a.MemberID, a.FinalAmount)
+		}
+		sum += a.FinalAmount
+	}
+
+	if sum != 1 {
+		t.Errorf("expected total sum = 1, got %d", sum)
+	}
+}
+

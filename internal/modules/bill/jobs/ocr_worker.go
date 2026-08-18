@@ -1,11 +1,17 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	_ "image/png"
 	"time"
 
+	"github.com/disintegration/imaging"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -127,16 +133,26 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		return nil
 	}
 
-	// 4. Tải byte ảnh riêng tư từ Cloudinary (lấy ảnh vị trí 0 làm ảnh chính để OCR)
-	primaryImageKey := bill.Images[0].ImageKey
-	imageBytes, err := w.storage.Download(ctx, primaryImageKey)
-	if err != nil {
-		// Lỗi mạng khi tải Cloudinary -> trả về error để River tự động retry
-		if job.Attempt >= job.MaxAttempts {
-			_ = w.failJob(ctx, jobID, billID, currentVersion, fmt.Sprintf("download receipt failed after max attempts: %v", err))
-			return nil
+	// 4. Tải byte ảnh riêng tư từ Cloudinary (hỗ trợ ghép 1-5 ảnh cho hóa đơn nhiều trang, Spec 3 AC-1)
+	var allBytes [][]byte
+	for _, img := range bill.Images {
+		b, err := w.storage.Download(ctx, img.ImageKey)
+		if err != nil {
+			if job.Attempt >= job.MaxAttempts {
+				_ = w.failJob(ctx, jobID, billID, currentVersion, fmt.Sprintf("download receipt failed after max attempts: %v", err))
+				return nil
+			}
+			return fmt.Errorf("download receipt from storage: %w", err)
 		}
-		return fmt.Errorf("download receipt from storage: %w", err)
+		allBytes = append(allBytes, b)
+	}
+
+	imageBytes := allBytes[0]
+	if len(allBytes) > 1 {
+		stitched, err := stitchReceiptImages(allBytes)
+		if err == nil && len(stitched) > 0 {
+			imageBytes = stitched
+		}
 	}
 
 	// 5. Gửi byte ảnh sang LlamaExtract Adapter để bóc tách AI
@@ -232,3 +248,47 @@ func (e *Enqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uui
 	}, nil)
 	return err
 }
+
+func stitchReceiptImages(images [][]byte) ([]byte, error) {
+	if len(images) == 0 {
+		return nil, errors.New("empty images")
+	}
+	if len(images) == 1 {
+		return images[0], nil
+	}
+
+	decodedImages := make([]image.Image, 0, len(images))
+	maxWidth := 0
+	totalHeight := 0
+
+	for _, b := range images {
+		img, _, err := image.Decode(bytes.NewReader(b))
+		if err != nil {
+			continue
+		}
+		decodedImages = append(decodedImages, img)
+		bnds := img.Bounds()
+		if bnds.Dx() > maxWidth {
+			maxWidth = bnds.Dx()
+		}
+		totalHeight += bnds.Dy()
+	}
+
+	if len(decodedImages) == 0 || maxWidth == 0 || totalHeight == 0 {
+		return images[0], nil
+	}
+
+	dst := imaging.New(maxWidth, totalHeight, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+	currY := 0
+	for _, img := range decodedImages {
+		dst = imaging.Paste(dst, img, image.Pt(0, currY))
+		currY += img.Bounds().Dy()
+	}
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
+		return images[0], nil
+	}
+	return buf.Bytes(), nil
+}
+

@@ -66,7 +66,7 @@ SET status = 'finalized',
     finalized_at = now(),
     version = version + 1,
     updated_at = now()
-WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $3
+WHERE id = $1 AND group_id = $2 AND status = 'reviewed' AND version = $3
 RETURNING *;
 
 -- name: VoidBill :one

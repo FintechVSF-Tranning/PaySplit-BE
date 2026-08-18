@@ -88,3 +88,36 @@ func TestProcessor_UnsupportedFormat(t *testing.T) {
 		t.Errorf("expected ErrUnsupportedFormat, got %v", err)
 	}
 }
+
+func TestProcessor_TimeoutReleasesSlot(t *testing.T) {
+	// Processor with 1 slot and very small timeout
+	proc := NewProcessor(10*time.Millisecond, 1)
+
+	// Create valid image
+	img := image.NewRGBA(image.Rect(0, 0, 50, 50))
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+
+	// Create a context that is already canceled to trigger immediate timeout/cancellation
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(2 * time.Millisecond)
+
+	_, err := proc.Process(ctx, buf.Bytes())
+	if err == nil {
+		t.Error("expected error due to canceled context, got nil")
+	}
+
+	// Next call with healthy context must acquire the slot without blocking
+	healthyCtx, cancelHealthy := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelHealthy()
+
+	out, err := proc.Process(healthyCtx, buf.Bytes())
+	if err != nil {
+		t.Fatalf("expected second call to succeed after slot release, got %v", err)
+	}
+	if len(out) == 0 {
+		t.Error("expected non-empty output")
+	}
+}
+

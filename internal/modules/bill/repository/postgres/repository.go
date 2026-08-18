@@ -556,6 +556,13 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	}
 	defer tx.Rollback(ctx)
 
+	// Kiểm tra xem có khoản nợ nào của bill đã chuyển trạng thái khác awaiting (đã bắt đầu thanh toán) không (Spec 3 AC-11)
+	var nonAwaitingCount int64
+	err = tx.QueryRow(ctx, "SELECT COUNT(*) FROM debts WHERE bill_id = $1 AND status != 'awaiting'", p.BillID).Scan(&nonAwaitingCount)
+	if err == nil && nonAwaitingCount > 0 {
+		return nil, domain.ErrPaymentAlreadyStarted
+	}
+
 	q := sqlc.New(tx)
 
 	dbBill, err := q.VoidBill(ctx, sqlc.VoidBillParams{

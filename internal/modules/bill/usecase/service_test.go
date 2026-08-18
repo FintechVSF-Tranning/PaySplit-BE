@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -118,13 +119,20 @@ func (m *mockProcessor) IsUnsupported(err error) bool { return false }
 
 type mockEnqueuer struct {
 	enqueuedCount int
+	errToReturn   error
 }
 
 func (m *mockEnqueuer) EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID, groupID uuid.UUID) error {
+	if m.errToReturn != nil {
+		return m.errToReturn
+	}
 	m.enqueuedCount++
 	return nil
 }
 func (m *mockEnqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error {
+	if m.errToReturn != nil {
+		return m.errToReturn
+	}
 	m.enqueuedCount++
 	return nil
 }
@@ -331,10 +339,16 @@ func TestApplyCandidate_StaleProtection(t *testing.T) {
 
 	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
 
-	// Calling with stale expected version 1 should fail
+	// 1. Calling with stale expected version 1 should fail with ErrVersionConflict
 	_, err := service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 1)
-	if err == nil {
-		t.Error("expected conflict error when applying candidate with stale version, got nil")
+	if err != domain.ErrVersionConflict {
+		t.Errorf("expected ErrVersionConflict when expectedVersion != bill.Version, got %v", err)
+	}
+
+	// 2. Calling with matching expected version 2 but job was on version 1 should fail with ErrOcrResultStale
+	_, err = service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 2)
+	if err != domain.ErrOcrResultStale {
+		t.Errorf("expected ErrOcrResultStale when bill.Version != ocrJob.Version, got %v", err)
 	}
 }
 
@@ -444,3 +458,207 @@ func TestDeleteDraftBill_FinalizedBill_ReturnsImmutable(t *testing.T) {
 		t.Errorf("expected ErrBillImmutable, got %v", err)
 	}
 }
+
+func TestFinalizeBill_DraftStatus_ReturnsReviewRequired(t *testing.T) {
+	// covers: AC-7, AC-9 (Finalizing an unreviewed bill returns ErrReviewRequired)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusDraft, // not reviewed yet
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1)
+	if err != domain.ErrReviewRequired {
+		t.Errorf("expected ErrReviewRequired, got %v", err)
+	}
+}
+
+func TestFinalizeBill_NonCaptain_ReturnsForbidden(t *testing.T) {
+	// covers: AC-8, AC-9 (Only Captain can finalize bill)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member", // regular member, even if Creditor
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusReviewed,
+			Version:          2,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 2)
+	if err != domain.ErrForbidden {
+		t.Errorf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestFinalizeBill_FinalizedBill_ReturnsImmutable(t *testing.T) {
+	// covers: AC-9, AC-11 (Finalizing an already finalized bill returns ErrBillImmutable)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorID,
+			Status:           domain.BillStatusFinalized,
+			Version:          3,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 3)
+	if err != domain.ErrBillImmutable {
+		t.Errorf("expected ErrBillImmutable, got %v", err)
+	}
+}
+
+func TestCreateBill_EnqueueOCRFails_ReturnsError(t *testing.T) {
+	// covers: AC-2 (Failure during River OCR enqueue propagates error)
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+	}
+
+	enqueuer := &mockEnqueuer{
+		errToReturn: errors.New("river enqueue connection failed"),
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Files: [][]byte{
+			[]byte("fake-image-bytes"),
+		},
+	})
+	if err == nil {
+		t.Error("expected error when OCR enqueue fails, got nil")
+	}
+}
+
+func TestRetryOCR_EnqueueOCRFails_ReturnsError(t *testing.T) {
+	// covers: AC-2 (Failure during RetryOCR River enqueue propagates error)
+	groupID := uuid.New()
+	userID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:     billID,
+			Status: domain.BillStatusDraft,
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), ImageKey: "bills/op-1/0"},
+			},
+		},
+	}
+
+	enqueuer := &mockEnqueuer{
+		errToReturn: errors.New("river enqueue failed"),
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	_, err := service.RetryOCR(context.Background(), userID, billID, groupID)
+	if err == nil {
+		t.Error("expected error when RetryOCR enqueue fails, got nil")
+	}
+}
+
+func TestRetryOCR_Success(t *testing.T) {
+	// covers: AC-2 (Happy path for RetryOCR creates OCR job and enqueues)
+	groupID := uuid.New()
+	userID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:     billID,
+			Status: domain.BillStatusDraft,
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), ImageKey: "bills/op-1/0"},
+			},
+		},
+	}
+
+	enqueuer := &mockEnqueuer{}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	job, err := service.RetryOCR(context.Background(), userID, billID, groupID)
+	if err != nil {
+		t.Fatalf("RetryOCR() error = %v", err)
+	}
+	if job.Status != domain.OCRJobStatusQueued {
+		t.Errorf("expected job status queued, got %s", job.Status)
+	}
+	if enqueuer.enqueuedCount != 1 {
+		t.Errorf("expected 1 job enqueued, got %d", enqueuer.enqueuedCount)
+	}
+}
+
+

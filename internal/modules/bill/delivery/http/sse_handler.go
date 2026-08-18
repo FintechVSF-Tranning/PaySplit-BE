@@ -11,6 +11,7 @@ import (
 
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/transport/http/helpers"
+	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
 // SSEHandler xử lý kết nối Server-Sent Events (SSE) cho hóa đơn (Spec 3 AC-2, AC-8).
@@ -55,6 +56,21 @@ func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_BILL_ID", "bill ID is invalid", nil)
 		return
+	}
+
+	// Kiểm tra quyền thành viên nhóm nếu có group_id (Spec 3 AC-8)
+	if groupIDStr := r.URL.Query().Get("group_id"); groupIDStr != "" {
+		if groupID, err := uuid.Parse(groupIDStr); err == nil {
+			if userIDStr, ok := authmw.UserID(r.Context()); ok {
+				if callerUserID, err := uuid.Parse(userIDStr); err == nil {
+					member, err := h.repo.GetGroupMember(r.Context(), groupID, callerUserID)
+					if err != nil || member.Status != "active" {
+						_ = helpers.WriteAPIError(w, http.StatusForbidden, "FORBIDDEN", "caller is not an active member of this group", nil)
+						return
+					}
+				}
+			}
+		}
 	}
 
 	// 1. Thiết lập SSE Response Headers
@@ -106,8 +122,8 @@ func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case <-heartbeatTicker.C:
-			// Ping giữ kết nối
-			_ = writeSSEEvent(w, flusher, "ping", map[string]int64{
+			// Heartbeat giữ kết nối
+			_ = writeSSEEvent(w, flusher, "heartbeat", map[string]int64{
 				"timestamp": time.Now().Unix(),
 			})
 

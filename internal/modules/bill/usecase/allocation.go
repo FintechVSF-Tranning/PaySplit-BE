@@ -178,10 +178,39 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		result = append(result, a)
 	}
 
-	// Nếu có độ lệch nhỏ do discount/rounding thì người có FinalAmount lớn nhất (hoặc Creditor) sẽ gánh
+	// Nếu có độ lệch nhỏ do discount/rounding thì điều chỉnh an toàn để tổng bằng in.Total mà không có FinalAmount âm
 	if computedTotalSum != in.Total && len(result) > 0 {
 		diff := in.Total - computedTotalSum
-		result[0].FinalAmount += diff
+		if diff > 0 {
+			maxIdx := 0
+			for i := 1; i < len(result); i++ {
+				if result[i].FinalAmount > result[maxIdx].FinalAmount {
+					maxIdx = i
+				}
+			}
+			result[maxIdx].FinalAmount += diff
+		} else if diff < 0 {
+			remaining := -diff
+			for remaining > 0 {
+				maxIdx := -1
+				var maxAmount int64
+				for i := 0; i < len(result); i++ {
+					if result[i].FinalAmount > maxAmount {
+						maxAmount = result[i].FinalAmount
+						maxIdx = i
+					}
+				}
+				if maxIdx == -1 || maxAmount <= 0 {
+					break
+				}
+				deduct := remaining
+				if deduct > maxAmount {
+					deduct = maxAmount
+				}
+				result[maxIdx].FinalAmount -= deduct
+				remaining -= deduct
+			}
+		}
 	}
 
 	return result, nil

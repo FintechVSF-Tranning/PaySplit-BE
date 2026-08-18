@@ -16,7 +16,7 @@ var (
 	ErrBillConflict = errors.New("bill conflict")
 
 	// ErrVersionConflict trả về khi version cung cấp không khớp với version hiện tại trong database.
-	ErrVersionConflict = ErrBillConflict
+	ErrVersionConflict = errors.New("version conflict")
 
 	// ErrOcrJobNotFound trả về khi không tìm thấy OCR job tương ứng.
 	ErrOcrJobNotFound = errors.New("ocr job not found")
@@ -62,4 +62,7 @@ var (
 
 	// ErrOcrCandidateInvalid trả về khi candidate có dữ liệu không hợp lệ không thể áp dụng vào bill.
 	ErrOcrCandidateInvalid = errors.New("ocr candidate invalid")
+
+	// ErrPaymentAlreadyStarted trả về khi cố gắng hủy hóa đơn có khoản nợ đã bắt đầu thanh toán.
+	ErrPaymentAlreadyStarted = errors.New("payment already started")
 )

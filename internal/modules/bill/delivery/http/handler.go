@@ -46,6 +46,7 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware func(http.Handler)
 		}
 		protected.Post("/{id}/ocr-retry", h.RetryOCR)
 		protected.Post("/{id}/apply-candidate", h.ApplyCandidate)
+		protected.Put("/{id}", h.UpdateDraftBill)
 		protected.Patch("/{id}", h.UpdateDraftBill)
 		protected.Post("/{id}/review", h.ReviewBill)
 		protected.Post("/{id}/finalize", h.FinalizeBill)
@@ -67,7 +68,7 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
 
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+		if err := r.ParseMultipartForm(50 << 20); err != nil { // 50MB max (tối đa 5 ảnh x 10MB)
 			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", "failed to parse multipart form", nil)
 			return
 		}
@@ -162,8 +163,19 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit := 20
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
 
 	bills, err := h.service.ListBills(r.Context(), callerUserID, groupID, int32(limit), int32(offset))
 	if err != nil {
@@ -460,6 +472,9 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrOcrTimeout):
 		status = http.StatusGatewayTimeout
 		code = "OCR_TIMEOUT"
+	case errors.Is(err, domain.ErrPaymentAlreadyStarted):
+		status = http.StatusConflict
+		code = "PAYMENT_ALREADY_STARTED"
 	}
 
 	_ = helpers.WriteAPIError(w, status, code, msg, nil)

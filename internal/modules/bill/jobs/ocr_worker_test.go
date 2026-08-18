@@ -292,3 +292,63 @@ func TestOCRWorker_DownloadError_ReturnsErrorForRetry(t *testing.T) {
 		t.Fatal("expected error return so River can retry network failure")
 	}
 }
+
+func TestOCRWorker_MultipleImagesStitched_Success(t *testing.T) {
+	// covers: AC-1, AC-3 (Multi-image stitching for multi-page bills)
+	billID := uuid.New()
+	jobID := uuid.New()
+	groupID := uuid.New()
+
+	repo := &mockRepo{
+		ocrJob: &domain.OCRJob{
+			ID:      jobID,
+			BillID:  billID,
+			Status:  domain.OCRJobStatusQueued,
+			Version: 1,
+		},
+		bill: &domain.Bill{
+			ID:      billID,
+			GroupID: groupID,
+			Images: []*domain.BillImage{
+				{ID: uuid.New(), BillID: billID, ImageKey: "bills/op-1/0", Position: 0},
+				{ID: uuid.New(), BillID: billID, ImageKey: "bills/op-1/1", Position: 1},
+			},
+		},
+	}
+
+	storage := &mockStorage{
+		downloadBytes: []byte("fake-image-bytes"),
+	}
+
+	provider := &mockOCRProvider{
+		candidate: &domain.OCRCandidate{
+			Total: 250000,
+		},
+		rawJSON: []byte(`{"total": 250000}`),
+	}
+
+	broadcaster := &mockBroadcaster{}
+	worker := jobs.NewOCRWorker(repo, storage, provider, broadcaster, 5*time.Second)
+
+	job := &river.Job[jobs.OCRJobArgs]{
+		JobRow: &rivertype.JobRow{
+			Attempt:     1,
+			MaxAttempts: 3,
+		},
+		Args: jobs.OCRJobArgs{
+			BillID:  billID.String(),
+			JobID:   jobID.String(),
+			GroupID: groupID.String(),
+		},
+	}
+
+	err := worker.Work(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Work() error = %v", err)
+	}
+
+	if !repo.success {
+		t.Error("expected multi-image job to succeed")
+	}
+}
+

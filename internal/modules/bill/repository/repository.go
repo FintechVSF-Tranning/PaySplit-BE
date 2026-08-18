@@ -60,6 +60,7 @@ type VoidBillParams struct {
 	GroupID         uuid.UUID
 	ExpectedVersion int32
 	ActorMemberID   uuid.UUID
+	Reason          string
 }
 
 // Repository định nghĩa các phương thức thao tác dữ liệu của module Bill & OCR.

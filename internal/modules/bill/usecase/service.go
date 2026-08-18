@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -141,11 +142,21 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	}
 
 	if len(req.Files) > 5 {
-		return nil, errors.New("maximum 5 receipt images allowed")
+		return nil, fmt.Errorf("%w: maximum 5 receipt images allowed", domain.ErrInvalidInput)
 	}
 
 	billID := uuid.New()
 	operationID := uuid.New()
+
+	uploadedKeys := make([]string, 0, len(req.Files))
+	success := false
+	defer func() {
+		if !success && len(uploadedKeys) > 0 && s.storage != nil {
+			for _, key := range uploadedKeys {
+				_ = s.storage.Delete(context.Background(), key)
+			}
+		}
+	}()
 
 	// 2. Xử lý và upload ảnh (nếu có)
 	images := make([]*domain.BillImage, 0, len(req.Files))
@@ -160,6 +171,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		if err != nil {
 			return nil, fmt.Errorf("upload image %d to storage: %w", i, err)
 		}
+		uploadedKeys = append(uploadedKeys, uploadedKey)
 
 		images = append(images, &domain.BillImage{
 			ID:       uuid.New(),
@@ -176,11 +188,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		itemID := uuid.New()
 		lineTotal := it.LineTotal
 		if lineTotal <= 0 && it.UnitPrice > 0 {
-			qty, _ := strconv.ParseFloat(it.Quantity, 64)
-			if qty <= 0 {
-				qty = 1
-			}
-			lineTotal = int64(float64(it.UnitPrice) * qty)
+			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
 		}
 
 		domItem := &domain.BillItem{
@@ -246,9 +254,12 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 
 	// 6. Đẩy River OCR Job nếu có ảnh
 	if ocrJob != nil && s.enqueuer != nil {
-		_ = s.enqueuer.EnqueueOCRJob(ctx, billID, ocrJob.ID, req.GroupID)
+		if err := s.enqueuer.EnqueueOCRJob(ctx, billID, ocrJob.ID, req.GroupID); err != nil {
+			return nil, fmt.Errorf("enqueue ocr job: %w", err)
+		}
 	}
 
+	success = true
 	return &CreateBillResult{
 		Bill:       createdBill,
 		OCRJob:     ocrJob,
@@ -296,6 +307,13 @@ func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member.Status != "active" {
 		return nil, domain.ErrInvalidInput
+	}
+
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	return s.repo.ListBillsByGroup(ctx, groupID, limit, offset)
@@ -347,7 +365,9 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 	}
 
 	if s.enqueuer != nil {
-		_ = s.enqueuer.EnqueueOCRJob(ctx, billID, createdJob.ID, groupID)
+		if err := s.enqueuer.EnqueueOCRJob(ctx, billID, createdJob.ID, groupID); err != nil {
+			return nil, fmt.Errorf("enqueue retry ocr job: %w", err)
+		}
 	}
 
 	return createdJob, nil
@@ -364,6 +384,9 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	if err != nil {
 		return nil, err
 	}
+	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+		return nil, domain.ErrForbidden
+	}
 	if bill.Status != domain.BillStatusDraft {
 		return nil, domain.ErrBillImmutable
 	}
@@ -374,6 +397,12 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	}
 	if ocrJob.Status != domain.OCRJobStatusSucceeded || ocrJob.Candidate == nil {
 		return nil, domain.ErrOcrNotReady
+	}
+	if bill.Version != expectedVersion {
+		return nil, domain.ErrVersionConflict
+	}
+	if bill.Version != ocrJob.Version {
+		return nil, domain.ErrOcrResultStale
 	}
 
 	// Lấy danh sách thành viên active trong nhóm để chia đều các món bóc tách
@@ -462,11 +491,7 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 		itemID := uuid.New()
 		lineTotal := it.LineTotal
 		if lineTotal <= 0 && it.UnitPrice > 0 {
-			qty, _ := strconv.ParseFloat(it.Quantity, 64)
-			if qty <= 0 {
-				qty = 1
-			}
-			lineTotal = int64(float64(it.UnitPrice) * qty)
+			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
 		}
 
 		domItem := &domain.BillItem{
@@ -545,11 +570,14 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	if err != nil {
 		return nil, err
 	}
-	if member.Role != "captain" && member.ID != bill.CreditorMemberID {
+	if member.Role != "captain" {
 		return nil, domain.ErrForbidden
 	}
-	if bill.Status == domain.BillStatusFinalized {
-		return nil, domain.ErrBillImmutable
+	if bill.Status != domain.BillStatusReviewed {
+		if bill.Status == domain.BillStatusFinalized {
+			return nil, domain.ErrBillImmutable
+		}
+		return nil, domain.ErrReviewRequired
 	}
 
 	// Chạy giải thuật Hamilton
@@ -605,7 +633,8 @@ func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uu
 		return nil, domain.ErrForbidden
 	}
 
-	if strings.TrimSpace(reason) == "" || len(reason) > 500 {
+	trimmedReason := strings.TrimSpace(reason)
+	if trimmedReason == "" || len(trimmedReason) > 500 {
 		return nil, errors.New("void reason must be between 1 and 500 characters")
 	}
 
@@ -614,6 +643,7 @@ func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uu
 		GroupID:         groupID,
 		ExpectedVersion: expectedVersion,
 		ActorMemberID:   member.ID,
+		Reason:          trimmedReason,
 	})
 }
 
@@ -690,4 +720,19 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 		Total:         b.Total,
 		Items:         items,
 	}
+}
+
+func computeLineTotal(unitPrice int64, quantityStr string) int64 {
+	if unitPrice <= 0 {
+		return 0
+	}
+	qty, err := strconv.ParseFloat(quantityStr, 64)
+	if err != nil || qty <= 0 {
+		qty = 1.0
+	}
+	totalFloat := float64(unitPrice) * qty
+	if totalFloat > float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(math.Round(totalFloat))
 }

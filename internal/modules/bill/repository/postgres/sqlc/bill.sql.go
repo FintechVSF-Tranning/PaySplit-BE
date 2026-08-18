@@ -476,7 +476,7 @@ SET status = 'finalized',
     finalized_at = now(),
     version = version + 1,
     updated_at = now()
-WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $3
+WHERE id = $1 AND group_id = $2 AND status = 'reviewed' AND version = $3
 RETURNING id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes
 `
 

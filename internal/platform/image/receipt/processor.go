@@ -9,6 +9,7 @@ import (
 	_ "image/png"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -41,7 +42,7 @@ func NewProcessor(timeout time.Duration, maxConcurrent int) *Processor {
 		timeout = 10 * time.Second
 	}
 	if maxConcurrent <= 0 {
-		maxConcurrent = 2
+		maxConcurrent = 4
 	}
 	return &Processor{
 		timeout: timeout,
@@ -80,18 +81,28 @@ func (p *Processor) Process(ctx context.Context, input []byte) ([]byte, error) {
 		return nil, ctx.Err()
 	}
 
+	var releaseOnce sync.Once
+	releaseSlot := func() {
+		releaseOnce.Do(func() {
+			<-p.slots
+		})
+	}
+
 	result := make(chan struct {
 		data []byte
 		err  error
 	}, 1)
 
 	go func() {
-		defer func() { <-p.slots }()
+		defer releaseSlot()
 		data, err := convertToJPEG(input)
-		result <- struct {
+		select {
+		case result <- struct {
 			data []byte
 			err  error
-		}{data: data, err: err}
+		}{data: data, err: err}:
+		default:
+		}
 	}()
 
 	timer := time.NewTimer(p.timeout)
@@ -101,8 +112,10 @@ func (p *Processor) Process(ctx context.Context, input []byte) ([]byte, error) {
 	case out := <-result:
 		return out.data, out.err
 	case <-ctx.Done():
+		releaseSlot()
 		return nil, ctx.Err()
 	case <-timer.C:
+		releaseSlot()
 		return nil, context.DeadlineExceeded
 	}
 }

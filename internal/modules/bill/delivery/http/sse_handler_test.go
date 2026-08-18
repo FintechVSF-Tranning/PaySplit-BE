@@ -70,7 +70,7 @@ func TestStreamBillEvents_Snapshot(t *testing.T) {
 	if !strings.Contains(body, billID.String()) {
 		t.Errorf("expected body to contain bill ID %s, got:\n%s", billID, body)
 	}
-	if !strings.Contains(body, "event: ping") {
-		t.Errorf("expected body to contain ping event, got:\n%s", body)
+	if !strings.Contains(body, "event: heartbeat") {
+		t.Errorf("expected body to contain heartbeat event, got:\n%s", body)
 	}
 }
