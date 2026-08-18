@@ -164,13 +164,15 @@ Quản lý vòng đời công nợ (`awaiting` → `pending_confirmation` → `s
 
 Module dành riêng cho người vận hành để kiểm soát nền tảng và người dùng.
 
-- **`GET /api/admin/accounts`**: Phân trang, tìm kiếm và lọc danh sách toàn bộ tài khoản (4.1.20).
+- **`GET /api/v1/admin/accounts`**: Phân trang, tìm kiếm và lọc danh sách toàn bộ tài khoản (4.1.20).
 
-- **`GET /api/admin/accounts/{id}`**: Xem chi tiết hồ sơ và lịch sử hoạt động của một tài khoản (4.1.21).
+- **`GET /api/v1/admin/accounts/{id}`**: Xem chi tiết hồ sơ và lịch sử hoạt động của một tài khoản (4.1.21).
 
-- **`PUT /api/admin/accounts/{id}/status`**: Cập nhật trạng thái tài khoản (đình chỉ, khóa, kích hoạt lại) (4.1.22).
+- **`PUT /api/v1/admin/accounts/{id}/status`**: Cập nhật trạng thái tài khoản (đình chỉ, khóa, kích hoạt lại) (4.1.22).
 
-- **`GET /api/health`** & **`GET /api/metrics`**: Giám sát tình trạng hệ thống, hàng đợi job (River queue) và hiệu suất API (4.1.23).
+- **`GET /health`**, **`GET /health/ready`** & **`GET /metrics`**: Giám sát tình trạng hệ thống, hàng đợi job (River queue) và hiệu suất API (4.1.23).
+
+- **`GET /api/v1/admin/system/overview`**: Tổng quan thống kê nền tảng cho dashboard quản trị (4.1.23).
 
 ### Module 6: Notification & Background Queue (Thông báo & Hàng đợi ngầm)
 
