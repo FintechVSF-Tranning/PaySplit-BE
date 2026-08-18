@@ -111,7 +111,14 @@ func (m *mockHandlerRepo) VoidBill(ctx context.Context, params repository.VoidBi
 	return nil, domain.ErrBillNotFound
 }
 
-func (m *mockHandlerRepo) DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error {
+func (m *mockHandlerRepo) ListActiveGroupMembers(ctx context.Context, groupID uuid.UUID) ([]*repository.GroupMember, error) {
+	if m.member != nil {
+		return []*repository.GroupMember{m.member}, nil
+	}
+	return []*repository.GroupMember{}, nil
+}
+
+func (m *mockHandlerRepo) DeleteDraftBill(ctx context.Context, params repository.DeleteDraftBillParams) error {
 	return nil
 }
 

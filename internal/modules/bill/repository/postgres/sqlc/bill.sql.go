@@ -390,6 +390,56 @@ func (q *Queries) CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, e
 	return i, err
 }
 
+const createNotification = `-- name: CreateNotification :one
+
+INSERT INTO notifications (
+    id,
+    user_id,
+    type,
+    title,
+    body,
+    payload,
+    created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, now()
+) RETURNING id, user_id, type, payload, read_at, created_at, title, body
+`
+
+type CreateNotificationParams struct {
+	ID      pgtype.UUID `json:"id"`
+	UserID  pgtype.UUID `json:"user_id"`
+	Type    string      `json:"type"`
+	Title   string      `json:"title"`
+	Body    string      `json:"body"`
+	Payload []byte      `json:"payload"`
+}
+
+// ============================================================================
+// NOTIFICATIONS & CLEANUP (Transactional inserts during bill lifecycle)
+// ============================================================================
+func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error) {
+	row := q.db.QueryRow(ctx, createNotification,
+		arg.ID,
+		arg.UserID,
+		arg.Type,
+		arg.Title,
+		arg.Body,
+		arg.Payload,
+	)
+	var i Notification
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Type,
+		&i.Payload,
+		&i.ReadAt,
+		&i.CreatedAt,
+		&i.Title,
+		&i.Body,
+	)
+	return i, err
+}
+
 const createOCRJob = `-- name: CreateOCRJob :one
 
 INSERT INTO ocr_jobs (
@@ -851,6 +901,28 @@ func (q *Queries) InsertGroupActivity(ctx context.Context, arg InsertGroupActivi
 	return i, err
 }
 
+const insertMediaCleanupJob = `-- name: InsertMediaCleanupJob :exec
+INSERT INTO media_cleanup_jobs (
+    id,
+    provider,
+    object_key,
+    created_at,
+    updated_at
+) VALUES (
+    $1, 'cloudinary', $2, now(), now()
+) ON CONFLICT (provider, object_key) WHERE completed_at IS NULL DO NOTHING
+`
+
+type InsertMediaCleanupJobParams struct {
+	ID        pgtype.UUID `json:"id"`
+	ObjectKey string      `json:"object_key"`
+}
+
+func (q *Queries) InsertMediaCleanupJob(ctx context.Context, arg InsertMediaCleanupJobParams) error {
+	_, err := q.db.Exec(ctx, insertMediaCleanupJob, arg.ID, arg.ObjectKey)
+	return err
+}
+
 const listActiveGroupMembers = `-- name: ListActiveGroupMembers :many
 SELECT id, group_id, user_id, role, status, joined_at, left_at
 FROM group_members
@@ -1172,6 +1244,46 @@ func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGro
 			&i.MismatchCodes,
 			&i.ReviewedAt,
 			&i.ReviewedByMemberID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDebtsByBillIDForUpdate = `-- name: ListDebtsByBillIDForUpdate :many
+SELECT id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at FROM debts
+WHERE bill_id = $1
+ORDER BY id ASC
+FOR UPDATE
+`
+
+func (q *Queries) ListDebtsByBillIDForUpdate(ctx context.Context, billID pgtype.UUID) ([]Debt, error) {
+	rows, err := q.db.Query(ctx, listDebtsByBillIDForUpdate, billID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Debt
+	for rows.Next() {
+		var i Debt
+		if err := rows.Scan(
+			&i.ID,
+			&i.GroupID,
+			&i.BillID,
+			&i.DebtorMemberID,
+			&i.CreditorMemberID,
+			&i.Amount,
+			&i.Status,
+			&i.ReminderCount,
+			&i.PaymentID,
+			&i.CreatedAt,
+			&i.SettledAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

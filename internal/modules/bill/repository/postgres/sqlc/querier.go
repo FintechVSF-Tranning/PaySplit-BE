@@ -29,6 +29,10 @@ type Querier interface {
 	CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error)
 	CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, error)
 	// ============================================================================
+	// NOTIFICATIONS & CLEANUP (Transactional inserts during bill lifecycle)
+	// ============================================================================
+	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
+	// ============================================================================
 	// OCR JOBS
 	// ============================================================================
 	CreateOCRJob(ctx context.Context, arg CreateOCRJobParams) (OcrJob, error)
@@ -47,6 +51,7 @@ type Querier interface {
 	GetLatestOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, error)
 	InsertGroupActivity(ctx context.Context, arg InsertGroupActivityParams) (GroupActivity, error)
+	InsertMediaCleanupJob(ctx context.Context, arg InsertMediaCleanupJobParams) error
 	ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error)
 	ListBillImages(ctx context.Context, billID pgtype.UUID) ([]BillImage, error)
 	ListBillItemAssignmentsByBill(ctx context.Context, billID pgtype.UUID) ([]BillItemAssignment, error)
@@ -55,6 +60,7 @@ type Querier interface {
 	ListBillShares(ctx context.Context, billID pgtype.UUID) ([]BillShare, error)
 	ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error)
 	ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error)
+	ListDebtsByBillIDForUpdate(ctx context.Context, billID pgtype.UUID) ([]Debt, error)
 	ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, error)
 	UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams) (Bill, error)
 	UpdateOCRJobFailed(ctx context.Context, arg UpdateOCRJobFailedParams) (OcrJob, error)

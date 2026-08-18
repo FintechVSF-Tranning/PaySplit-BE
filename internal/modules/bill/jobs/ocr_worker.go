@@ -249,6 +249,26 @@ func (e *Enqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uui
 	return err
 }
 
+// NotificationJobArgs định nghĩa payload công việc gửi thông báo trong River Queue.
+type NotificationJobArgs struct {
+	NotificationID string `json:"notification_id"`
+}
+
+// Kind định danh loại job trong River Queue.
+func (NotificationJobArgs) Kind() string { return "send_notification" }
+
+// EnqueueNotificationTx đẩy job gửi thông báo vào River Queue trong cùng database transaction tx.
+func (e *Enqueuer) EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notificationID string) error {
+	if e == nil || e.client == nil {
+		return nil
+	}
+
+	_, err := e.client.InsertTx(ctx, tx, NotificationJobArgs{
+		NotificationID: notificationID,
+	}, nil)
+	return err
+}
+
 func stitchReceiptImages(images [][]byte) ([]byte, error) {
 	if len(images) == 0 {
 		return nil, errors.New("empty images")
@@ -265,6 +285,10 @@ func stitchReceiptImages(images [][]byte) ([]byte, error) {
 		img, _, err := image.Decode(bytes.NewReader(b))
 		if err != nil {
 			return nil, fmt.Errorf("decode receipt image %d: %w", i, err)
+		}
+		// Thu nhỏ ảnh nếu chiều ngang quá lớn (> 1200px) để tiết kiệm bộ nhớ khi ghép
+		if img.Bounds().Dx() > 1200 {
+			img = imaging.Resize(img, 1200, 0, imaging.Lanczos)
 		}
 		decodedImages = append(decodedImages, img)
 		bnds := img.Bounds()

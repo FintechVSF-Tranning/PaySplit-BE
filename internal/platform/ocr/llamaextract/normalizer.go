@@ -226,60 +226,67 @@ func ParseVNDAmount(val any) int64 {
 		// Loại bỏ các ký tự tiền tệ và khoảng trắng: "đ", "vnd", "vnđ", " "
 		cleaned := strings.NewReplacer("vnd", "", "vnđ", "", "đ", "", " ", "").Replace(lower)
 		cleaned = strings.TrimSpace(cleaned)
+		if cleaned == "" {
+			return 0
+		}
 
-		// Nếu chuỗi chứa dấu chấm hoặc phẩy phân cách hàng nghìn: "50.000" hoặc "50,000"
-		// Đếm số lượng dấu chấm và phẩy
 		dotCount := strings.Count(cleaned, ".")
 		commaCount := strings.Count(cleaned, ",")
 
-		if dotCount > 0 && commaCount == 0 {
-			// Nếu có nhiều dấu chấm (ví dụ: 1.000.000) hoặc 3 số sau dấu chấm (50.000) -> Dấu chấm là phân cách hàng nghìn
-			parts := strings.Split(cleaned, ".")
-			if len(parts) > 2 || (len(parts) == 2 && len(parts[1]) == 3) {
-				cleaned = strings.ReplaceAll(cleaned, ".", "")
-			} else {
-				// Dấu chấm thập phân
-				cleaned = strings.ReplaceAll(cleaned, ".", "")
-			}
-		} else if commaCount > 0 && dotCount == 0 {
-			// Tương tự cho dấu phẩy
-			parts := strings.Split(cleaned, ",")
-			if len(parts) > 2 || (len(parts) == 2 && len(parts[1]) == 3) {
-				cleaned = strings.ReplaceAll(cleaned, ",", "")
-			}
-		} else if dotCount > 0 && commaCount > 0 {
-			// Ví dụ 1,000.00 hoặc 1.000,00
+		if dotCount > 0 && commaCount > 0 {
+			// Ví dụ 1,000,000.50 hoặc 1.000.000,50
 			lastDot := strings.LastIndex(cleaned, ".")
 			lastComma := strings.LastIndex(cleaned, ",")
 			if lastComma > lastDot {
-				// Dấu phẩy là thập phân
+				// Dấu chấm là phân cách nghìn, dấu phẩy là thập phân
 				cleaned = strings.ReplaceAll(cleaned, ".", "")
-				cleaned = strings.Split(cleaned, ",")[0]
+				cleaned = strings.ReplaceAll(cleaned, ",", ".")
 			} else {
-				// Dấu chấm là thập phân
+				// Dấu phẩy là phân cách nghìn, dấu chấm là thập phân
 				cleaned = strings.ReplaceAll(cleaned, ",", "")
-				cleaned = strings.Split(cleaned, ".")[0]
+			}
+		} else if dotCount > 0 && commaCount == 0 {
+			parts := strings.Split(cleaned, ".")
+			if len(parts) > 2 {
+				// Nhiều dấu chấm (ví dụ 1.250.000) -> phân cách hàng nghìn
+				cleaned = strings.ReplaceAll(cleaned, ".", "")
+			} else if len(parts) == 2 {
+				if len(parts[1]) == 3 {
+					// 50.000 -> phân cách hàng nghìn trong VND
+					cleaned = strings.ReplaceAll(cleaned, ".", "")
+				}
+				// Nếu len(parts[1]) != 3 (ví dụ 50.5 hay 12.75) thì giữ nguyên dấu chấm thập phân
+			}
+		} else if commaCount > 0 && dotCount == 0 {
+			parts := strings.Split(cleaned, ",")
+			if len(parts) > 2 {
+				// Nhiều dấu phẩy (ví dụ 1,250,000) -> phân cách hàng nghìn
+				cleaned = strings.ReplaceAll(cleaned, ",", "")
+			} else if len(parts) == 2 {
+				if len(parts[1]) == 3 {
+					// 50,000 -> phân cách hàng nghìn
+					cleaned = strings.ReplaceAll(cleaned, ",", "")
+				} else {
+					// 50,5 -> dấu phẩy thập phân -> đổi sang dấu chấm
+					cleaned = strings.ReplaceAll(cleaned, ",", ".")
+				}
 			}
 		}
 
-		parsed, err := strconv.ParseInt(cleaned, 10, 64)
+		f, err := strconv.ParseFloat(cleaned, 64)
 		if err != nil {
-			// Thử parse float nếu vẫn còn số thập phân
-			if f, errFloat := strconv.ParseFloat(cleaned, 64); errFloat == nil {
-				parsed = int64(math.Round(f))
-			} else {
-				return 0
-			}
+			return 0
 		}
 
 		if isThousandK {
-			parsed *= 1000
+			f *= 1000
 		}
 
-		if parsed < 0 {
+		if f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0
 		}
-		return parsed
+
+		return int64(math.Round(f))
 	default:
 		return 0
 	}

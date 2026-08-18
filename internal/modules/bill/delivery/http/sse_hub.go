@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -111,11 +112,32 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 }
 
 // StartPostgresListener lắng nghe kênh pg_notify 'bill_events' từ các instance khác hoặc background worker.
+// Tự động thử kết nối lại khi gặp sự cố mạng hoặc database khởi động lại.
 func (h *Hub) StartPostgresListener(ctx context.Context) error {
 	if h.pool == nil {
 		return nil
 	}
 
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		err := h.listenLoop(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			select {
+			case <-time.After(1 * time.Second):
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	}
+}
+
+func (h *Hub) listenLoop(ctx context.Context) error {
 	conn, err := h.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire conn for pg_notify listener: %w", err)
@@ -131,7 +153,7 @@ func (h *Hub) StartPostgresListener(ctx context.Context) error {
 		notification, err := conn.Conn().WaitForNotification(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil // Context cancelled
+				return nil
 			}
 			return fmt.Errorf("wait for pg notification: %w", err)
 		}

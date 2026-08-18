@@ -507,6 +507,26 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 		createdItems = append(createdItems, domItem)
 	}
 
+	// Ghi nhận hoạt động sửa hóa đơn vào group_activities
+	actorID := p.ActorMemberID
+	if actorID == uuid.Nil {
+		actorID = p.Bill.CreditorMemberID
+	}
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id":        p.Bill.ID.String(),
+		"version":        dbBill.Version,
+		"mismatch_codes": dbBill.MismatchCodes,
+	})
+	desc := fmt.Sprintf("updated bill draft (version %d)", dbBill.Version)
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: actorID, Valid: true},
+		ActionType:    "updated_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit update draft bill tx: %w", err)
 	}
@@ -518,7 +538,13 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 
 // ReviewBill chuyển trạng thái hóa đơn từ draft sang reviewed (Spec 3 AC-7).
 func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
-	q := sqlc.New(r.pool)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin review bill tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := sqlc.New(tx)
 
 	dbBill, err := q.ReviewBill(ctx, sqlc.ReviewBillParams{
 		ID:                 pgtype.UUID{Bytes: id, Valid: true},
@@ -531,6 +557,25 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 			return nil, domain.ErrBillConflict
 		}
 		return nil, fmt.Errorf("review bill: %w", err)
+	}
+
+	// Ghi nhận hoạt động review hóa đơn vào group_activities
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id": id.String(),
+		"version": dbBill.Version,
+	})
+	desc := fmt.Sprintf("reviewed bill (version %d)", dbBill.Version)
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: reviewerMemberID, Valid: true},
+		ActionType:    "reviewed_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit review bill tx: %w", err)
 	}
 
 	return toDomainBill(&dbBill), nil
@@ -691,7 +736,29 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 		}
 	}
 
-	// 4. Ghi nhận hoạt động chốt hóa đơn vào group_activities (Spec 3 AC-9)
+	// 4. Tạo các bản ghi notifications cho các thành viên tham gia (Spec 3 AC-9)
+	for _, notif := range p.Notifications {
+		_, err := q.CreateNotification(ctx, sqlc.CreateNotificationParams{
+			ID:      pgtype.UUID{Bytes: notif.ID, Valid: true},
+			UserID:  pgtype.UUID{Bytes: notif.UserID, Valid: true},
+			Type:    notif.Type,
+			Title:   notif.Title,
+			Body:    notif.Body,
+			Payload: notif.Payload,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create notification for user %s: %w", notif.UserID, err)
+		}
+	}
+
+	// 5. Gọi hook trước khi commit (ví dụ enqueue notification River jobs trong cùng tx)
+	if p.BeforeCommit != nil {
+		if err := p.BeforeCommit(ctx, tx); err != nil {
+			return nil, fmt.Errorf("before commit finalize hook: %w", err)
+		}
+	}
+
+	// 6. Ghi nhận hoạt động chốt hóa đơn vào group_activities (Spec 3 AC-9)
 	metaBytes, _ := json.Marshal(map[string]any{
 		"bill_id":           p.BillID.String(),
 		"total":             dbBill.Total,
@@ -727,15 +794,20 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 
 	q := sqlc.New(tx)
 
-	// Kiểm tra xem có khoản nợ nào của bill đã chuyển trạng thái khác awaiting (đã bắt đầu thanh toán) không (Spec 3 AC-11)
-	nonAwaitingCount, err := q.CountNonAwaitingDebtsByBillID(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true})
+	// 1. Khóa toàn bộ các dòng nợ debts của bill theo thứ tự UUID tăng dần (FOR UPDATE)
+	// để ngăn chặn race condition với luồng bắt đầu thanh toán ở Module 4 (Spec 3 AC-11, Invariant 12).
+	debts, err := q.ListDebtsByBillIDForUpdate(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true})
 	if err != nil {
-		return nil, fmt.Errorf("count non awaiting debts: %w", err)
-	}
-	if nonAwaitingCount > 0 {
-		return nil, domain.ErrPaymentAlreadyStarted
+		return nil, fmt.Errorf("lock debts for void: %w", err)
 	}
 
+	for _, d := range debts {
+		if d.Status != "awaiting" || d.PaymentID.Valid {
+			return nil, domain.ErrPaymentAlreadyStarted
+		}
+	}
+
+	// 2. Chuyển trạng thái bill sang voided
 	dbBill, err := q.VoidBill(ctx, sqlc.VoidBillParams{
 		ID:      pgtype.UUID{Bytes: p.BillID, Valid: true},
 		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
@@ -748,12 +820,12 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		return nil, fmt.Errorf("void bill: %w", err)
 	}
 
-	// Hủy bỏ toàn bộ các khoản nợ awaiting liên quan đến bill này
+	// 3. Hủy bỏ toàn bộ các khoản nợ awaiting liên quan đến bill này
 	if err := q.VoidDebtsByBillID(ctx, pgtype.UUID{Bytes: p.BillID, Valid: true}); err != nil {
 		return nil, fmt.Errorf("void debts: %w", err)
 	}
 
-	// Ghi nhận hoạt động hủy hóa đơn vào group_activities (Spec 3 AC-11)
+	// 4. Ghi nhận hoạt động hủy hóa đơn vào group_activities (Spec 3 AC-11)
 	metaBytes, _ := json.Marshal(map[string]any{
 		"bill_id": p.BillID.String(),
 		"reason":  p.Reason,
@@ -775,8 +847,8 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	return toDomainBill(&dbBill), nil
 }
 
-// DeleteDraftBill xóa hoàn toàn một hóa đơn nháp và các dữ liệu liên quan.
-func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error {
+// DeleteDraftBill xóa hoàn toàn một hóa đơn nháp và các dữ liệu liên quan trong 1 transaction nguyên tử.
+func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.DeleteDraftBillParams) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin delete draft bill tx: %w", err)
@@ -785,8 +857,8 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uu
 
 	q := sqlc.New(tx)
 
-	// Lấy thông tin bill trước khi xóa để lấy creditor
-	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	// Lấy thông tin bill trước khi xóa để kiểm tra
+	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: p.ID, Valid: true})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrBillNotFound
@@ -794,9 +866,17 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uu
 		return fmt.Errorf("get bill for delete: %w", err)
 	}
 
+	// Xếp hàng các ảnh cần dọn dẹp vào media_cleanup_jobs ngay trong transaction xóa
+	for _, key := range p.ImageKeys {
+		_ = q.InsertMediaCleanupJob(ctx, sqlc.InsertMediaCleanupJobParams{
+			ID:        pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+			ObjectKey: key,
+		})
+	}
+
 	rowsAffected, err := q.DeleteDraftBill(ctx, sqlc.DeleteDraftBillParams{
-		ID:      pgtype.UUID{Bytes: id, Valid: true},
-		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
+		ID:      pgtype.UUID{Bytes: p.ID, Valid: true},
+		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("delete draft bill: %w", err)
@@ -805,14 +885,19 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uu
 		return domain.ErrBillNotFound
 	}
 
+	actorID := p.ActorMemberID
+	if actorID == uuid.Nil {
+		actorID = uuid.UUID(billRow.CreditorMemberID.Bytes)
+	}
+
 	metaBytes, _ := json.Marshal(map[string]any{
-		"bill_id": id.String(),
+		"bill_id": p.ID.String(),
 	})
-	desc := fmt.Sprintf("deleted draft bill %s", id.String())
+	desc := fmt.Sprintf("deleted draft bill %s", p.ID.String())
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
-		GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
-		ActorMemberID: billRow.CreditorMemberID,
+		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: actorID, Valid: true},
 		ActionType:    "deleted_bill",
 		Description:   desc,
 		Metadata:      metaBytes,
@@ -975,15 +1060,11 @@ func (r *postgresRepository) CountManualOCRAttemptsInWindow(ctx context.Context,
 }
 
 func (r *postgresRepository) EnqueueMediaCleanup(ctx context.Context, prefix, kind string) error {
-	jobID := uuid.New()
-	query := `INSERT INTO media_cleanup_jobs (id, image_object_key, kind, status, created_at, updated_at)
-			  VALUES ($1, $2, $3, 'pending', now(), now())
-			  ON CONFLICT (image_object_key) DO NOTHING`
-	_, err := r.pool.Exec(ctx, query, jobID, prefix, kind)
-	if err != nil {
-		return fmt.Errorf("enqueue media cleanup job: %w", err)
-	}
-	return nil
+	q := sqlc.New(r.pool)
+	return q.InsertMediaCleanupJob(ctx, sqlc.InsertMediaCleanupJobParams{
+		ID:        pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		ObjectKey: prefix,
+	})
 }
 
 // ============================================================================

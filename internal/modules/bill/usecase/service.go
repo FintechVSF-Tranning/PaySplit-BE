@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -36,10 +37,11 @@ type ReceiptProcessor interface {
 	IsUnsupported(err error) bool
 }
 
-// JobEnqueuer là interface đẩy công việc OCR vào hàng đợi River Queue.
+// JobEnqueuer là interface đẩy công việc OCR và thông báo vào hàng đợi River Queue.
 type JobEnqueuer interface {
 	EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID, groupID uuid.UUID) error
 	EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error
+	EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notificationID string) error
 }
 
 // Service quản lý toàn bộ nghiệp vụ của module Bill và OCR.
@@ -151,8 +153,8 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 
 	// 1. Kiểm tra caller có thuộc nhóm không
 	member, err := s.repo.GetGroupMember(ctx, req.GroupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	if len(req.Files) > 5 {
@@ -228,7 +230,29 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		items = append(items, domItem)
 	}
 
-	// 4. Tạo OCR Job nếu có ảnh
+	// 4. Chuẩn bị Bill domain entity
+	splitMethod := req.SplitMethod
+	if splitMethod == "" {
+		splitMethod = domain.SplitMethodEven
+	}
+
+	bill := &domain.Bill{
+		ID:               billID,
+		GroupID:          req.GroupID,
+		CreditorMemberID: member.ID,
+		MerchantName:     req.MerchantName,
+		BillDate:         req.BillDate,
+		Subtotal:         req.Subtotal,
+		ServiceCharge:    req.ServiceCharge,
+		VAT:              req.VAT,
+		Discount:         req.Discount,
+		Total:            req.Total,
+		SplitMethod:      splitMethod,
+		Status:           domain.BillStatusDraft,
+		Version:          1,
+	}
+
+	// 5. Nếu có ảnh -> tạo kèm OCRJob (Spec 3 AC-2)
 	var ocrJob *domain.OCRJob
 	if len(images) > 0 {
 		ocrJob = &domain.OCRJob{
@@ -239,33 +263,14 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		}
 	}
 
-	bill := &domain.Bill{
-		ID:               billID,
-		GroupID:          req.GroupID,
-		CreditorMemberID: member.ID,
-		Status:           domain.BillStatusDraft,
-		MerchantName:     req.MerchantName,
-		BillDate:         req.BillDate,
-		Subtotal:         req.Subtotal,
-		ServiceCharge:    req.ServiceCharge,
-		VAT:              req.VAT,
-		Discount:         req.Discount,
-		Total:            req.Total,
-		SplitMethod:      req.SplitMethod,
-		ReplacesBillID:   req.ReplacesBillID,
-	}
-
-	// 5. Lưu hóa đơn vào Database và đẩy River OCR Job trong cùng transaction (Spec 3 AC-2)
 	createdBill, err := s.repo.CreateBill(ctx, repository.CreateBillParams{
 		Bill:   bill,
 		Images: images,
 		Items:  items,
 		OCRJob: ocrJob,
-		BeforeCommit: func(ctx context.Context, tx pgx.Tx) error {
+		BeforeCommit: func(txCtx context.Context, tx pgx.Tx) error {
 			if ocrJob != nil && s.enqueuer != nil {
-				if err := s.enqueuer.EnqueueOCRJobTx(ctx, tx, billID, ocrJob.ID, req.GroupID); err != nil {
-					return fmt.Errorf("enqueue ocr job tx: %w", err)
-				}
+				return s.enqueuer.EnqueueOCRJobTx(txCtx, tx, billID, ocrJob.ID, req.GroupID)
 			}
 			return nil
 		},
@@ -275,6 +280,7 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	}
 
 	success = true
+
 	return &CreateBillResult{
 		Bill:       createdBill,
 		OCRJob:     ocrJob,
@@ -286,8 +292,8 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, groupID uuid.UUID) (*BillDetailResponse, error) {
 	// Kiểm tra caller có thuộc nhóm không
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -320,8 +326,8 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 // ListBills lấy danh sách hóa đơn trong nhóm có phân trang (offset legacy).
 func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	if limit <= 0 || limit > 50 {
@@ -337,8 +343,8 @@ func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID
 // ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12).
 func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32) (*repository.ListBillsCursorResult, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	return s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
@@ -351,8 +357,8 @@ func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uui
 // RetryOCR kích hoạt lại quá trình bóc tách OCR thủ công (tối đa 5 lần / 24h, Spec 3 AC-2, AC-8).
 func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uuid.UUID) (*domain.OCRJob, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -418,8 +424,8 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 // ApplyCandidate đổ dữ liệu bóc tách từ AI vào hóa đơn nháp (Spec 3 AC-4).
 func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, groupID, jobID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -471,6 +477,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	bill.VAT = candidate.VAT
 	bill.Discount = candidate.Discount
 	bill.Total = candidate.Total
+	bill.MismatchCodes = candidate.Warnings
 
 	// Tạo items từ Candidate
 	items := make([]*domain.BillItem, 0, len(candidate.Items))
@@ -504,14 +511,15 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 		Bill:            bill,
 		Items:           items,
 		ExpectedVersion: expectedVersion,
+		ActorMemberID:   member.ID,
 	})
 }
 
 // UpdateDraftBill cập nhật chỉnh sửa hóa đơn nháp (Spec 3 AC-5, AC-7).
 func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, req UpdateDraftRequest) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -530,6 +538,11 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 			return nil, domain.ErrBillAlreadyVoided
 		}
 		return nil, domain.ErrBillImmutable
+	}
+
+	// Kiểm tra giá trị discount không được âm
+	if req.Discount < 0 {
+		return nil, domain.ErrInvalidInput
 	}
 
 	bill.MerchantName = req.MerchantName
@@ -576,14 +589,15 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 		Bill:            bill,
 		Items:           items,
 		ExpectedVersion: req.Version,
+		ActorMemberID:   member.ID,
 	})
 }
 
 // ReviewBill kiểm tra điều kiện đối soát và chuyển hóa đơn sang trạng thái reviewed (Spec 3 AC-7).
 func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -621,8 +635,25 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 		}
 	}
 
+	// Lấy danh sách thành viên active để xác thực mọi người được gán món đều đang active
+	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list active group members: %w", err)
+	}
+	activeSet := make(map[uuid.UUID]bool, len(activeMembers))
+	for _, m := range activeMembers {
+		activeSet[m.ID] = true
+	}
+	for _, it := range bill.Items {
+		for _, a := range it.Assignments {
+			if !activeSet[a.MemberID] {
+				return nil, domain.ErrBillNotReady
+			}
+		}
+	}
+
 	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
-	if bill.Subtotal != sumItems || bill.Total != expectedTotal {
+	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
 		return nil, domain.ErrBillNotReady
 	}
 
@@ -632,8 +663,8 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 // FinalizeBill chạy giải thuật Hamilton allocation, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
 func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -669,8 +700,27 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 		}
 	}
 	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
-	if bill.Subtotal != sumItems || bill.Total != expectedTotal {
+	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
 		return nil, domain.ErrBillNotReady
+	}
+
+	// Lấy danh sách thành viên active trong nhóm
+	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("list active group members: %w", err)
+	}
+	activeSet := make(map[uuid.UUID]bool, len(activeMembers))
+	memberUserMap := make(map[uuid.UUID]uuid.UUID, len(activeMembers))
+	for _, m := range activeMembers {
+		activeSet[m.ID] = true
+		memberUserMap[m.ID] = m.UserID
+	}
+	for _, it := range bill.Items {
+		for _, a := range it.Assignments {
+			if !activeSet[a.MemberID] {
+				return nil, domain.ErrBillNotReady
+			}
+		}
 	}
 
 	// 4. Kiểm tra tài khoản ngân hàng của Creditor (Spec 3 AC-9: 422 BANK_ACCOUNT_REQUIRED)
@@ -689,6 +739,7 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 
 	shares := make([]*domain.BillShare, 0, len(allocations))
 	debts := make([]*repository.Debt, 0, len(allocations))
+	notifications := make([]*repository.NotificationParam, 0, len(allocations))
 
 	for _, a := range allocations {
 		amount := a.FinalAmount
@@ -722,6 +773,41 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 				Status:           "awaiting",
 			})
 		}
+
+		// Tạo bản ghi thông báo cho từng thành viên tham gia hóa đơn
+		if userID, ok := memberUserMap[a.MemberID]; ok && userID != uuid.Nil {
+			notifID := uuid.Must(uuid.NewV7())
+			notifTitle := "Hóa đơn đã được chốt"
+			notifBody := fmt.Sprintf("Hóa đơn đã được chốt. Phần thanh toán của bạn là %d đ.", amount)
+			if a.MemberID == bill.CreditorMemberID {
+				notifBody = fmt.Sprintf("Hóa đơn của bạn đã được chốt với tổng cộng %d đ.", bill.Total)
+			}
+			payloadBytes, _ := json.Marshal(map[string]any{
+				"bill_id":  billID.String(),
+				"group_id": groupID.String(),
+				"amount":   amount,
+			})
+			notifications = append(notifications, &repository.NotificationParam{
+				ID:      notifID,
+				UserID:  userID,
+				Type:    "bill_finalized",
+				Title:   notifTitle,
+				Body:    notifBody,
+				Payload: payloadBytes,
+			})
+		}
+	}
+
+	var beforeCommit func(ctx context.Context, tx pgx.Tx) error
+	if s.enqueuer != nil && len(notifications) > 0 {
+		beforeCommit = func(txCtx context.Context, tx pgx.Tx) error {
+			for _, notif := range notifications {
+				if err := s.enqueuer.EnqueueNotificationTx(txCtx, tx, notif.ID.String()); err != nil {
+					return fmt.Errorf("enqueue finalize notification: %w", err)
+				}
+			}
+			return nil
+		}
 	}
 
 	return s.repo.FinalizeBill(ctx, repository.FinalizeBillParams{
@@ -731,14 +817,16 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 		Shares:          shares,
 		Debts:           debts,
 		ActorMemberID:   member.ID,
+		Notifications:   notifications,
+		BeforeCommit:    beforeCommit,
 	})
 }
 
 // VoidBill hủy bỏ hóa đơn đã chốt và đóng các khoản nợ liên quan (Spec 3 AC-11).
 func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32, reason string) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return nil, domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
 	}
 	if member.Role != "captain" {
 		return nil, domain.ErrForbidden
@@ -776,8 +864,8 @@ func (s *Service) VoidBill(ctx context.Context, callerUserID, billID, groupID uu
 // DeleteDraftBill xóa một hóa đơn nháp và dọn dẹp ảnh trên Cloudinary (Spec 3 AC-13).
 func (s *Service) DeleteDraftBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID) error {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
-	if err != nil || member.Status != "active" {
-		return domain.ErrInvalidInput
+	if err != nil || member == nil || member.Status != "active" {
+		return domain.ErrForbidden
 	}
 
 	bill, err := s.repo.GetBillByID(ctx, billID, groupID)
@@ -791,12 +879,17 @@ func (s *Service) DeleteDraftBill(ctx context.Context, callerUserID, billID, gro
 		return domain.ErrBillImmutable
 	}
 
-	// Đẩy công việc dọn dẹp ảnh Cloudinary vào media cleanup jobs
+	imageKeys := make([]string, 0, len(bill.Images))
 	for _, img := range bill.Images {
-		_ = s.repo.EnqueueMediaCleanup(ctx, img.ImageKey, "bill_image")
+		imageKeys = append(imageKeys, img.ImageKey)
 	}
 
-	return s.repo.DeleteDraftBill(ctx, billID, groupID)
+	return s.repo.DeleteDraftBill(ctx, repository.DeleteDraftBillParams{
+		ID:            billID,
+		GroupID:       groupID,
+		ActorMemberID: member.ID,
+		ImageKeys:     imageKeys,
+	})
 }
 
 // ============================================================================

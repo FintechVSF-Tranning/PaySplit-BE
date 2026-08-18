@@ -36,7 +36,41 @@ func (m *mockServiceRepo) GetGroupMember(ctx context.Context, groupID, userID uu
 }
 
 func (m *mockServiceRepo) ListActiveGroupMembers(ctx context.Context, groupID uuid.UUID) ([]*repository.GroupMember, error) {
-	return m.activeMembers, nil
+	if m.activeMembers != nil {
+		return m.activeMembers, nil
+	}
+	if m.bill != nil {
+		members := make([]*repository.GroupMember, 0)
+		seen := make(map[uuid.UUID]bool)
+		for _, it := range m.bill.Items {
+			for _, a := range it.Assignments {
+				if !seen[a.MemberID] {
+					seen[a.MemberID] = true
+					members = append(members, &repository.GroupMember{
+						ID:      a.MemberID,
+						GroupID: groupID,
+						UserID:  uuid.New(),
+						Role:    "member",
+						Status:  "active",
+					})
+				}
+			}
+		}
+		if !seen[m.bill.CreditorMemberID] {
+			members = append(members, &repository.GroupMember{
+				ID:      m.bill.CreditorMemberID,
+				GroupID: groupID,
+				UserID:  uuid.New(),
+				Role:    "captain",
+				Status:  "active",
+			})
+		}
+		return members, nil
+	}
+	if m.member != nil {
+		return []*repository.GroupMember{m.member}, nil
+	}
+	return []*repository.GroupMember{}, nil
 }
 
 func (m *mockServiceRepo) CreateBill(ctx context.Context, params repository.CreateBillParams) (*domain.Bill, error) {
@@ -141,7 +175,7 @@ func (m *mockServiceRepo) VoidBill(ctx context.Context, params repository.VoidBi
 	return m.voidedBill, nil
 }
 
-func (m *mockServiceRepo) DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error {
+func (m *mockServiceRepo) DeleteDraftBill(ctx context.Context, params repository.DeleteDraftBillParams) error {
 	m.deletedDraft = true
 	return nil
 }
@@ -170,6 +204,13 @@ func (m *mockEnqueuer) EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, j
 	return nil
 }
 func (m *mockEnqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error {
+	if m.errToReturn != nil {
+		return m.errToReturn
+	}
+	m.enqueuedCount++
+	return nil
+}
+func (m *mockEnqueuer) EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notificationID string) error {
 	if m.errToReturn != nil {
 		return m.errToReturn
 	}
@@ -1032,6 +1073,243 @@ func TestListBillsCursor_Success(t *testing.T) {
 	}
 	if len(res.Bills) != 1 {
 		t.Errorf("expected 1 bill, got %d", len(res.Bills))
+	}
+}
+
+func TestAuthorization_InactiveOrNonMember_ReturnsForbidden(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      uuid.New(),
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "member",
+			Status:  "inactive", // Inactive member
+		},
+		bill: &domain.Bill{
+			ID:      billID,
+			GroupID: groupID,
+			Status:  domain.BillStatusDraft,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	ctx := context.Background()
+
+	// 1. GetBillDetail
+	_, err := service.GetBillDetail(ctx, userID, billID, groupID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("GetBillDetail expected ErrForbidden, got %v", err)
+	}
+
+	// 2. ListBills
+	_, err = service.ListBills(ctx, userID, groupID, 10, 0)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("ListBills expected ErrForbidden, got %v", err)
+	}
+
+	// 3. ListBillsCursor
+	_, err = service.ListBillsCursor(ctx, userID, groupID, nil, 10)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("ListBillsCursor expected ErrForbidden, got %v", err)
+	}
+
+	// 4. RetryOCR
+	_, err = service.RetryOCR(ctx, userID, billID, groupID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("RetryOCR expected ErrForbidden, got %v", err)
+	}
+
+	// 5. ApplyCandidate
+	_, err = service.ApplyCandidate(ctx, userID, billID, groupID, uuid.New(), 1)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("ApplyCandidate expected ErrForbidden, got %v", err)
+	}
+
+	// 6. UpdateDraftBill
+	_, err = service.UpdateDraftBill(ctx, userID, billID, groupID, usecase.UpdateDraftRequest{})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("UpdateDraftBill expected ErrForbidden, got %v", err)
+	}
+
+	// 7. ReviewBill
+	_, err = service.ReviewBill(ctx, userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("ReviewBill expected ErrForbidden, got %v", err)
+	}
+
+	// 8. FinalizeBill
+	_, err = service.FinalizeBill(ctx, userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("FinalizeBill expected ErrForbidden, got %v", err)
+	}
+
+	// 9. VoidBill
+	_, err = service.VoidBill(ctx, userID, billID, groupID, 1, "reason")
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("VoidBill expected ErrForbidden, got %v", err)
+	}
+
+	// 10. DeleteDraftBill
+	err = service.DeleteDraftBill(ctx, userID, billID, groupID)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("DeleteDraftBill expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestApplyCandidate_PropagatesMismatchWarnings(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+	jobID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+		ocrJob: &domain.OCRJob{
+			ID:       jobID,
+			BillID:   billID,
+			Status:   domain.OCRJobStatusSucceeded,
+			Version:  1,
+			Candidate: &domain.OCRCandidate{
+				Subtotal: 100000,
+				Total:    120000,
+				Warnings: []string{domain.WarningTotalMismatch, domain.WarningSubtotalMismatch},
+				Items: []domain.OCRCandidateItem{
+					{Name: "Item 1", LineTotal: 100000, Quantity: "1", UnitPrice: 100000},
+				},
+			},
+		},
+		activeMembers: []*repository.GroupMember{
+			{ID: captainMemberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	updated, err := service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 1)
+	if err != nil {
+		t.Fatalf("ApplyCandidate() error = %v", err)
+	}
+
+	if len(updated.MismatchCodes) != 2 {
+		t.Errorf("expected 2 mismatch codes, got %v", updated.MismatchCodes)
+	}
+}
+
+func TestReviewBill_ExcessiveDiscount_ReturnsBillNotReady(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+			Subtotal:         100000,
+			Discount:         150000, // Discount > Subtotal
+			Total:            0,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: captainMemberID, Weight: "1"},
+					},
+				},
+			},
+		},
+		activeMembers: []*repository.GroupMember{
+			{ID: captainMemberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.ReviewBill(context.Background(), userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrBillNotReady) {
+		t.Errorf("expected ErrBillNotReady for excessive discount, got %v", err)
+	}
+}
+
+func TestFinalizeBill_EnqueuesNotifications(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	otherMemberID := uuid.New()
+	otherUserID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		activeMembers: []*repository.GroupMember{
+			{ID: captainMemberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+			{ID: otherMemberID, GroupID: groupID, UserID: otherUserID, Role: "member", Status: "active"},
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusReviewed,
+			Version:          1,
+			Subtotal:         100000,
+			Total:            100000,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: captainMemberID, Weight: "1"},
+						{MemberID: otherMemberID, Weight: "1"},
+					},
+				},
+			},
+		},
+	}
+
+	enqueuer := &mockEnqueuer{}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	finalized, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1)
+	if err != nil {
+		t.Fatalf("FinalizeBill() error = %v", err)
+	}
+	if finalized == nil {
+		t.Fatal("expected finalized bill, got nil")
 	}
 }
 

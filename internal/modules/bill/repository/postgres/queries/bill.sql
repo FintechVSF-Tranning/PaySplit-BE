@@ -329,10 +329,44 @@ INSERT INTO debts (
 SELECT COUNT(*) FROM debts
 WHERE bill_id = $1 AND status != 'awaiting';
 
+-- name: ListDebtsByBillIDForUpdate :many
+SELECT * FROM debts
+WHERE bill_id = $1
+ORDER BY id ASC
+FOR UPDATE;
+
 -- name: VoidDebtsByBillID :exec
 UPDATE debts
 SET status = 'voided',
     voided_at = now(),
     updated_at = now()
 WHERE bill_id = $1 AND status = 'awaiting';
+
+-- ============================================================================
+-- NOTIFICATIONS & CLEANUP (Transactional inserts during bill lifecycle)
+-- ============================================================================
+
+-- name: CreateNotification :one
+INSERT INTO notifications (
+    id,
+    user_id,
+    type,
+    title,
+    body,
+    payload,
+    created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, now()
+) RETURNING *;
+
+-- name: InsertMediaCleanupJob :exec
+INSERT INTO media_cleanup_jobs (
+    id,
+    provider,
+    object_key,
+    created_at,
+    updated_at
+) VALUES (
+    $1, 'cloudinary', $2, now(), now()
+) ON CONFLICT (provider, object_key) WHERE completed_at IS NULL DO NOTHING;
 

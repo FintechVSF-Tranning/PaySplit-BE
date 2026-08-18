@@ -64,11 +64,22 @@ type ListBillsCursorResult struct {
 	NextCursor *string
 }
 
+// NotificationParam chứa dữ liệu tạo một bản ghi thông báo trong cùng transaction.
+type NotificationParam struct {
+	ID      uuid.UUID
+	UserID  uuid.UUID
+	Type    string
+	Title   string
+	Body    string
+	Payload []byte
+}
+
 // UpdateDraftParams chứa dữ liệu để cập nhật thông tin một hóa đơn nháp (kèm ghi đè danh sách món).
 type UpdateDraftParams struct {
 	Bill            *domain.Bill
 	Items           []*domain.BillItem
 	ExpectedVersion int32
+	ActorMemberID   uuid.UUID
 }
 
 // FinalizeBillParams chứa dữ liệu chốt hóa đơn và lưu snapshot phân bổ nợ Hamilton.
@@ -79,6 +90,8 @@ type FinalizeBillParams struct {
 	Shares          []*domain.BillShare
 	Debts           []*Debt
 	ActorMemberID   uuid.UUID
+	Notifications   []*NotificationParam
+	BeforeCommit    func(ctx context.Context, tx pgx.Tx) error
 }
 
 // VoidBillParams chứa dữ liệu để hủy bỏ một hóa đơn đã finalized.
@@ -88,6 +101,14 @@ type VoidBillParams struct {
 	ExpectedVersion int32
 	ActorMemberID   uuid.UUID
 	Reason          string
+}
+
+// DeleteDraftBillParams chứa tham số để xóa một hóa đơn nháp và dọn dẹp ảnh liên quan trong cùng transaction.
+type DeleteDraftBillParams struct {
+	ID            uuid.UUID
+	GroupID       uuid.UUID
+	ActorMemberID uuid.UUID
+	ImageKeys     []string
 }
 
 // Repository định nghĩa các phương thức thao tác dữ liệu của module Bill & OCR.
@@ -127,8 +148,8 @@ type Repository interface {
 	// VoidBill chuyển trạng thái hóa đơn sang voided và hủy bỏ công nợ debts tương ứng (Spec 3 AC-10).
 	VoidBill(ctx context.Context, params VoidBillParams) (*domain.Bill, error)
 
-	// DeleteDraftBill xóa hoàn toàn một hóa đơn nháp và các dữ liệu liên quan.
-	DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error
+	// DeleteDraftBill xóa hoàn toàn một hóa đơn nháp và các dữ liệu liên quan trong 1 transaction.
+	DeleteDraftBill(ctx context.Context, params DeleteDraftBillParams) error
 
 	// OCR Jobs
 	CreateOCRJob(ctx context.Context, job *domain.OCRJob) (*domain.OCRJob, error)

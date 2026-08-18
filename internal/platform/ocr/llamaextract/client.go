@@ -300,7 +300,7 @@ func (c *Client) pollExtractionResult(ctx context.Context, jobID string) ([]byte
 				if errMsg == "" {
 					errMsg = "unknown extraction error"
 				}
-				return nil, fmt.Errorf("%w: %s", domain.ErrOcrSchemaInvalid, errMsg)
+				return nil, fmt.Errorf("%w: %s", domain.ErrOcrProviderUnavailable, errMsg)
 			case "PENDING", "PROCESSING", "RUNNING", "QUEUED":
 				// Tiếp tục chờ lần ticker tiếp theo
 				continue

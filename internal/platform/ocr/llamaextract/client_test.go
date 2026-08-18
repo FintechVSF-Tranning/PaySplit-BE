@@ -147,8 +147,8 @@ func TestClient_JobFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failed extraction job")
 	}
-	if !errors.Is(err, domain.ErrOcrSchemaInvalid) {
-		t.Errorf("expected ErrOcrSchemaInvalid, got %v", err)
+	if !errors.Is(err, domain.ErrOcrProviderUnavailable) {
+		t.Errorf("expected ErrOcrProviderUnavailable, got %v", err)
 	}
 }
 
