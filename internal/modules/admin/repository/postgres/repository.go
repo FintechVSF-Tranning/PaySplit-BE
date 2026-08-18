@@ -20,6 +20,19 @@ import (
 
 var processStartTime = time.Now()
 
+// auditActionForStatus ánh xạ trạng thái tài khoản mới (users.status) sang giá trị enum
+// admin_action ('suspend','lock','reactivate') dùng cho admin_audit_logs.action.
+func auditActionForStatus(status string) string {
+	switch status {
+	case "suspended":
+		return "suspend"
+	case "locked":
+		return "lock"
+	default:
+		return "reactivate"
+	}
+}
+
 type postgresRepository struct {
 	pool *pgxpool.Pool
 }
@@ -235,6 +248,13 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		return nil, nil, fmt.Errorf("get target account: %w", err)
 	}
 
+	// Self/admin protection and the pending_verification guard are checked here, inside the same
+	// transaction as the read that fetched targetUser, deliberately: checking in the usecase first
+	// would read the target's role/status outside this transaction, leaving a TOCTOU window where
+	// another admin request could change it before this one commits. Keeping the check and the
+	// write in one transaction closes that window; see docs/reviews/2026-08-18-namplh-admin-module.md
+	// for the trade-off discussion (usecase-level tests cover the pass-through of these errors).
+
 	// Tự bảo vệ: admin không được tự thay đổi trạng thái của chính mình
 	if targetUID == adminUID {
 		return nil, nil, domain.ErrCannotModifySelf
@@ -276,11 +296,12 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		}
 	}
 
-	// Ghi log kiểm toán admin_audit_logs
+	// Ghi log kiểm toán admin_audit_logs. Cột action dùng enum admin_action ('suspend','lock',
+	// 'reactivate'), khác với users.status ('suspended','locked','active'), nên cần ánh xạ.
 	if _, err := q.CreateAdminAuditLog(ctx, dbgen.CreateAdminAuditLogParams{
 		AdminID:      toPgUUID(adminUID),
 		TargetUserID: toPgUUID(targetUID),
-		Action:       input.NewStatus,
+		Action:       auditActionForStatus(input.NewStatus),
 		Reason:       input.Reason,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("create admin audit log: %w", err)

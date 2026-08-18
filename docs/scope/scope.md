@@ -122,10 +122,10 @@ Provide account search, filtering, and pagination, account detail inspection wit
   - [x] Admin HTTP delivery handlers, DTO validation, and route registration with liveAuth (satisfies AC-1, AC-2, AC-3, AC-4, AC-5, AC-7)
   - [x] Health liveness/readiness probes and Prometheus metrics exporter integration (satisfies AC-6, AC-7, AC-8)
   - [x] Operational verification, integration test coverage, and documentation (satisfies AC-1 through AC-8)
-- [ ] Verify it: `/check verify admin v1`
-- [ ] Test it: `/test admin v1`
-- [ ] Review it (fresh model): `/check review admin v1`
-- [ ] Document it: `/document admin v1`
+- [x] Verify it: `/check verify admin v1`
+- [x] Test it: `/test admin v1`
+- [x] Review it (fresh model): `/check review admin v1`
+- [x] Document it: `/document admin v1`
 
 Spec [0005](../specs/0005-admin-v1/index.md) · code in `internal/modules/admin/`, `internal/platform/metrics/`, `internal/transport/http/router/`, and `internal/bootstrap/`
 

@@ -205,6 +205,29 @@ func TestUpdateAccountStatus_Validation(t *testing.T) {
 		}
 	})
 
+	t.Run("defaults a reason when reactivating with none, admin_audit_logs.reason is NOT NULL and non-empty", func(t *testing.T) {
+		var capturedReason string
+		mockRepo := &mockRepository{
+			updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+				capturedReason = input.Reason
+				return &domain.SafeUser{ID: input.TargetUserID, Status: input.NewStatus}, &domain.WarningMeta{}, nil
+			},
+		}
+		s := NewService(mockRepo)
+		_, _, err := s.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
+			TargetUserID: targetID,
+			AdminID:      adminID,
+			Status:       "active",
+			Reason:       "",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if capturedReason == "" {
+			t.Error("expected a non-empty default reason to be passed to the repository")
+		}
+	})
+
 	t.Run("passes through successful update", func(t *testing.T) {
 		mockRepo := &mockRepository{
 			updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
@@ -229,6 +252,42 @@ func TestUpdateAccountStatus_Validation(t *testing.T) {
 		}
 		if warning.UnsettledDebtsCount != 2 {
 			t.Errorf("expected 2 unsettled debts, got %d", warning.UnsettledDebtsCount)
+		}
+	})
+
+	t.Run("propagates self/admin protection and status transition errors from the repository", func(t *testing.T) {
+		// Self protection, admin protection, and the pending_verification transition guard are
+		// enforced inside the repository's transaction (see the comment on
+		// UpdateAccountStatusWithRevocation for why: it avoids a TOCTOU window between reading the
+		// target's role/status and writing the new one). This test locks in that the usecase still
+		// surfaces those sentinel errors unchanged, so a default `go test ./...` run has coverage on
+		// this path without needing TEST_DATABASE_URL (covers AC-3).
+		cases := []struct {
+			name    string
+			repoErr error
+		}{
+			{"self modification", domain.ErrCannotModifySelf},
+			{"admin modifying admin", domain.ErrCannotModifyAdmin},
+			{"pending_verification transition", domain.ErrInvalidStatusTransition},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				mockRepo := &mockRepository{
+					updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+						return nil, nil, tc.repoErr
+					},
+				}
+				s := NewService(mockRepo)
+				_, _, err := s.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
+					TargetUserID: targetID,
+					AdminID:      adminID,
+					Status:       "suspended",
+					Reason:       "test",
+				})
+				if !errors.Is(err, tc.repoErr) {
+					t.Errorf("expected %v, got %v", tc.repoErr, err)
+				}
+			})
 		}
 	})
 }

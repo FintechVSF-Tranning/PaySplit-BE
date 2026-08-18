@@ -158,6 +158,11 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, input UpdateAccountSt
 	if (status == "suspended" || status == "locked") && reason == "" {
 		return nil, nil, domain.ErrReasonRequired
 	}
+	// admin_audit_logs.reason is NOT NULL and CHECK (reason <> ''): every audit entry needs a
+	// reason even though AC-3 only requires the caller to supply one for suspend/lock.
+	if reason == "" {
+		reason = "Reactivated by admin"
+	}
 
 	return s.repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: input.TargetUserID,

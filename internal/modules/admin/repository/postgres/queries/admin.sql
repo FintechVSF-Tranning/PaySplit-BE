@@ -160,7 +160,7 @@ SELECT
 FROM debts;
 
 -- name: GetSystemMediaCleanupOverview :one
-SELECT count(*)::bigint AS pending_cleanup_jobs FROM media_cleanup_jobs;
+SELECT count(*)::bigint AS pending_cleanup_jobs FROM media_cleanup_jobs WHERE completed_at IS NULL;
 
 -- name: GetSystemOCRJobsOverview :one
 SELECT

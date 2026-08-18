@@ -244,7 +244,7 @@ func (q *Queries) GetSystemGroupsOverview(ctx context.Context) (int64, error) {
 }
 
 const getSystemMediaCleanupOverview = `-- name: GetSystemMediaCleanupOverview :one
-SELECT count(*)::bigint AS pending_cleanup_jobs FROM media_cleanup_jobs
+SELECT count(*)::bigint AS pending_cleanup_jobs FROM media_cleanup_jobs WHERE completed_at IS NULL
 `
 
 func (q *Queries) GetSystemMediaCleanupOverview(ctx context.Context) (int64, error) {
