@@ -102,14 +102,20 @@ type BillItemAssignment struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// BillShare là snapshot số tiền nợ cuối cùng của thành viên sau khi Hamilton allocation (Spec 3 AC-9).
+// BillShare là snapshot số tiền nợ chi tiết của thành viên sau khi Hamilton allocation (Spec 3 AC-9).
 type BillShare struct {
-	ID             uuid.UUID `json:"id"`
-	BillID         uuid.UUID `json:"bill_id"`
-	GroupID        uuid.UUID `json:"group_id"`
-	MemberID       uuid.UUID `json:"member_id"`
-	ComputedAmount int64     `json:"computed_amount"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                 uuid.UUID `json:"id"`
+	BillID             uuid.UUID `json:"bill_id"`
+	GroupID            uuid.UUID `json:"group_id"`
+	MemberID           uuid.UUID `json:"member_id"`
+	ItemSubtotal       int64     `json:"item_subtotal"`
+	ServiceChargeShare int64     `json:"service_charge_share"`
+	VATShare           int64     `json:"vat_share"`
+	DiscountShare      int64     `json:"discount_share"`
+	RoundingAdjustment int64     `json:"rounding_adjustment"`
+	FinalAmount        int64     `json:"final_amount"`
+	ComputedAmount     int64     `json:"computed_amount,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
 }
 
 // OCRJob theo dõi trạng thái tiến trình bóc tách ảnh bằng AI (Spec 3 AC-2).

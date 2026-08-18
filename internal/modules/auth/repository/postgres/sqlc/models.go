@@ -83,12 +83,17 @@ type BillItemAssignment struct {
 }
 
 type BillShare struct {
-	ID             pgtype.UUID        `json:"id"`
-	BillID         pgtype.UUID        `json:"bill_id"`
-	GroupID        pgtype.UUID        `json:"group_id"`
-	MemberID       pgtype.UUID        `json:"member_id"`
-	ComputedAmount int64              `json:"computed_amount"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	BillID             pgtype.UUID        `json:"bill_id"`
+	GroupID            pgtype.UUID        `json:"group_id"`
+	MemberID           pgtype.UUID        `json:"member_id"`
+	ItemSubtotal       int64              `json:"item_subtotal"`
+	ServiceChargeShare int64              `json:"service_charge_share"`
+	VatShare           int64              `json:"vat_share"`
+	DiscountShare      int64              `json:"discount_share"`
+	RoundingAdjustment int64              `json:"rounding_adjustment"`
+	FinalAmount        int64              `json:"final_amount"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type Debt struct {

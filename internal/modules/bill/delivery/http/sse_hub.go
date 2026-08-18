@@ -85,7 +85,9 @@ func (h *Hub) Publish(event Event) {
 	}
 }
 
-// Broadcast phát sự kiện đến các client cục bộ và bắn PostgreSQL NOTIFY cho các instance khác.
+// Broadcast phát sự kiện đến các client kết nối qua SSE.
+// Khi có PostgreSQL connection pool, sự kiện được phát qua PostgreSQL NOTIFY để tất cả
+// các instance (bao gồm cả instance hiện tại thông qua listener) nhận và gửi đến client đúng 1 lần.
 func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 	event := Event{
 		Type:   eventType,
@@ -93,10 +95,6 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 		Data:   data,
 	}
 
-	// 1. Phát trực tiếp cho các client đang mở kết nối trên pod/instance này
-	h.Publish(event)
-
-	// 2. Phát qua PostgreSQL NOTIFY nếu có pool kết nối (hỗ trợ multi-instance scaling)
 	if h.pool != nil {
 		go func() {
 			ctx := context.Background()
@@ -106,6 +104,9 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 			}
 			_, _ = h.pool.Exec(ctx, "SELECT pg_notify('bill_events', $1)", string(payloadBytes))
 		}()
+	} else {
+		// Fallback cho môi trường không có PostgreSQL connection pool (ví dụ unit test)
+		h.Publish(event)
 	}
 }
 

@@ -279,19 +279,29 @@ INSERT INTO bill_shares (
     bill_id,
     group_id,
     member_id,
-    computed_amount,
+    item_subtotal,
+    service_charge_share,
+    vat_share,
+    discount_share,
+    rounding_adjustment,
+    final_amount,
     created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, now()
-) RETURNING id, bill_id, group_id, member_id, computed_amount, created_at
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()
+) RETURNING id, bill_id, group_id, member_id, item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount, created_at
 `
 
 type CreateBillShareParams struct {
-	ID             pgtype.UUID `json:"id"`
-	BillID         pgtype.UUID `json:"bill_id"`
-	GroupID        pgtype.UUID `json:"group_id"`
-	MemberID       pgtype.UUID `json:"member_id"`
-	ComputedAmount int64       `json:"computed_amount"`
+	ID                 pgtype.UUID `json:"id"`
+	BillID             pgtype.UUID `json:"bill_id"`
+	GroupID            pgtype.UUID `json:"group_id"`
+	MemberID           pgtype.UUID `json:"member_id"`
+	ItemSubtotal       int64       `json:"item_subtotal"`
+	ServiceChargeShare int64       `json:"service_charge_share"`
+	VatShare           int64       `json:"vat_share"`
+	DiscountShare      int64       `json:"discount_share"`
+	RoundingAdjustment int64       `json:"rounding_adjustment"`
+	FinalAmount        int64       `json:"final_amount"`
 }
 
 // ============================================================================
@@ -303,7 +313,12 @@ func (q *Queries) CreateBillShare(ctx context.Context, arg CreateBillShareParams
 		arg.BillID,
 		arg.GroupID,
 		arg.MemberID,
-		arg.ComputedAmount,
+		arg.ItemSubtotal,
+		arg.ServiceChargeShare,
+		arg.VatShare,
+		arg.DiscountShare,
+		arg.RoundingAdjustment,
+		arg.FinalAmount,
 	)
 	var i BillShare
 	err := row.Scan(
@@ -311,7 +326,12 @@ func (q *Queries) CreateBillShare(ctx context.Context, arg CreateBillShareParams
 		&i.BillID,
 		&i.GroupID,
 		&i.MemberID,
-		&i.ComputedAmount,
+		&i.ItemSubtotal,
+		&i.ServiceChargeShare,
+		&i.VatShare,
+		&i.DiscountShare,
+		&i.RoundingAdjustment,
+		&i.FinalAmount,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -786,6 +806,51 @@ func (q *Queries) GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, er
 	return i, err
 }
 
+const insertGroupActivity = `-- name: InsertGroupActivity :one
+INSERT INTO group_activities (
+    id,
+    group_id,
+    actor_member_id,
+    action_type,
+    description,
+    metadata,
+    created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, now()
+) RETURNING id, group_id, actor_member_id, action_type, description, metadata, created_at
+`
+
+type InsertGroupActivityParams struct {
+	ID            pgtype.UUID `json:"id"`
+	GroupID       pgtype.UUID `json:"group_id"`
+	ActorMemberID pgtype.UUID `json:"actor_member_id"`
+	ActionType    interface{} `json:"action_type"`
+	Description   string      `json:"description"`
+	Metadata      []byte      `json:"metadata"`
+}
+
+func (q *Queries) InsertGroupActivity(ctx context.Context, arg InsertGroupActivityParams) (GroupActivity, error) {
+	row := q.db.QueryRow(ctx, insertGroupActivity,
+		arg.ID,
+		arg.GroupID,
+		arg.ActorMemberID,
+		arg.ActionType,
+		arg.Description,
+		arg.Metadata,
+	)
+	var i GroupActivity
+	err := row.Scan(
+		&i.ID,
+		&i.GroupID,
+		&i.ActorMemberID,
+		&i.ActionType,
+		&i.Description,
+		&i.Metadata,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listActiveGroupMembers = `-- name: ListActiveGroupMembers :many
 SELECT id, group_id, user_id, role, status, joined_at, left_at
 FROM group_members
@@ -957,7 +1022,7 @@ func (q *Queries) ListBillItems(ctx context.Context, billID pgtype.UUID) ([]Bill
 }
 
 const listBillShares = `-- name: ListBillShares :many
-SELECT id, bill_id, group_id, member_id, computed_amount, created_at FROM bill_shares
+SELECT id, bill_id, group_id, member_id, item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount, created_at FROM bill_shares
 WHERE bill_id = $1
 `
 
@@ -975,7 +1040,12 @@ func (q *Queries) ListBillShares(ctx context.Context, billID pgtype.UUID) ([]Bil
 			&i.BillID,
 			&i.GroupID,
 			&i.MemberID,
-			&i.ComputedAmount,
+			&i.ItemSubtotal,
+			&i.ServiceChargeShare,
+			&i.VatShare,
+			&i.DiscountShare,
+			&i.RoundingAdjustment,
+			&i.FinalAmount,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

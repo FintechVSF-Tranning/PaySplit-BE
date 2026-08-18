@@ -194,6 +194,28 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		}
 	}
 
+	// Ghi nhận hoạt động tạo hóa đơn vào group_activities (Spec 3 AC-1)
+	var billName string
+	if p.Bill.MerchantName != nil && *p.Bill.MerchantName != "" {
+		billName = *p.Bill.MerchantName
+	} else {
+		billName = "Mới"
+	}
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id":     p.Bill.ID.String(),
+		"manual":      len(p.Images) == 0,
+		"image_count": len(p.Images),
+	})
+	desc := fmt.Sprintf("created bill draft %q", billName)
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: p.Bill.CreditorMemberID, Valid: true},
+		ActionType:    "created_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit create bill tx: %w", err)
 	}
@@ -634,11 +656,16 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 	createdShares := make([]*domain.BillShare, 0, len(p.Shares))
 	for _, share := range p.Shares {
 		dbShare, err := q.CreateBillShare(ctx, sqlc.CreateBillShareParams{
-			ID:             pgtype.UUID{Bytes: share.ID, Valid: true},
-			BillID:         pgtype.UUID{Bytes: p.BillID, Valid: true},
-			GroupID:        pgtype.UUID{Bytes: p.GroupID, Valid: true},
-			MemberID:       pgtype.UUID{Bytes: share.MemberID, Valid: true},
-			ComputedAmount: share.ComputedAmount,
+			ID:                 pgtype.UUID{Bytes: share.ID, Valid: true},
+			BillID:             pgtype.UUID{Bytes: p.BillID, Valid: true},
+			GroupID:            pgtype.UUID{Bytes: p.GroupID, Valid: true},
+			MemberID:           pgtype.UUID{Bytes: share.MemberID, Valid: true},
+			ItemSubtotal:       share.ItemSubtotal,
+			ServiceChargeShare: share.ServiceChargeShare,
+			VatShare:           share.VATShare,
+			DiscountShare:      share.DiscountShare,
+			RoundingAdjustment: share.RoundingAdjustment,
+			FinalAmount:        share.FinalAmount,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create bill share: %w", err)
@@ -663,6 +690,23 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 			return nil, fmt.Errorf("create debt for member %s: %w", debt.DebtorMemberID, err)
 		}
 	}
+
+	// 4. Ghi nhận hoạt động chốt hóa đơn vào group_activities (Spec 3 AC-9)
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id":           p.BillID.String(),
+		"total":             dbBill.Total,
+		"participant_count": len(p.Shares),
+		"debt_count":        len(p.Debts),
+	})
+	desc := fmt.Sprintf("finalized bill (total %d VND)", dbBill.Total)
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: p.ActorMemberID, Valid: true},
+		ActionType:    "finalized_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit finalize bill tx: %w", err)
@@ -709,6 +753,21 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		return nil, fmt.Errorf("void debts: %w", err)
 	}
 
+	// Ghi nhận hoạt động hủy hóa đơn vào group_activities (Spec 3 AC-11)
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id": p.BillID.String(),
+		"reason":  p.Reason,
+	})
+	desc := fmt.Sprintf("voided bill: %s", p.Reason)
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
+		ActorMemberID: pgtype.UUID{Bytes: p.ActorMemberID, Valid: true},
+		ActionType:    "voided_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit void bill tx: %w", err)
 	}
@@ -718,7 +777,22 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 
 // DeleteDraftBill xóa hoàn toàn một hóa đơn nháp và các dữ liệu liên quan.
 func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uuid.UUID) error {
-	q := sqlc.New(r.pool)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete draft bill tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := sqlc.New(tx)
+
+	// Lấy thông tin bill trước khi xóa để lấy creditor
+	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrBillNotFound
+		}
+		return fmt.Errorf("get bill for delete: %w", err)
+	}
 
 	rowsAffected, err := q.DeleteDraftBill(ctx, sqlc.DeleteDraftBillParams{
 		ID:      pgtype.UUID{Bytes: id, Valid: true},
@@ -730,7 +804,21 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, id, groupID uu
 	if rowsAffected == 0 {
 		return domain.ErrBillNotFound
 	}
-	return nil
+
+	metaBytes, _ := json.Marshal(map[string]any{
+		"bill_id": id.String(),
+	})
+	desc := fmt.Sprintf("deleted draft bill %s", id.String())
+	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+		GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
+		ActorMemberID: billRow.CreditorMemberID,
+		ActionType:    "deleted_bill",
+		Description:   desc,
+		Metadata:      metaBytes,
+	})
+
+	return tx.Commit(ctx)
 }
 
 // ============================================================================
@@ -1039,12 +1127,18 @@ func toDomainBillShare(s *sqlc.BillShare) *domain.BillShare {
 		return nil
 	}
 	return &domain.BillShare{
-		ID:             uuid.UUID(s.ID.Bytes),
-		BillID:         uuid.UUID(s.BillID.Bytes),
-		GroupID:        uuid.UUID(s.GroupID.Bytes),
-		MemberID:       uuid.UUID(s.MemberID.Bytes),
-		ComputedAmount: s.ComputedAmount,
-		CreatedAt:      s.CreatedAt.Time,
+		ID:                 uuid.UUID(s.ID.Bytes),
+		BillID:             uuid.UUID(s.BillID.Bytes),
+		GroupID:            uuid.UUID(s.GroupID.Bytes),
+		MemberID:           uuid.UUID(s.MemberID.Bytes),
+		ItemSubtotal:       s.ItemSubtotal,
+		ServiceChargeShare: s.ServiceChargeShare,
+		VATShare:           s.VatShare,
+		DiscountShare:      s.DiscountShare,
+		RoundingAdjustment: s.RoundingAdjustment,
+		FinalAmount:        s.FinalAmount,
+		ComputedAmount:     s.FinalAmount,
+		CreatedAt:          s.CreatedAt.Time,
 	}
 }
 

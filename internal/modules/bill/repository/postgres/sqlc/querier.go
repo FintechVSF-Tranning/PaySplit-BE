@@ -46,6 +46,7 @@ type Querier interface {
 	GetGroupMemberUser(ctx context.Context, arg GetGroupMemberUserParams) (GetGroupMemberUserRow, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, error)
+	InsertGroupActivity(ctx context.Context, arg InsertGroupActivityParams) (GroupActivity, error)
 	ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error)
 	ListBillImages(ctx context.Context, billID pgtype.UUID) ([]BillImage, error)
 	ListBillItemAssignmentsByBill(ctx context.Context, billID pgtype.UUID) ([]BillItemAssignment, error)

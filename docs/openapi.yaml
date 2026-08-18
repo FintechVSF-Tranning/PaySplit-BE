@@ -522,6 +522,421 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/bills:
+    post:
+      summary: Create a manual or image-based bill draft
+      operationId: createBill
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [group_id]
+              properties:
+                group_id: {type: string, format: uuid}
+                merchant_name: {type: string}
+                images:
+                  type: array
+                  items: {type: string, format: binary}
+                  maxItems: 5
+                metadata: {type: string, description: "JSON encoded CreateBillRequest"}
+          application/json:
+            schema:
+              type: object
+              required: [group_id, total]
+              properties:
+                group_id: {type: string, format: uuid}
+                merchant_name: {type: string}
+                bill_date: {type: string, format: date-time}
+                subtotal: {type: integer, format: int64}
+                service_charge: {type: integer, format: int64}
+                vat: {type: integer, format: int64}
+                discount: {type: integer, format: int64}
+                total: {type: integer, format: int64}
+                split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
+                replaces_bill_id: {type: string, format: uuid}
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, line_total]
+                    properties:
+                      name: {type: string}
+                      quantity: {type: string}
+                      unit_price: {type: integer, format: int64}
+                      line_total: {type: integer, format: int64}
+                      assignments:
+                        type: array
+                        items:
+                          type: object
+                          required: [member_id]
+                          properties:
+                            member_id: {type: string, format: uuid}
+                            weight: {type: string}
+      responses:
+        "201":
+          description: Manual bill created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+                  is_accepted: {type: boolean}
+        "202":
+          description: Image bill created and OCR job queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+                  ocr_job: {$ref: "#/components/schemas/OCRJob"}
+                  is_accepted: {type: boolean}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+    get:
+      summary: List bills in a group with cursor pagination
+      operationId: listBills
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+        - name: limit
+          in: query
+          schema: {type: integer, default: 20}
+        - name: cursor
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: List of bills
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bills:
+                    type: array
+                    items: {$ref: "#/components/schemas/Bill"}
+                  next_cursor: {type: string}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /api/v1/bills/{id}:
+    get:
+      summary: Get bill detail with breakdown and image URLs
+      operationId: getBillDetail
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Bill detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+                  breakdown:
+                    type: array
+                    items: {$ref: "#/components/schemas/MemberAllocation"}
+                  signed_urls:
+                    type: object
+                    additionalProperties: {type: string}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    put:
+      summary: Update draft bill fields, items, and assignments
+      operationId: updateDraftBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, total]
+              properties:
+                version: {type: integer}
+                merchant_name: {type: string}
+                bill_date: {type: string, format: date-time}
+                subtotal: {type: integer, format: int64}
+                service_charge: {type: integer, format: int64}
+                vat: {type: integer, format: int64}
+                discount: {type: integer, format: int64}
+                total: {type: integer, format: int64}
+                split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, line_total]
+                    properties:
+                      name: {type: string}
+                      quantity: {type: string}
+                      unit_price: {type: integer, format: int64}
+                      line_total: {type: integer, format: int64}
+                      assignments:
+                        type: array
+                        items:
+                          type: object
+                          required: [member_id]
+                          properties:
+                            member_id: {type: string, format: uuid}
+                            weight: {type: string}
+      responses:
+        "200":
+          description: Updated bill
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Version conflict or bill immutable"}
+    delete:
+      summary: Delete an editable draft bill
+      operationId: deleteDraftBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: "Draft bill deleted"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/bills/{id}/events:
+    get:
+      summary: Stream bill events via Server-Sent Events (SSE)
+      operationId: streamBillEvents
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/bills/{id}/ocr-retry:
+    post:
+      summary: Retry OCR extraction for bill images
+      operationId: retryOCR
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "202":
+          description: OCR retry queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ocr_job: {$ref: "#/components/schemas/OCRJob"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "OCR job already running"}
+        "429": {description: "Manual OCR limit reached"}
+
+  /api/v1/bills/{id}/apply-candidate:
+    post:
+      summary: Apply OCR candidate to draft bill
+      operationId: applyCandidate
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [job_id, version]
+              properties:
+                job_id: {type: string, format: uuid}
+                version: {type: integer}
+      responses:
+        "200":
+          description: Draft updated with OCR candidate
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Version conflict or OCR stale"}
+
+  /api/v1/bills/{id}/review:
+    post:
+      summary: Mark a reconciled draft bill as reviewed
+      operationId: reviewBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: {type: integer}
+      responses:
+        "200":
+          description: Bill reviewed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Version conflict"}
+        "422": {description: "Bill not ready for review"}
+
+  /api/v1/bills/{id}/finalize:
+    post:
+      summary: Finalize a reviewed bill into immutable shares and debts
+      operationId: finalizeBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: {type: integer}
+      responses:
+        "200":
+          description: Bill finalized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Version conflict or review required"}
+        "422": {description: "Bank account required or bill not ready"}
+
+  /api/v1/bills/{id}/void:
+    post:
+      summary: Void an unpaid finalized bill
+      operationId: voidBill
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, reason]
+              properties:
+                version: {type: integer}
+                reason: {type: string, minLength: 1, maxLength: 500}
+      responses:
+        "200":
+          description: Bill voided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bill: {$ref: "#/components/schemas/Bill"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: "Bill already voided or payment already started"}
+
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -877,3 +1292,113 @@ components:
       properties:
         activities: {type: array, items: {$ref: "#/components/schemas/Activity"}}
         next_cursor: {type: string, nullable: true}
+
+    Bill:
+      type: object
+      required: [id, group_id, creditor_member_id, status, subtotal, service_charge, vat, discount, total, version]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        creditor_member_id: {type: string, format: uuid}
+        status: {type: string, enum: [draft, reviewed, finalized, voided]}
+        merchant_name: {type: string, nullable: true}
+        bill_date: {type: string, format: date-time, nullable: true}
+        subtotal: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        vat: {type: integer, format: int64}
+        discount: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+        split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
+        mismatch_codes: {type: array, items: {type: string}}
+        replaces_bill_id: {type: string, format: uuid, nullable: true}
+        version: {type: integer}
+        finalized_at: {type: string, format: date-time, nullable: true}
+        voided_at: {type: string, format: date-time, nullable: true}
+        reviewed_at: {type: string, format: date-time, nullable: true}
+        reviewed_by_member_id: {type: string, format: uuid, nullable: true}
+        images: {type: array, items: {$ref: "#/components/schemas/BillImage"}}
+        items: {type: array, items: {$ref: "#/components/schemas/BillItem"}}
+        shares: {type: array, items: {$ref: "#/components/schemas/BillShare"}}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    BillImage:
+      type: object
+      required: [id, bill_id, image_key, position]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        image_key: {type: string}
+        position: {type: integer}
+        created_at: {type: string, format: date-time}
+
+    BillItem:
+      type: object
+      required: [id, bill_id, name, quantity, unit_price, line_total, position]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        name: {type: string}
+        quantity: {type: string}
+        unit_price: {type: integer, format: int64}
+        line_total: {type: integer, format: int64}
+        position: {type: integer}
+        assignments: {type: array, items: {$ref: "#/components/schemas/BillItemAssignment"}}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    BillItemAssignment:
+      type: object
+      required: [id, bill_item_id, member_id, weight]
+      properties:
+        id: {type: string, format: uuid}
+        bill_item_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        member_id: {type: string, format: uuid}
+        weight: {type: string}
+        created_at: {type: string, format: date-time}
+
+    BillShare:
+      type: object
+      required: [id, bill_id, member_id, final_amount]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        member_id: {type: string, format: uuid}
+        item_subtotal: {type: integer, format: int64}
+        service_charge_share: {type: integer, format: int64}
+        vat_share: {type: integer, format: int64}
+        discount_share: {type: integer, format: int64}
+        rounding_adjustment: {type: integer, format: int64}
+        final_amount: {type: integer, format: int64}
+        created_at: {type: string, format: date-time}
+
+    MemberAllocation:
+      type: object
+      required: [member_id, item_subtotal, service_charge_share, vat_share, discount_share, final_amount]
+      properties:
+        member_id: {type: string, format: uuid}
+        item_subtotal: {type: integer, format: int64}
+        service_charge_share: {type: integer, format: int64}
+        vat_share: {type: integer, format: int64}
+        discount_share: {type: integer, format: int64}
+        final_amount: {type: integer, format: int64}
+
+    OCRJob:
+      type: object
+      required: [id, bill_id, status, provider, attempts, version]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        status: {type: string, enum: [queued, processing, succeeded, failed]}
+        provider: {type: string}
+        attempts: {type: integer}
+        candidate: {type: object}
+        error_message: {type: string, nullable: true}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time, nullable: true}

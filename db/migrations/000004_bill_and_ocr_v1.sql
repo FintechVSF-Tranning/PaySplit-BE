@@ -4,9 +4,11 @@
 -- ---------------------------------------------------------------------------
 -- +goose StatementBegin
 
--- 1. Bổ sung các giá trị 'reviewed', 'voided' vào enum bill_status
+-- 1. Bổ sung các giá trị 'reviewed', 'voided' vào enum bill_status và 'voided_bill', 'reviewed_bill' vào activity_type
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'reviewed' BEFORE 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'voided' AFTER 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'voided_bill'; EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'reviewed_bill'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 
 -- 2. Cập nhật bảng bills: Bổ sung replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id
 ALTER TABLE bills 
@@ -63,13 +65,18 @@ ALTER TABLE bill_item_assignments ADD COLUMN IF NOT EXISTS weight NUMERIC(10,4) 
 
 -- 5. Tạo bảng bill_shares: Snapshot phân bổ nợ chi tiết của từng thành viên sau khi Finalize (Spec 3 AC-9)
 CREATE TABLE IF NOT EXISTS bill_shares (
-    id              UUID PRIMARY KEY DEFAULT uuidv7(),
-    bill_id         UUID NOT NULL,
-    group_id        UUID NOT NULL,
-    member_id       UUID NOT NULL,
-    computed_amount BIGINT NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (computed_amount >= 0),
+    id                   UUID PRIMARY KEY DEFAULT uuidv7(),
+    bill_id              UUID NOT NULL,
+    group_id             UUID NOT NULL,
+    member_id            UUID NOT NULL,
+    item_subtotal        BIGINT NOT NULL DEFAULT 0,
+    service_charge_share BIGINT NOT NULL DEFAULT 0,
+    vat_share            BIGINT NOT NULL DEFAULT 0,
+    discount_share       BIGINT NOT NULL DEFAULT 0,
+    rounding_adjustment  BIGINT NOT NULL DEFAULT 0,
+    final_amount         BIGINT NOT NULL DEFAULT 0,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (final_amount >= 0),
     UNIQUE (bill_id, member_id),
     FOREIGN KEY (bill_id, group_id) REFERENCES bills(id, group_id) ON DELETE CASCADE,
     FOREIGN KEY (member_id, group_id) REFERENCES group_members(id, group_id)

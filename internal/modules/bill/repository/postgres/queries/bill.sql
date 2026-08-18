@@ -192,10 +192,15 @@ INSERT INTO bill_shares (
     bill_id,
     group_id,
     member_id,
-    computed_amount,
+    item_subtotal,
+    service_charge_share,
+    vat_share,
+    discount_share,
+    rounding_adjustment,
+    final_amount,
     created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, now()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()
 ) RETURNING *;
 
 -- name: ListBillShares :many
@@ -205,6 +210,19 @@ WHERE bill_id = $1;
 -- name: DeleteBillShares :exec
 DELETE FROM bill_shares
 WHERE bill_id = $1;
+
+-- name: InsertGroupActivity :one
+INSERT INTO group_activities (
+    id,
+    group_id,
+    actor_member_id,
+    action_type,
+    description,
+    metadata,
+    created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, now()
+) RETURNING *;
 
 -- ============================================================================
 -- OCR JOBS

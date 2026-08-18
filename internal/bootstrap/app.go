@@ -186,6 +186,8 @@ func New(ctx context.Context) (*App, error) {
 	}
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); cleanupWorkers.Run(workerCtx) }()
+	app.workers.Add(1)
+	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
 	return app, nil
 }
 

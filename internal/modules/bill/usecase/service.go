@@ -691,17 +691,23 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	debts := make([]*repository.Debt, 0, len(allocations))
 
 	for _, a := range allocations {
-		// Đảm bảo FinalAmount không âm (m-1)
 		amount := a.FinalAmount
 		if amount < 0 {
 			amount = 0
 		}
+		roundingAdj := a.FinalAmount - (a.ItemSubtotal + a.ServiceChargeShare + a.VATShare - a.DiscountShare)
 		shares = append(shares, &domain.BillShare{
-			ID:             uuid.Must(uuid.NewV7()),
-			BillID:         billID,
-			GroupID:        groupID,
-			MemberID:       a.MemberID,
-			ComputedAmount: amount,
+			ID:                 uuid.Must(uuid.NewV7()),
+			BillID:             billID,
+			GroupID:            groupID,
+			MemberID:           a.MemberID,
+			ItemSubtotal:       a.ItemSubtotal,
+			ServiceChargeShare: a.ServiceChargeShare,
+			VATShare:           a.VATShare,
+			DiscountShare:      a.DiscountShare,
+			RoundingAdjustment: roundingAdj,
+			FinalAmount:        amount,
+			ComputedAmount:     amount,
 		})
 
 		// Nếu không phải Creditor và có số tiền nợ > 0 -> tạo debt
