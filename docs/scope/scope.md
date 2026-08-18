@@ -33,10 +33,10 @@ Provide registration, email verification, email password sign in, one active dev
   - [x] Email verification, password recovery, password change, and persisted rate limits (AC-2 through AC-4, AC-10, AC-11, AC-16, AC-17)
   - [x] Profile, bank snapshot, avatar conversion, Cloudinary storage, and durable cleanup (AC-12 through AC-15, AC-17)
   - [x] Cleanup workers, integration coverage, OpenAPI, environment guide, and module documentation (AC-15 through AC-19)
-- [ ] Verify it: `/check verify auth and account v1`
-- [ ] Test it: `/test auth and account v1`
-- [ ] Review it (fresh model): `/check review auth and account v1`
-- [ ] Document it: `/document auth and account v1`
+- [x] Verify it: `/check verify auth and account v1`
+- [x] Test it: `/test auth and account v1`
+- [x] Review it (fresh model): `/check review auth and account v1`
+- [x] Document it: `/document auth and account v1`
 
 Spec [0001](../specs/0001-auth-account-v1/index.md) · code in `internal/modules/auth/`, `internal/platform/`, `internal/transport/http/`, and `internal/bootstrap/`
 

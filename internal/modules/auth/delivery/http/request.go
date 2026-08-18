@@ -8,8 +8,9 @@ type signUpRequest struct {
 	DisplayName string `json:"display_name"`
 	Password    string `json:"password"`
 }
-type tokenRequest struct {
-	Token string `json:"token"`
+type verifyEmailRequest struct {
+	Email string `json:"email"`
+	OTP   string `json:"otp"`
 }
 type emailRequest struct {
 	Email string `json:"email"`
@@ -26,7 +27,8 @@ type refreshRequest struct {
 	DeviceID     string `json:"device_id"`
 }
 type resetPasswordRequest struct {
-	Token       string `json:"token"`
+	Email       string `json:"email"`
+	OTP         string `json:"otp"`
 	NewPassword string `json:"new_password"`
 }
 type changePasswordRequest struct {
