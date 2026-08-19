@@ -80,7 +80,7 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
 - [x] Verify it: `/check verify bill and OCR v1`
 - [x] Test it: `/test bill and OCR v1`
 - [x] Review it (fresh model): `/check review bill and OCR v1`
-- [x] Document it: `/document bill and OCR v1`
+- [ ] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 

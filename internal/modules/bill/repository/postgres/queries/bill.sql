@@ -290,6 +290,12 @@ RETURNING *;
 SELECT COUNT(*) FROM ocr_jobs
 WHERE bill_id = $1 AND created_at >= $2;
 
+-- name: CountActiveOCRJobs :one
+-- Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
+-- tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
+SELECT COUNT(*) FROM ocr_jobs
+WHERE status IN ('queued', 'processing');
+
 -- name: GetGroupMember :one
 SELECT id, group_id, user_id, role, status, joined_at, left_at
 FROM group_members

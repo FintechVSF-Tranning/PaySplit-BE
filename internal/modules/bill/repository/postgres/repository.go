@@ -938,12 +938,18 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.D
 // OCR JOBS
 // ============================================================================
 
-func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJob) (*domain.OCRJob, error) {
+func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJob, beforeCommit func(ctx context.Context, tx pgx.Tx) error) (*domain.OCRJob, error) {
 	if job == nil {
 		return nil, domain.ErrInvalidInput
 	}
 
-	q := sqlc.New(r.pool)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin create ocr job tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := sqlc.New(tx)
 
 	var candidateBytes []byte
 	if job.Candidate != nil {
@@ -977,6 +983,16 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ocr job: %w", err)
+	}
+
+	if beforeCommit != nil {
+		if err := beforeCommit(ctx, tx); err != nil {
+			return nil, fmt.Errorf("before commit hook: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create ocr job tx: %w", err)
 	}
 
 	return toDomainOCRJob(&dbJob)
@@ -1084,6 +1100,17 @@ func (r *postgresRepository) CountManualOCRAttemptsInWindow(ctx context.Context,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("count manual ocr attempts: %w", err)
+	}
+	return count, nil
+}
+
+// CountActiveOCRJobs đếm số job OCR đang ở trạng thái queued hoặc processing, dùng làm nguồn cho
+// gauge paysplit_ocr_queue_depth (Spec 3 AC-14).
+func (r *postgresRepository) CountActiveOCRJobs(ctx context.Context) (int64, error) {
+	q := sqlc.New(r.pool)
+	count, err := q.CountActiveOCRJobs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count active ocr jobs: %w", err)
 	}
 	return count, nil
 }
@@ -1377,6 +1404,18 @@ func (r *postgresRepository) ReserveIdempotencyKey(ctx context.Context, p reposi
 	}
 
 	return nil, fmt.Errorf("reserve idempotency key: %w", err)
+}
+
+func (r *postgresRepository) ReleaseIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) error {
+	query := `
+		DELETE FROM bill_idempotency_keys
+		WHERE actor_user_id = $1 AND operation = $2 AND key_hash = $3 AND state = 'in_progress';
+	`
+	_, err := r.pool.Exec(ctx, query, actorUserID, operation, keyHash)
+	if err != nil {
+		return fmt.Errorf("release idempotency key: %w", err)
+	}
+	return nil
 }
 
 func (r *postgresRepository) CompleteIdempotencyKey(ctx context.Context, p repository.CompleteIdempotencyParams) error {

@@ -8,11 +8,30 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	"paysplit-backend/internal/modules/bill/domain"
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/modules/bill/usecase"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
+
+// histogramSampleCount đọc số lượng observation đã ghi nhận cho một label combination
+// của HistogramVec, dùng để xác nhận các hàm Record* thực sự được gọi (Spec 3 AC-14).
+func histogramSampleCount(t *testing.T, hv *prometheus.HistogramVec, labelValues ...string) uint64 {
+	t.Helper()
+	m, ok := hv.WithLabelValues(labelValues...).(prometheus.Metric)
+	if !ok {
+		t.Fatalf("metric for labels %v does not implement prometheus.Metric", labelValues)
+	}
+	pb := &dto.Metric{}
+	if err := m.Write(pb); err != nil {
+		t.Fatalf("write histogram metric: %v", err)
+	}
+	return pb.GetHistogram().GetSampleCount()
+}
 
 type mockServiceRepo struct {
 	repository.Repository
@@ -132,7 +151,12 @@ func (m *mockServiceRepo) CountManualOCRAttemptsInWindow(ctx context.Context, bi
 	return m.manualAttempts, nil
 }
 
-func (m *mockServiceRepo) CreateOCRJob(ctx context.Context, job *domain.OCRJob) (*domain.OCRJob, error) {
+func (m *mockServiceRepo) CreateOCRJob(ctx context.Context, job *domain.OCRJob, beforeCommit func(ctx context.Context, tx pgx.Tx) error) (*domain.OCRJob, error) {
+	if beforeCommit != nil {
+		if err := beforeCommit(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
 	m.ocrJob = job
 	return job, nil
 }
@@ -471,6 +495,44 @@ func TestApplyCandidate_StaleProtection(t *testing.T) {
 	}
 }
 
+func TestApplyCandidate_JobBelongsToDifferentBill_ReturnsNotFound(t *testing.T) {
+	// covers: AC-4, AC-8 (a job from another bill must never be applied cross-bill/cross-group)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+	otherBillID := uuid.New() // the job actually belongs to this bill
+	jobID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: memberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: memberID,
+			Status: domain.BillStatusDraft, Version: 1,
+		},
+		ocrJob: &domain.OCRJob{
+			ID:      jobID,
+			BillID:  otherBillID, // mismatched bill
+			Status:  domain.OCRJobStatusSucceeded,
+			Version: 1,
+			Candidate: &domain.OCRCandidate{
+				Items:    []domain.OCRCandidateItem{{Name: "Item 1", Quantity: "1", UnitPrice: 50000, LineTotal: 50000}},
+				Subtotal: 50000,
+				Total:    50000,
+			},
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 1)
+	if !errors.Is(err, domain.ErrOcrJobNotFound) {
+		t.Errorf("expected ErrOcrJobNotFound when the OCR job belongs to a different bill, got %v", err)
+	}
+}
+
 func TestReviewBill_Mismatch_FailsWhenTotalsDoNotReconcile(t *testing.T) {
 	// covers: AC-7 (Review requires subtotal = sum(line_total) and total = subtotal + service + vat - discount)
 	groupID := uuid.New()
@@ -738,6 +800,11 @@ func TestRetryOCR_EnqueueOCRFails_ReturnsError(t *testing.T) {
 	_, err := service.RetryOCR(context.Background(), userID, billID, groupID)
 	if err == nil {
 		t.Error("expected error when RetryOCR enqueue fails, got nil")
+	}
+	// covers: AC-2 (insert and enqueue happen in one transaction: a failed enqueue must not leave
+	// behind a "queued" row that no worker will ever pick up, permanently wedging the bill's OCR)
+	if repo.ocrJob != nil {
+		t.Error("expected no ocr job row to be created when the enqueue fails (insert and enqueue must be atomic)")
 	}
 }
 
@@ -1579,5 +1646,227 @@ func TestUpdateDraftBill_Exceeds100Items_ReturnsInvalidInput(t *testing.T) {
 	})
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput when updating bill with > 100 items, got %v", err)
+	}
+}
+
+func TestFinalizeBill_Success_RecordsFinalizeDurationMetric(t *testing.T) {
+	// covers: AC-9, AC-14 (paysplit_bill_finalize_duration_seconds observes a success sample)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	m2ID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusReviewed, Subtotal: 100000, Total: 100000, Version: 2,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: creditorID, Weight: "1"},
+						{MemberID: m2ID, Weight: "1"},
+					},
+				},
+			},
+		},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := histogramSampleCount(t, platformmetrics.BillFinalizeDuration, "success")
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 2)
+	if err != nil {
+		t.Fatalf("FinalizeBill() error = %v", err)
+	}
+
+	after := histogramSampleCount(t, platformmetrics.BillFinalizeDuration, "success")
+	if got, want := after, before+1; got != want {
+		t.Errorf("finalize duration histogram sample count for outcome=success = %d, want %d", got, want)
+	}
+}
+
+func TestFinalizeBill_Forbidden_RecordsFinalizeDurationMetricAsError(t *testing.T) {
+	// covers: AC-8, AC-14 (a rejected finalize attempt is still observed, tagged outcome=error)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: memberID, GroupID: groupID, UserID: userID, Role: "member", Status: "active", // not captain
+		},
+		bill: &domain.Bill{ID: billID, GroupID: groupID, Status: domain.BillStatusReviewed, Version: 1},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := histogramSampleCount(t, platformmetrics.BillFinalizeDuration, "error")
+
+	_, err := service.FinalizeBill(context.Background(), userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for non-captain finalize, got %v", err)
+	}
+
+	after := histogramSampleCount(t, platformmetrics.BillFinalizeDuration, "error")
+	if got, want := after, before+1; got != want {
+		t.Errorf("finalize duration histogram sample count for outcome=error = %d, want %d", got, want)
+	}
+}
+
+func TestReviewBill_Mismatch_RecordsMismatchBlockMetric(t *testing.T) {
+	// covers: AC-7, AC-14 (paysplit_bill_mismatch_block_total counts a totals mismatch block at review)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Subtotal: 100000, Total: 120000, Version: 1, // mismatched total
+			Items: []*domain.BillItem{
+				{
+					ID:          uuid.New(),
+					LineTotal:   100000,
+					Assignments: []*domain.BillItemAssignment{{MemberID: creditorID, Weight: "1"}},
+				},
+			},
+		},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := testutil.ToFloat64(platformmetrics.BillMismatchBlockTotal.WithLabelValues("totals_mismatch"))
+
+	_, err := service.ReviewBill(context.Background(), userID, billID, groupID, 1)
+	if !errors.Is(err, domain.ErrBillNotReady) {
+		t.Fatalf("expected ErrBillNotReady for total mismatch, got %v", err)
+	}
+
+	after := testutil.ToFloat64(platformmetrics.BillMismatchBlockTotal.WithLabelValues("totals_mismatch"))
+	if got, want := after, before+1; got != want {
+		t.Errorf("mismatch block counter for reason=totals_mismatch = %v, want %v", got, want)
+	}
+}
+
+func TestApplyCandidate_Stale_RecordsStaleApplyMetric(t *testing.T) {
+	// covers: AC-4, AC-14 (paysplit_ocr_stale_apply_total counts a stale candidate apply rejection)
+	groupID := uuid.New()
+	userID := uuid.New()
+	memberID := uuid.New()
+	billID := uuid.New()
+	jobID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: memberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		activeMembers: []*repository.GroupMember{
+			{ID: memberID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: memberID,
+			Status: domain.BillStatusDraft, Version: 2, // bill moved on to version 2
+		},
+		ocrJob: &domain.OCRJob{
+			ID: jobID, BillID: billID, Status: domain.OCRJobStatusSucceeded, Version: 1, // job started on version 1
+			Candidate: &domain.OCRCandidate{
+				Items:    []domain.OCRCandidateItem{{Name: "Item 1", Quantity: "1", UnitPrice: 50000, LineTotal: 50000}},
+				Subtotal: 50000,
+				Total:    50000,
+			},
+		},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := testutil.ToFloat64(platformmetrics.OCRStaleApplyTotal.WithLabelValues("bill_version_changed"))
+
+	_, err := service.ApplyCandidate(context.Background(), userID, billID, groupID, jobID, 2)
+	if err != domain.ErrOcrResultStale {
+		t.Fatalf("expected ErrOcrResultStale, got %v", err)
+	}
+
+	after := testutil.ToFloat64(platformmetrics.OCRStaleApplyTotal.WithLabelValues("bill_version_changed"))
+	if got, want := after, before+1; got != want {
+		t.Errorf("stale apply counter for reason=bill_version_changed = %v, want %v", got, want)
+	}
+}
+
+func TestGetBillDetail_DraftBill_RecordsPreviewDurationMetric(t *testing.T) {
+	// covers: AC-6, AC-14 (paysplit_bill_preview_duration_seconds observes the draft preview calculation)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Subtotal: 100000, Total: 100000, Version: 1,
+			Items: []*domain.BillItem{
+				{
+					ID:          uuid.New(),
+					LineTotal:   100000,
+					Assignments: []*domain.BillItemAssignment{{MemberID: creditorID, Weight: "1"}},
+				},
+			},
+		},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := histogramSampleCount(t, platformmetrics.BillPreviewDuration, "success")
+
+	detail, err := service.GetBillDetail(context.Background(), userID, billID, groupID)
+	if err != nil {
+		t.Fatalf("GetBillDetail() error = %v", err)
+	}
+	if len(detail.Breakdown) == 0 {
+		t.Error("expected a nonempty preview breakdown for a draft bill")
+	}
+
+	after := histogramSampleCount(t, platformmetrics.BillPreviewDuration, "success")
+	if got, want := after, before+1; got != want {
+		t.Errorf("preview duration histogram sample count for outcome=success = %d, want %d", got, want)
+	}
+}
+
+func TestGetBillDetail_FinalizedBill_DoesNotRecordPreviewDurationMetric(t *testing.T) {
+	// covers: AC-14 (a finalized bill has an immutable breakdown, not a recomputed preview)
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusFinalized, Subtotal: 100000, Total: 100000, Version: 3,
+		},
+	}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	before := histogramSampleCount(t, platformmetrics.BillPreviewDuration, "success")
+
+	if _, err := service.GetBillDetail(context.Background(), userID, billID, groupID); err != nil {
+		t.Fatalf("GetBillDetail() error = %v", err)
+	}
+
+	after := histogramSampleCount(t, platformmetrics.BillPreviewDuration, "success")
+	if got, want := after, before; got != want {
+		t.Errorf("preview duration histogram sample count changed for a finalized bill: before=%d after=%d", before, after)
 	}
 }

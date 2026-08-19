@@ -189,7 +189,10 @@ type Repository interface {
 	DeleteDraftBill(ctx context.Context, params DeleteDraftBillParams) error
 
 	// OCR Jobs
-	CreateOCRJob(ctx context.Context, job *domain.OCRJob) (*domain.OCRJob, error)
+	// beforeCommit chạy trong cùng transaction với việc insert job, dùng để enqueue River trong
+	// cùng transaction (mirror CreateBill), tránh trường hợp insert thành công nhưng enqueue thất
+	// bại để lại một job "queued" mồ côi mà không worker nào từng nhận (Spec 3 AC-2).
+	CreateOCRJob(ctx context.Context, job *domain.OCRJob, beforeCommit func(ctx context.Context, tx pgx.Tx) error) (*domain.OCRJob, error)
 	GetOCRJobByID(ctx context.Context, id uuid.UUID) (*domain.OCRJob, error)
 	GetActiveOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error)
@@ -198,6 +201,7 @@ type Repository interface {
 	UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error
 	CountManualOCRAttemptsInWindow(ctx context.Context, billID uuid.UUID, since time.Time) (int64, error)
 	PurgeExpiredRawOCRResponses(ctx context.Context, olderThan time.Duration) (int64, error)
+	CountActiveOCRJobs(ctx context.Context) (int64, error)
 
 	// Media Cleanup
 	EnqueueMediaCleanup(ctx context.Context, prefix, kind string) error
@@ -206,4 +210,7 @@ type Repository interface {
 	ReserveIdempotencyKey(ctx context.Context, params ReserveIdempotencyParams) (*IdempotencyRecord, error)
 	CompleteIdempotencyKey(ctx context.Context, params CompleteIdempotencyParams) error
 	GetIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) (*IdempotencyRecord, error)
+	// ReleaseIdempotencyKey xóa một reservation "in_progress" khi mutation thất bại, để lần retry sau
+	// với cùng key không bị kẹt 409 IDEMPOTENCY_IN_PROGRESS suốt 24h (Spec 3 AC-1, AC-9).
+	ReleaseIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) error
 }

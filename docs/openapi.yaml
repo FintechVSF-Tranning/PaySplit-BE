@@ -550,6 +550,12 @@ paths:
       summary: Create a manual or image-based bill draft
       operationId: createBill
       security: [{bearerAuth: []}]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+          description: Optional client-generated key. A repeated key with the same request body replays the original response (200/201/202); a repeated key with a different body returns 409 IDEMPOTENCY_KEY_REUSED; a key still processing returns 409 IDEMPOTENCY_IN_PROGRESS.
       requestBody:
         required: true
         content:
@@ -618,8 +624,13 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
                   ocr_job: {$ref: "#/components/schemas/OCRJob"}
                   is_accepted: {type: boolean}
-        "400": {$ref: "#/components/responses/BadRequest"}
+        "400":
+          description: "Validation failed (VALIDATION_FAILED), or images required for an image-based draft (IMAGES_REQUIRED)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "409":
+          description: "Idempotency-Key reused with a different request body (IDEMPOTENCY_KEY_REUSED), or the same key is still being processed (IDEMPOTENCY_IN_PROGRESS)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     get:
       summary: List bills in a group with cursor pagination
       operationId: listBills
@@ -647,7 +658,9 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/Bill"}
                   next_cursor: {type: string}
-        "400": {$ref: "#/components/responses/BadRequest"}
+        "400":
+          description: "Validation failed (VALIDATION_FAILED), or an invalid cursor was supplied (INVALID_CURSOR)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
 
   /api/v1/bills/{id}:
@@ -684,6 +697,7 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
     put:
       summary: Update draft bill fields, items, and assignments
+      description: PATCH on this same path is accepted as an alias and routes to the identical handler.
       operationId: updateDraftBill
       security: [{bearerAuth: []}]
       parameters:
@@ -741,7 +755,9 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "Version conflict or bill immutable"}
+        "409":
+          description: "Stale version (VERSION_CONFLICT), or the bill is no longer a draft (BILL_IMMUTABLE)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     delete:
       summary: Delete an editable draft bill
       operationId: deleteDraftBill
@@ -808,8 +824,21 @@ paths:
                   ocr_job: {$ref: "#/components/schemas/OCRJob"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "OCR job already running"}
-        "429": {description: "Manual OCR limit reached"}
+        "409":
+          description: "OCR job already running (OCR_ALREADY_RUNNING)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "429":
+          description: "Manual OCR retry limit reached (OCR_LIMIT_REACHED)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "502":
+          description: "OCR provider returned a malformed result (OCR_SCHEMA_INVALID)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "503":
+          description: "OCR provider unavailable (OCR_PROVIDER_UNAVAILABLE)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "504":
+          description: "OCR provider timed out (OCR_TIMEOUT)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/apply-candidate:
     post:
@@ -846,7 +875,15 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "Version conflict or OCR stale"}
+        "404":
+          description: "OCR job not found (OCR_JOB_NOT_FOUND)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "409":
+          description: "Stale bill version (VERSION_CONFLICT), the OCR job result is stale relative to the draft (OCR_RESULT_STALE), the job's candidate was already applied (OCR_ALREADY_APPLIED), or the job is not finished yet (OCR_NOT_READY)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "422":
+          description: "OCR candidate failed validation (OCR_CANDIDATE_INVALID)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/review:
     post:
@@ -882,8 +919,12 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "Version conflict"}
-        "422": {description: "Bill not ready for review"}
+        "409":
+          description: "Stale version (VERSION_CONFLICT)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "422":
+          description: "Bill has unresolved mismatches or is not in a reviewable state (BILL_NOT_READY)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/finalize:
     post:
@@ -919,8 +960,12 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "Version conflict or review required"}
-        "422": {description: "Bank account required or bill not ready"}
+        "409":
+          description: "Stale version (VERSION_CONFLICT)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "422":
+          description: "Creditor has no bank account on file (BANK_ACCOUNT_REQUIRED), or the bill has not been reviewed yet (BILL_NOT_READY)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/void:
     post:
@@ -957,7 +1002,9 @@ paths:
                   bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "409": {description: "Bill already voided or payment already started"}
+        "409":
+          description: "Bill already voided (BILL_ALREADY_VOIDED), or a payment for this bill has already started (PAYMENT_ALREADY_STARTED)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
 components:
   securitySchemes:

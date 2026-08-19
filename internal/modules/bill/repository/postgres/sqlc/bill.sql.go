@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveOCRJobs = `-- name: CountActiveOCRJobs :one
+SELECT COUNT(*) FROM ocr_jobs
+WHERE status IN ('queued', 'processing')
+`
+
+// Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
+// tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
+func (q *Queries) CountActiveOCRJobs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveOCRJobs)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countManualOCRAttemptsInWindow = `-- name: CountManualOCRAttemptsInWindow :one
 SELECT COUNT(*) FROM ocr_jobs
 WHERE bill_id = $1 AND created_at >= $2

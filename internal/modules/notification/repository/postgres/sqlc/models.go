@@ -51,6 +51,22 @@ type Bill struct {
 	ReviewedByMemberID pgtype.UUID        `json:"reviewed_by_member_id"`
 }
 
+type BillIdempotencyKey struct {
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	Operation            string             `json:"operation"`
+	KeyHash              string             `json:"key_hash"`
+	CanonicalRequestHash string             `json:"canonical_request_hash"`
+	OperationID          pgtype.UUID        `json:"operation_id"`
+	State                interface{}        `json:"state"`
+	ResponseCode         pgtype.Int4        `json:"response_code"`
+	ResponseBody         []byte             `json:"response_body"`
+	ResourceID           pgtype.UUID        `json:"resource_id"`
+	RetryAfter           pgtype.Timestamptz `json:"retry_after"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type BillImage struct {
 	ID        pgtype.UUID        `json:"id"`
 	BillID    pgtype.UUID        `json:"bill_id"`

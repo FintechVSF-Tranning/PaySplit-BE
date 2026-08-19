@@ -216,6 +216,9 @@ func RecordBillPreview(outcome string, duration time.Duration) {
 	BillPreviewDuration.WithLabelValues(outcome).Observe(duration.Seconds())
 }
 
+// SetOCRQueueDepth ghi nhận số lượng job OCR đang queued/processing, được một poller định kỳ đọc
+// trực tiếp từ database (nguồn sự thật), thay vì cộng/trừ trong tiến trình, để chính xác qua
+// restart, rollback giao dịch và nhiều replica (Spec 3 AC-14).
 func SetOCRQueueDepth(depth float64) {
 	OCRQueueDepth.Set(depth)
 }

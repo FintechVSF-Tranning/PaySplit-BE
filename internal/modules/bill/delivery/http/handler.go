@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,10 +19,17 @@ import (
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
+const (
+	defaultImageMaxBytes = 10 * 1024 * 1024
+	defaultImageMaxCount = 5
+)
+
 // Handler xử lý các HTTP endpoints cho module Bill & OCR.
 type Handler struct {
-	service    *usecase.Service
-	sseHandler *SSEHandler
+	service       *usecase.Service
+	sseHandler    *SSEHandler
+	imageMaxBytes int64
+	imageMaxCount int
 }
 
 // NewHandler khởi tạo Handler mới.
@@ -30,8 +38,21 @@ func NewHandler(service *usecase.Service, sseHandler *SSEHandler) *Handler {
 		panic("bill handler service must not be nil")
 	}
 	return &Handler{
-		service:    service,
-		sseHandler: sseHandler,
+		service:       service,
+		sseHandler:    sseHandler,
+		imageMaxBytes: defaultImageMaxBytes,
+		imageMaxCount: defaultImageMaxCount,
+	}
+}
+
+// SetImageLimits cấu hình giới hạn ảnh hóa đơn từ BILL_IMAGE_MAX_BYTES / BILL_IMAGE_MAX_COUNT
+// (Spec 3 AC-1). Phải được gọi trước khi request đầu tiên tới; giá trị <=0 giữ nguyên mặc định.
+func (h *Handler) SetImageLimits(maxBytes int64, maxCount int) {
+	if maxBytes > 0 {
+		h.imageMaxBytes = maxBytes
+	}
+	if maxCount > 0 {
+		h.imageMaxCount = maxCount
 	}
 }
 
@@ -70,7 +91,19 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 	contentType := r.Header.Get("Content-Type")
 
 	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(50 << 20); err != nil { // 50MB max (tối đa 5 ảnh x 10MB)
+		// Chặn ngay tại tầng đọc body: không cho phần thân request vượt quá tổng dung lượng ảnh tối đa
+		// cộng phần dư cho metadata/boundary, trước khi ParseMultipartForm ghi bất cứ gì ra đĩa/bộ nhớ
+		// (Spec 3 AC-1: "at most 10 MB" mỗi ảnh phải được chặn sớm, không phải sau khi đã đọc hết).
+		const multipartOverheadSlack = 1 << 20 // 1MB cho metadata JSON, boundary, tên trường
+		maxBodyBytes := h.imageMaxBytes*int64(h.imageMaxCount) + multipartOverheadSlack
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+
+		if err := r.ParseMultipartForm(h.imageMaxBytes); err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				_ = helpers.WriteAPIError(w, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body exceeds the maximum allowed size", nil)
+				return
+			}
 			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", "failed to parse multipart form", nil)
 			return
 		}
@@ -96,20 +129,30 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 		// Đọc các file ảnh từ field "images"
 		if r.MultipartForm != nil && r.MultipartForm.File != nil {
 			fileHeaders := r.MultipartForm.File["images"]
-			if len(fileHeaders) > 5 {
-				_ = helpers.WriteAPIError(w, http.StatusBadRequest, "TOO_MANY_IMAGES", "maximum 5 images allowed", nil)
+			if len(fileHeaders) > h.imageMaxCount {
+				_ = helpers.WriteAPIError(w, http.StatusBadRequest, "TOO_MANY_IMAGES", fmt.Sprintf("maximum %d images allowed", h.imageMaxCount), nil)
 				return
 			}
 			for _, fh := range fileHeaders {
-				f, err := fh.Open()
-				if err != nil {
-					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", fmt.Sprintf("failed to open uploaded file: %v", err), nil)
+				// Từ chối ngay theo kích thước khai báo trước khi mở/đọc file (Spec 3 AC-1).
+				if fh.Size > h.imageMaxBytes {
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_IMAGE", "image exceeds the maximum allowed size", nil)
 					return
 				}
-				data, err := io.ReadAll(f)
+				f, err := fh.Open()
+				if err != nil {
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", "failed to open uploaded file", nil)
+					return
+				}
+				// io.LimitReader như một lớp chặn thứ hai phòng khi Size khai báo không đúng thực tế.
+				data, err := io.ReadAll(io.LimitReader(f, h.imageMaxBytes+1))
 				f.Close()
 				if err != nil {
-					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", fmt.Sprintf("failed to read uploaded file: %v", err), nil)
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_MULTIPART", "failed to read uploaded file", nil)
+					return
+				}
+				if int64(len(data)) > h.imageMaxBytes {
+					_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_IMAGE", "image exceeds the maximum allowed size", nil)
 					return
 				}
 				req.Files = append(req.Files, data)
@@ -141,6 +184,7 @@ func (h *Handler) CreateBill(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.service.CreateBill(r.Context(), callerUserID, req)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "create_bill", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -263,6 +307,7 @@ func (h *Handler) RetryOCR(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.service.RetryOCR(r.Context(), callerUserID, billID, groupID)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "retry_ocr", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -317,6 +362,7 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 
 	updatedBill, err := h.service.ApplyCandidate(r.Context(), callerUserID, billID, groupID, body.JobID, body.Version)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "apply_candidate", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -364,6 +410,7 @@ func (h *Handler) UpdateDraftBill(w http.ResponseWriter, r *http.Request) {
 
 	updatedBill, err := h.service.UpdateDraftBill(r.Context(), callerUserID, billID, groupID, req)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "update_draft", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -413,6 +460,7 @@ func (h *Handler) ReviewBill(w http.ResponseWriter, r *http.Request) {
 
 	reviewedBill, err := h.service.ReviewBill(r.Context(), callerUserID, billID, groupID, body.Version)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "review_bill", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -462,6 +510,7 @@ func (h *Handler) FinalizeBill(w http.ResponseWriter, r *http.Request) {
 
 	finalizedBill, err := h.service.FinalizeBill(r.Context(), callerUserID, billID, groupID, body.Version)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "finalize_bill", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -512,6 +561,7 @@ func (h *Handler) VoidBill(w http.ResponseWriter, r *http.Request) {
 
 	voidedBill, err := h.service.VoidBill(r.Context(), callerUserID, billID, groupID, body.Version, body.Reason)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "void_bill", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -547,6 +597,7 @@ func (h *Handler) DeleteDraftBill(w http.ResponseWriter, r *http.Request) {
 
 	err = h.service.DeleteDraftBill(r.Context(), callerUserID, billID, groupID)
 	if err != nil {
+		_ = h.service.ReleaseIdempotency(r.Context(), callerUserID, "delete_draft", rawKey)
 		writeDomainError(w, err)
 		return
 	}
@@ -590,6 +641,7 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	code := "INTERNAL_ERROR"
 	msg := err.Error()
+	mapped := true
 
 	switch {
 	case errors.Is(err, domain.ErrInvalidInput):
@@ -667,6 +719,15 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrIdempotencyKeyReused):
 		status = http.StatusConflict
 		code = "IDEMPOTENCY_KEY_REUSED"
+	default:
+		mapped = false
+	}
+
+	if !mapped {
+		// Không trả nguyên văn lỗi nội bộ (pgx, Cloudinary, ...) cho client; log server side để điều tra
+		// (Spec 3 security model: "Raw provider content never appears in API responses or logs").
+		log.Printf("event=bill_internal_error err=%v", err)
+		msg = "internal error"
 	}
 
 	_ = helpers.WriteAPIError(w, status, code, msg, nil)

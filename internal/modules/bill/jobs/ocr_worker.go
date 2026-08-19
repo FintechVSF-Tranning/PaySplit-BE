@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	_ "image/png"
+	"log"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -21,6 +22,30 @@ import (
 	"paysplit-backend/internal/modules/bill/usecase"
 	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
+
+// Bộ mã lỗi OCR đóng (bounded), dùng cho ocr_jobs.error_message, SSE và nhãn Prometheus.
+// Không bao giờ dùng chuỗi lỗi thô của provider/DB làm 1 trong 3 nơi trên (Spec 3 security model, AC-14).
+const (
+	ocrErrorBillNotFound        = "bill_not_found"
+	ocrErrorNoImages            = "no_images"
+	ocrErrorDownloadFailed      = "download_failed"
+	ocrErrorSchemaInvalid       = "schema_invalid"
+	ocrErrorProviderTimeout     = "provider_timeout"
+	ocrErrorProviderUnavailable = "provider_unavailable"
+	ocrErrorProvider            = "provider_error"
+)
+
+// classifyProviderError rút gọn một lỗi provider/DB bất kỳ thành 1 mã trong bộ mã đóng ở trên.
+func classifyProviderError(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrOcrTimeout):
+		return ocrErrorProviderTimeout
+	case errors.Is(err, domain.ErrOcrProviderUnavailable):
+		return ocrErrorProviderUnavailable
+	default:
+		return ocrErrorProvider
+	}
+}
 
 // OCRJobArgs định nghĩa payload công việc bóc tách hóa đơn trong River Queue (Spec 3 AC-2).
 type OCRJobArgs struct {
@@ -40,11 +65,36 @@ type EventBroadcaster interface {
 // OCRWorker là background worker xử lý bóc tách hóa đơn bằng AI qua River Queue.
 type OCRWorker struct {
 	river.WorkerDefaults[OCRJobArgs]
-	repo        repository.Repository
-	storage     usecase.BillStorage
-	ocrProvider usecase.OCRProvider
-	broadcaster EventBroadcaster
-	timeout     time.Duration
+	repo           repository.Repository
+	storage        usecase.BillStorage
+	ocrProvider    usecase.OCRProvider
+	broadcaster    EventBroadcaster
+	timeout        time.Duration
+	retryBaseDelay time.Duration
+}
+
+// SetRetryBaseDelay cấu hình độ trễ nền cho backoff giữa các lần retry (BILL_OCR_RETRY_BASE_DELAY, Spec 3 AC-3).
+func (w *OCRWorker) SetRetryBaseDelay(d time.Duration) {
+	if d > 0 {
+		w.retryBaseDelay = d
+	}
+}
+
+// NextRetry ghi đè lịch retry mặc định của River (ATTEMPT^4 giây) bằng exponential backoff dựa trên
+// BILL_OCR_RETRY_BASE_DELAY đã cấu hình, chỉ áp dụng cho job OCR (Spec 3 AC-3: "configured timeout and retry values").
+func (w *OCRWorker) NextRetry(job *river.Job[OCRJobArgs]) time.Time {
+	base := w.retryBaseDelay
+	if base <= 0 {
+		base = time.Second
+	}
+	attempt := job.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 20 {
+		attempt = 20 // chặn tràn số khi shift bit với số mũ quá lớn
+	}
+	return time.Now().Add(base * time.Duration(uint64(1)<<uint(attempt-1)))
 }
 
 // NewOCRWorker khởi tạo OCRWorker với các dependencies cần thiết.
@@ -121,14 +171,14 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	bill, err := w.repo.GetBillByID(ctx, billID, groupID)
 	if err != nil {
 		if errors.Is(err, domain.ErrBillNotFound) {
-			_ = w.failJob(ctx, jobID, billID, "bill not found")
+			_ = w.failJob(ctx, jobID, billID, ocrErrorBillNotFound)
 			return nil
 		}
 		return fmt.Errorf("get bill by id: %w", err)
 	}
 
 	if len(bill.Images) == 0 {
-		_ = w.failJob(ctx, jobID, billID, "no images found for receipt")
+		_ = w.failJob(ctx, jobID, billID, ocrErrorNoImages)
 		return nil
 	}
 
@@ -138,7 +188,8 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		b, err := w.storage.Download(ctx, img.ImageKey)
 		if err != nil {
 			if job.Attempt >= job.MaxAttempts {
-				_ = w.failJob(ctx, jobID, billID, fmt.Sprintf("download receipt failed after max attempts: %v", err))
+				log.Printf("event=ocr_download_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, job.Attempt, err)
+				_ = w.failJob(ctx, jobID, billID, ocrErrorDownloadFailed)
 				return nil
 			}
 			return fmt.Errorf("download receipt from storage: %w", err)
@@ -166,13 +217,15 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		platformmetrics.RecordOCRProviderDuration("llamaextract", "failure", extractDur)
 		// Nếu lỗi do schema AI không đọc được hoặc cấu trúc sai -> đánh dấu failed, không retry
 		if errors.Is(err, domain.ErrOcrSchemaInvalid) {
-			_ = w.failJob(ctx, jobID, billID, "ocr schema invalid or unparseable receipt")
+			log.Printf("event=ocr_schema_invalid job_id=%s bill_id=%s err=%v", jobID, billID, err)
+			_ = w.failJob(ctx, jobID, billID, ocrErrorSchemaInvalid)
 			return nil
 		}
 
 		// Nếu hết số lần retry tối đa của River Queue
 		if job.Attempt >= job.MaxAttempts {
-			_ = w.failJob(ctx, jobID, billID, fmt.Sprintf("ocr provider failed after %d attempts: %v", job.Attempt, err))
+			log.Printf("event=ocr_provider_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, job.Attempt, err)
+			_ = w.failJob(ctx, jobID, billID, classifyProviderError(err))
 			return nil
 		}
 
@@ -236,6 +289,39 @@ func NewOCRRetentionWorker(repo repository.Repository) *OCRRetentionWorker {
 	return &OCRRetentionWorker{repo: repo}
 }
 
+// PollQueueDepth định kỳ đọc trực tiếp số lượng job OCR đang queued/processing từ database và ghi
+// vào gauge paysplit_ocr_queue_depth. Đây là nguồn sự thật thay cho việc cộng/trừ trong tiến trình,
+// nên luôn chính xác qua restart, rollback giao dịch và khi chạy nhiều replica (Spec 3 AC-14).
+func PollQueueDepth(ctx context.Context, repo repository.Repository, interval time.Duration) {
+	if repo == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	pollQueueDepthOnce(ctx, repo)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pollQueueDepthOnce(ctx, repo)
+		}
+	}
+}
+
+func pollQueueDepthOnce(ctx context.Context, repo repository.Repository) {
+	count, err := repo.CountActiveOCRJobs(ctx)
+	if err != nil {
+		log.Printf("event=ocr_queue_depth_poll_failed err=%v", err)
+		return
+	}
+	platformmetrics.SetOCRQueueDepth(float64(count))
+}
+
 // Work thực hiện xóa dữ liệu raw_response của các job đã hoàn tất quá thời hạn retention.
 func (w *OCRRetentionWorker) Work(ctx context.Context, job *river.Job[OCRRetentionJobArgs]) error {
 	if w.repo == nil {
@@ -252,12 +338,21 @@ func (w *OCRRetentionWorker) Work(ctx context.Context, job *river.Job[OCRRetenti
 
 // Enqueuer hỗ trợ đẩy công việc OCR vào River Queue.
 type Enqueuer struct {
-	client *river.Client[pgx.Tx]
+	client         *river.Client[pgx.Tx]
+	ocrMaxAttempts int
 }
 
 // NewEnqueuer khởi tạo Enqueuer cho module Bill & OCR.
-func NewEnqueuer(client *river.Client[pgx.Tx]) *Enqueuer {
-	return &Enqueuer{client: client}
+// ocrMaxAttempts áp dụng cho các job OCR (BILL_OCR_MAX_ATTEMPTS, Spec 3 AC-3); <=0 dùng mặc định của River.
+func NewEnqueuer(client *river.Client[pgx.Tx], ocrMaxAttempts int) *Enqueuer {
+	return &Enqueuer{client: client, ocrMaxAttempts: ocrMaxAttempts}
+}
+
+func (e *Enqueuer) ocrInsertOpts() *river.InsertOpts {
+	if e.ocrMaxAttempts <= 0 {
+		return nil
+	}
+	return &river.InsertOpts{MaxAttempts: e.ocrMaxAttempts}
 }
 
 // EnqueueOCRJobTx đẩy job OCR vào River Queue trong cùng database transaction tx.
@@ -270,7 +365,7 @@ func (e *Enqueuer) EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID
 		BillID:  billID.String(),
 		JobID:   jobID.String(),
 		GroupID: groupID.String(),
-	}, nil)
+	}, e.ocrInsertOpts())
 	return err
 }
 
@@ -284,7 +379,7 @@ func (e *Enqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uui
 		BillID:  billID.String(),
 		JobID:   jobID.String(),
 		GroupID: groupID.String(),
-	}, nil)
+	}, e.ocrInsertOpts())
 	return err
 }
 

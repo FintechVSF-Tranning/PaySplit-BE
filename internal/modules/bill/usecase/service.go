@@ -17,6 +17,7 @@ import (
 
 	"paysplit-backend/internal/modules/bill/domain"
 	"paysplit-backend/internal/modules/bill/repository"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
 
 // OCRProvider là interface định nghĩa khả năng bóc tách dữ liệu từ ảnh hóa đơn (Spec 3 AC-3).
@@ -343,8 +344,15 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 	// Tính toán provisional breakdown nếu bill đang ở trạng thái draft/reviewed
 	var breakdown []*MemberAllocation
 	if bill.Status == domain.BillStatusDraft || bill.Status == domain.BillStatusReviewed {
+		previewStart := time.Now()
 		allocInput := toAllocationInput(bill)
-		breakdown, _ = CalculateHamiltonAllocation(allocInput)
+		var allocErr error
+		breakdown, allocErr = CalculateHamiltonAllocation(allocInput)
+		outcome := "success"
+		if allocErr != nil {
+			outcome = "error"
+		}
+		platformmetrics.RecordBillPreview(outcome, time.Since(previewStart))
 	}
 
 	return &BillDetailResponse{
@@ -439,15 +447,18 @@ func (s *Service) RetryOCR(ctx context.Context, callerUserID, billID, groupID uu
 		Version:  bill.Version,
 	}
 
-	createdJob, err := s.repo.CreateOCRJob(ctx, newJob)
-	if err != nil {
-		return nil, fmt.Errorf("create retry ocr job: %w", err)
+	// Insert job và enqueue River trong cùng transaction (mirror CreateBill) để một lần enqueue thất
+	// bại không để lại job "queued" mồ côi mà không worker nào từng nhận (Spec 3 AC-2).
+	var beforeCommit func(ctx context.Context, tx pgx.Tx) error
+	if s.enqueuer != nil {
+		beforeCommit = func(txCtx context.Context, tx pgx.Tx) error {
+			return s.enqueuer.EnqueueOCRJobTx(txCtx, tx, billID, newJob.ID, groupID)
+		}
 	}
 
-	if s.enqueuer != nil {
-		if err := s.enqueuer.EnqueueOCRJob(ctx, billID, createdJob.ID, groupID); err != nil {
-			return nil, fmt.Errorf("enqueue retry ocr job: %w", err)
-		}
+	createdJob, err := s.repo.CreateOCRJob(ctx, newJob, beforeCommit)
+	if err != nil {
+		return nil, fmt.Errorf("create retry ocr job: %w", err)
 	}
 
 	return createdJob, nil
@@ -481,6 +492,10 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	if err != nil {
 		return nil, domain.ErrOcrJobNotFound
 	}
+	if ocrJob.BillID != billID {
+		// Job tồn tại nhưng thuộc bill khác: trả lỗi giống "not found" để không xác nhận sự tồn tại của job (Spec 3 AC-4, AC-8).
+		return nil, domain.ErrOcrJobNotFound
+	}
 	if ocrJob.Status != domain.OCRJobStatusSucceeded || ocrJob.Candidate == nil {
 		return nil, domain.ErrOcrNotReady
 	}
@@ -488,6 +503,7 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 		return nil, domain.ErrVersionConflict
 	}
 	if bill.Version != ocrJob.Version {
+		platformmetrics.RecordOCRStaleApply("bill_version_changed")
 		return nil, domain.ErrOcrResultStale
 	}
 
@@ -677,6 +693,7 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 	for _, it := range bill.Items {
 		sumItems += it.LineTotal
 		if len(it.Assignments) == 0 {
+			platformmetrics.RecordBillMismatchBlock("item_unassigned")
 			return nil, domain.ErrBillNotReady
 		}
 	}
@@ -693,6 +710,7 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 	for _, it := range bill.Items {
 		for _, a := range it.Assignments {
 			if !activeSet[a.MemberID] {
+				platformmetrics.RecordBillMismatchBlock("inactive_member_assigned")
 				return nil, domain.ErrBillNotReady
 			}
 		}
@@ -700,6 +718,7 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 
 	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
 	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
+		platformmetrics.RecordBillMismatchBlock("totals_mismatch")
 		return nil, domain.ErrBillNotReady
 	}
 
@@ -707,7 +726,19 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 }
 
 // FinalizeBill chạy giải thuật Hamilton allocation, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
+// Bọc ngoài finalizeBillImpl để đo paysplit_bill_finalize_duration_seconds (Spec 3 AC-14).
 func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
+	start := time.Now()
+	bill, err := s.finalizeBillImpl(ctx, callerUserID, billID, groupID, expectedVersion)
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	platformmetrics.RecordBillFinalize(outcome, time.Since(start))
+	return bill, err
+}
+
+func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden
@@ -742,11 +773,13 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	for _, it := range bill.Items {
 		sumItems += it.LineTotal
 		if len(it.Assignments) == 0 {
+			platformmetrics.RecordBillMismatchBlock("item_unassigned")
 			return nil, domain.ErrBillNotReady
 		}
 	}
 	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
 	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
+		platformmetrics.RecordBillMismatchBlock("totals_mismatch")
 		return nil, domain.ErrBillNotReady
 	}
 
@@ -764,6 +797,7 @@ func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupI
 	for _, it := range bill.Items {
 		for _, a := range it.Assignments {
 			if !activeSet[a.MemberID] {
+				platformmetrics.RecordBillMismatchBlock("inactive_member_assigned")
 				return nil, domain.ErrBillNotReady
 			}
 		}
@@ -1037,6 +1071,16 @@ func (s *Service) CheckOrReserveIdempotency(
 	}
 
 	return rec, nil
+}
+
+// ReleaseIdempotency giải phóng một reservation "in_progress" khi mutation thất bại, để retry sau
+// với cùng Idempotency-Key không bị kẹt 409 IDEMPOTENCY_IN_PROGRESS đến hết TTL 24h (Spec 3 AC-1, AC-9).
+func (s *Service) ReleaseIdempotency(ctx context.Context, actorUserID uuid.UUID, operation, rawKey string) error {
+	if strings.TrimSpace(rawKey) == "" {
+		return nil
+	}
+	keyHash := HashSHA256([]byte(rawKey))
+	return s.repo.ReleaseIdempotencyKey(ctx, actorUserID, operation, keyHash)
 }
 
 // CompleteIdempotency hoàn tất ghi nhận response cho khóa Idempotency.

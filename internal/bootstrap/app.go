@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -164,7 +165,9 @@ func New(ctx context.Context) (*App, error) {
 	billRepo := billpostgres.New(db)
 	billHub := billhttp.NewHub(db)
 	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
-	river.AddWorker(riverWorkers, billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout))
+	ocrWorker := billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout)
+	ocrWorker.SetRetryBaseDelay(cfg.OCR.RetryBaseDelay)
+	river.AddWorker(riverWorkers, ocrWorker)
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
 	if err != nil {
@@ -178,10 +181,11 @@ func New(ctx context.Context) (*App, error) {
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
 	// Khởi tạo Module Bill
-	billEnqueuer := billjobs.NewEnqueuer(riverClient)
+	billEnqueuer := billjobs.NewEnqueuer(riverClient, cfg.OCR.MaxAttempts)
 	billService := billusecase.NewService(billRepo, ocrClient, billStorage, receiptProcessor, billEnqueuer)
 	billService.SetManualOCRConfig(cfg.OCR.ManualLimit, cfg.OCR.ManualWindowHours)
 	billHandler := billhttp.NewHandler(billService, billSSEHandler)
+	billHandler.SetImageLimits(cfg.BillImage.MaxBytes, cfg.BillImage.MaxCount)
 
 	// 8. Khởi tạo Module Group
 	groupRepo := grouppostgres.New(db)
@@ -238,6 +242,9 @@ func New(ctx context.Context) (*App, error) {
 
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
+
+	app.workers.Add(1)
+	go func() { defer app.workers.Done(); billjobs.PollQueueDepth(workerCtx, billRepo, 15*time.Second) }()
 	return app, nil
 }
 

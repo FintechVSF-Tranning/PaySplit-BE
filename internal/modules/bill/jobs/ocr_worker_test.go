@@ -7,23 +7,42 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
 	"paysplit-backend/internal/modules/bill/domain"
 	"paysplit-backend/internal/modules/bill/jobs"
 	"paysplit-backend/internal/modules/bill/repository"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
 
 // MockRepo triển khai repository.Repository cho unit test
 type mockRepo struct {
 	repository.Repository
-	ocrJob     *domain.OCRJob
-	bill       *domain.Bill
-	updated    bool
-	success    bool
-	failed     bool
-	failReason string
+	ocrJob           *domain.OCRJob
+	bill             *domain.Bill
+	updated          bool
+	success          bool
+	failed           bool
+	failReason       string
+	purgedOlderThan  time.Duration
+	purgeCalled      bool
+	activeOCRJobs    int64
+	activeOCRJobsErr error
+}
+
+func (m *mockRepo) PurgeExpiredRawOCRResponses(ctx context.Context, olderThan time.Duration) (int64, error) {
+	m.purgeCalled = true
+	m.purgedOlderThan = olderThan
+	return 0, nil
+}
+
+func (m *mockRepo) CountActiveOCRJobs(ctx context.Context) (int64, error) {
+	if m.activeOCRJobsErr != nil {
+		return 0, m.activeOCRJobsErr
+	}
+	return m.activeOCRJobs, nil
 }
 
 func (m *mockRepo) GetOCRJobByID(ctx context.Context, id uuid.UUID) (*domain.OCRJob, error) {
@@ -293,6 +312,52 @@ func TestOCRWorker_DownloadError_ReturnsErrorForRetry(t *testing.T) {
 	}
 }
 
+func TestOCRWorker_DownloadError_MaxAttempts_FailsWithCleanedCodeNotRawError(t *testing.T) {
+	// covers: AC-14, security model ("raw provider content never appears in ... logs";
+	// AC-14.7 metric labels must never contain internals). The raw error text below deliberately
+	// looks like something that must never reach ocr_jobs.error_message, SSE, or a Prometheus label.
+	billID := uuid.New()
+	jobID := uuid.New()
+	groupID := uuid.New()
+
+	rawErr := errors.New("dial tcp res.cloudinary.com:443: connect: signature=abc123&api_key=sk_live_deadbeef")
+
+	repo := &mockRepo{
+		ocrJob: &domain.OCRJob{
+			ID: jobID, BillID: billID, Status: domain.OCRJobStatusQueued, Version: 1,
+		},
+		bill: &domain.Bill{
+			ID: billID, GroupID: groupID,
+			Images: []*domain.BillImage{{ID: uuid.New(), BillID: billID, ImageKey: "bills/op-1/0", Position: 0}},
+		},
+	}
+	storage := &mockStorage{downloadErr: rawErr}
+	broadcaster := &mockBroadcaster{}
+	worker := jobs.NewOCRWorker(repo, storage, &mockOCRProvider{}, broadcaster, 5*time.Second)
+
+	job := &river.Job[jobs.OCRJobArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 3, MaxAttempts: 3}, // last attempt -> failJob path
+		Args: jobs.OCRJobArgs{
+			BillID: billID.String(), JobID: jobID.String(), GroupID: groupID.String(),
+		},
+	}
+
+	before := testutil.ToFloat64(platformmetrics.OCRJobsTotal.WithLabelValues("failed", "download_failed"))
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v, want nil (terminal failJob path)", err)
+	}
+
+	if repo.failReason != "download_failed" {
+		t.Errorf("ocr_jobs.error_message = %q, want the bounded code %q, not the raw provider error", repo.failReason, "download_failed")
+	}
+
+	after := testutil.ToFloat64(platformmetrics.OCRJobsTotal.WithLabelValues("failed", "download_failed"))
+	if got, want := after, before+1; got != want {
+		t.Errorf("paysplit_ocr_jobs_total{state=failed,error_code=download_failed} = %v, want %v", got, want)
+	}
+}
+
 func TestOCRWorker_MultipleImagesStitched_Success(t *testing.T) {
 	// covers: AC-1, AC-3 (Multi-image stitching for multi-page bills)
 	billID := uuid.New()
@@ -366,5 +431,104 @@ func TestOCRWorker_MissingDependencies_ReturnsError(t *testing.T) {
 	err := worker.Work(context.Background(), job)
 	if err == nil {
 		t.Fatal("expected error when OCRWorker dependencies are nil, got nil")
+	}
+}
+
+func TestOCRWorker_NextRetry_UsesConfiguredBaseDelay(t *testing.T) {
+	// covers: AC-3 (provider retries must use the configured retry base delay, not River's default ATTEMPT^4 schedule)
+	worker := jobs.NewOCRWorker(&mockRepo{}, &mockStorage{}, &mockOCRProvider{}, nil, 5*time.Second)
+	worker.SetRetryBaseDelay(10 * time.Second)
+
+	before := time.Now()
+	next := worker.NextRetry(&river.Job[jobs.OCRJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1}})
+	delay := next.Sub(before)
+
+	if delay < 9*time.Second || delay > 11*time.Second {
+		t.Errorf("NextRetry() for attempt 1 with a 10s base delay = %v from now, want ~10s", delay)
+	}
+
+	next2 := worker.NextRetry(&river.Job[jobs.OCRJobArgs]{JobRow: &rivertype.JobRow{Attempt: 2}})
+	delay2 := next2.Sub(before)
+	if delay2 < 19*time.Second || delay2 > 21*time.Second {
+		t.Errorf("NextRetry() for attempt 2 with a 10s base delay = %v from now, want ~20s (exponential)", delay2)
+	}
+}
+
+func TestOCRWorker_NextRetry_NoConfiguredDelay_FallsBackToOneSecondBase(t *testing.T) {
+	// covers: AC-3 (an unset retry base delay must not panic or produce a zero/negative delay)
+	worker := jobs.NewOCRWorker(&mockRepo{}, &mockStorage{}, &mockOCRProvider{}, nil, 5*time.Second)
+
+	before := time.Now()
+	next := worker.NextRetry(&river.Job[jobs.OCRJobArgs]{JobRow: &rivertype.JobRow{Attempt: 1}})
+
+	if next.Sub(before) < time.Second || next.Sub(before) > 2*time.Second {
+		t.Errorf("NextRetry() with no configured base delay = %v from now, want ~1s default", next.Sub(before))
+	}
+}
+
+func TestPollQueueDepth_SetsGaugeFromDBCount(t *testing.T) {
+	// covers: AC-14 (paysplit_ocr_queue_depth is set from a direct DB count, correct across
+	// restarts, rollbacks and replicas, rather than an in-process running total)
+	repo := &mockRepo{activeOCRJobs: 3}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // stop after the immediate first poll, before any ticker fires
+	jobs.PollQueueDepth(ctx, repo, time.Hour)
+
+	if got, want := testutil.ToFloat64(platformmetrics.OCRQueueDepth), 3.0; got != want {
+		t.Errorf("paysplit_ocr_queue_depth = %v, want %v", got, want)
+	}
+}
+
+func TestPollQueueDepth_RepoError_LeavesGaugeUnchanged(t *testing.T) {
+	// covers: AC-14 (a transient DB error during polling must not zero out or corrupt the gauge)
+	platformmetrics.SetOCRQueueDepth(5)
+	t.Cleanup(func() { platformmetrics.SetOCRQueueDepth(0) })
+
+	repo := &mockRepo{activeOCRJobsErr: errors.New("db unavailable")}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	jobs.PollQueueDepth(ctx, repo, time.Hour)
+
+	if got, want := testutil.ToFloat64(platformmetrics.OCRQueueDepth), 5.0; got != want {
+		t.Errorf("paysplit_ocr_queue_depth = %v, want unchanged %v after a poll error", got, want)
+	}
+}
+
+func TestOCRRetentionWorker_Work_PurgesUsingConfiguredRetention(t *testing.T) {
+	// covers: AC-3, security model ("raw provider responses removed 30 days after job completion")
+	repo := &mockRepo{}
+	worker := jobs.NewOCRRetentionWorker(repo)
+
+	job := &river.Job[jobs.OCRRetentionJobArgs]{
+		Args: jobs.OCRRetentionJobArgs{OlderThanHours: 720}, // 30 days, matching the configured BILL_OCR_RAW_RETENTION_DAYS
+	}
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v", err)
+	}
+
+	if !repo.purgeCalled {
+		t.Fatal("expected PurgeExpiredRawOCRResponses to be called")
+	}
+	if repo.purgedOlderThan != 720*time.Hour {
+		t.Errorf("purge retention = %v, want %v", repo.purgedOlderThan, 720*time.Hour)
+	}
+}
+
+func TestOCRRetentionWorker_Work_ZeroOlderThanHours_FallsBackToThirtyDays(t *testing.T) {
+	// covers: AC-3 (a misconfigured or zero-value periodic job arg must not disable retention entirely)
+	repo := &mockRepo{}
+	worker := jobs.NewOCRRetentionWorker(repo)
+
+	job := &river.Job[jobs.OCRRetentionJobArgs]{Args: jobs.OCRRetentionJobArgs{OlderThanHours: 0}}
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() error = %v", err)
+	}
+
+	if repo.purgedOlderThan != 30*24*time.Hour {
+		t.Errorf("purge retention = %v, want the 30 day default", repo.purgedOlderThan)
 	}
 }

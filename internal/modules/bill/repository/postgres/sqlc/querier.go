@@ -11,6 +11,9 @@ import (
 )
 
 type Querier interface {
+	// Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
+	// tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
+	CountActiveOCRJobs(ctx context.Context) (int64, error)
 	CountManualOCRAttemptsInWindow(ctx context.Context, arg CountManualOCRAttemptsInWindowParams) (int64, error)
 	CountNonAwaitingDebtsByBillID(ctx context.Context, billID pgtype.UUID) (int64, error)
 	CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error)

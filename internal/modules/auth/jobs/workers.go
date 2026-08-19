@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"paysplit-backend/internal/modules/auth/domain"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
 
 type Repository interface {
@@ -68,6 +69,7 @@ func (w *Workers) cleanupMedia(ctx context.Context, now time.Time) {
 			}
 			continue
 		}
+		platformmetrics.RecordMediaCleanupFailure("delete_failed")
 		backoff := time.Minute * time.Duration(1<<min(job.AttemptCount-1, 10))
 		if backoff > 24*time.Hour {
 			backoff = 24 * time.Hour

@@ -34,7 +34,10 @@ func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 		timeoutHandler := http.TimeoutHandler(next, duration, timeoutBody)
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || strings.HasSuffix(r.URL.Path, "/events") {
+			// Miễn trừ dựa thuần vào route, không dựa vào header Accept do client tự đặt tùy ý
+			// (trước đây một client có thể thoát timeout trên bất kỳ route nào chỉ bằng cách gửi
+			// Accept: text/event-stream).
+			if strings.HasSuffix(r.URL.Path, "/events") {
 				next.ServeHTTP(w, r)
 				return
 			}

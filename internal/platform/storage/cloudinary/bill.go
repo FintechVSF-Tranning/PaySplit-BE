@@ -145,6 +145,9 @@ func (s *BillStorage) Delete(ctx context.Context, publicID string) error {
 	if result == nil {
 		return errors.New("empty Cloudinary destroy response")
 	}
+	if result.Result != "ok" {
+		return fmt.Errorf("destroy Cloudinary bill receipt: result=%q", result.Result)
+	}
 
 	return nil
 }
