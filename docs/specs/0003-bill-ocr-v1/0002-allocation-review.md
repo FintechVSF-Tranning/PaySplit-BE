@@ -10,7 +10,7 @@ This child owns **AC-5** through **AC-8**, preview reads in **AC-12**, and split
 
 ## Decision
 
-The mobile client sends one complete draft document with the version it read. The usecase validates and replaces bill fields, items, and assignments in one short transaction. Assignments store exact decimal ratios in `(0, 1]`, while every monetary result uses integer VND and Hamilton allocation.
+The mobile client sends one complete draft document with the version it read. The usecase validates and replaces bill fields, items, and assignments in one short transaction. Assignments store exact decimal ratios in `(0, 1]`, while every monetary result uses integer VND, floor allocation, and Creditor remainder absorption.
 
 ## Feature design
 
@@ -34,11 +34,20 @@ The mobile client sends one complete draft document with the version it read. Th
 
 1. Every item must have one or more assignment rows before review.
 2. Each `share_ratio` is `numeric(9,8)` in `(0, 1]`. The per item sum is exactly `1.00000000`.
-3. Equal split sorts member UUIDs by canonical 16 byte order and writes ratios for the selected members. When equal decimal ratios cannot sum exactly at eight digits, the last UUID receives the residual so the sum is exact. Money fairness still comes from Hamilton.
-4. Each line total is apportioned by ratio. Hamilton assigns remaining VND by largest fractional remainder, then canonical ascending member UUID byte order. Go and PostgreSQL tests must prove the same ordering.
-5. Service charge, VAT, and discount are each apportioned in proportion to member item subtotal using the same tie rule.
-6. If subtotal is zero, service charge, VAT, and discount belong to the Creditor. Discount must still satisfy the bill formula.
-7. Each item, service charge, VAT, and discount runs its own Hamilton allocation. Final amount is item subtotal plus service share plus VAT share minus discount share. `rounding_adjustment` is the sum of each component result minus truncation toward zero of that component exact rational share, with discount contribution subtracted. The mobile client can identify who absorbed indivisible VND.
+3. Equal split sorts member UUIDs by canonical 16 byte order and writes ratios for the selected members. When equal decimal ratios cannot sum exactly at eight digits, the last UUID receives the residual so the sum is exact. Money remainders still go to the Creditor.
+4. Each line total is apportioned by ratio, and every member receives the floor of their exact share. The undistributed VND is not spread by fractional remainder, it is absorbed by the Creditor. Go and PostgreSQL tests must prove the same result.
+5. Service charge, VAT, and discount are each apportioned in proportion to member item subtotal using the same floor rule.
+6. If subtotal is zero, service charge, VAT, and discount belong to the Creditor. This branch is computed directly and never enters the per member cap pass, because there is no other member to cap. It still obeys the rule that a negative Creditor final amount is rejected rather than clamped. Discount must still satisfy the bill formula.
+7. Allocation requires a Creditor. The Creditor is always part of the allocation set even when no item is assigned to them, and a bill whose Creditor is unset or is no longer an active group member is rejected with `422 BILL_NOT_READY` before allocation runs. There is no fallback absorber.
+8. Allocation runs as two strict passes, in this order.
+   - **Pass one, every member who is not the Creditor.** Each item, service charge, VAT, and discount runs its own floor allocation. Final amount is item subtotal plus service share plus VAT share minus discount share. If that value would be negative, that member discount share is capped so the value reaches exactly zero. Each member is capped from their own numbers alone, never from another member numbers, so the pass is order independent. `rounding_adjustment` is zero for every member in this pass.
+   - **Pass two, the Creditor.** Final amount is bill total minus the sum of every other member final amount, computed after every cap in pass one is settled. `rounding_adjustment` is that value minus the sum of the Creditor own four floor components, so it is negative when discount remainders and cut discount dominate.
+9. Two separate conditions make the Creditor final amount negative, and each gets its own error rather than a clamp.
+   - Discount is larger than the whole bill. Reconciliation rule 4 already blocks this before allocation, so allocation treats it as an internal invariant break.
+   - Discount is valid in total but concentrated on members who cannot absorb it. Capping those members moves the cut portion to the Creditor, and a Creditor with a small own share can still fall below zero. This is a legitimate input that the cap rule makes infeasible, so it returns `422 DISCOUNT_NOT_ALLOCATABLE` naming the members who hit the cap.
+10. Reading, review, and finalize share one reconciliation function. A bill detail read of a draft or reviewed bill recomputes the blocker list at read time and returns it in `mismatch_codes`, merged with any stored OCR warning so nothing is lost. `breakdown` is present only when that list is empty, so an absent breakdown always comes with a reason. The Creditor never meets a blocker for the first time at finalize.
+11. The stable blocker codes are `ITEM_UNASSIGNED`, `INACTIVE_MEMBER_ASSIGNED`, `DISCOUNT_EXCEEDS_BILL`, `SUBTOTAL_MISMATCH`, `TOTAL_MISMATCH`, `DISCOUNT_NOT_ALLOCATABLE`, and `CREDITOR_REQUIRED`. The cheap checks run first; allocation runs only when they pass, because an allocation error on already invalid data tells the user nothing useful. `mismatch_codes` is always an array, empty when the bill is clean, never null.
+12. The mobile client can still identify who absorbed indivisible VND, because only the Creditor carries a nonzero adjustment.
 
 ### Review
 
@@ -57,11 +66,13 @@ The mobile client sends one complete draft document with the version it read. Th
 ## Build plan
 
 1. Add ratio, review, version, constraint, and query changes with PostgreSQL tests, satisfies **AC-5** through **AC-7**.
-2. Implement one pure allocation package for item, charge, discount, zero subtotal, overflow, and deterministic Hamilton behavior, satisfies **AC-6** and **AC-14**.
+2. Implement one pure allocation package for item, charge, discount, zero subtotal, overflow, and deterministic floor allocation behavior, satisfies **AC-6** and **AC-14**.
 3. Build full draft replace through repository, usecase, HTTP, idempotency, activity, and OpenAPI, satisfies **AC-5**, **AC-6**, and **AC-8**.
 4. Build review and invalidation behavior with concurrent writer coverage, satisfies **AC-7**.
 5. Complete preview response, bill detail integration, bounds tests, and performance metrics, satisfies **AC-6**, **AC-12**, and **AC-14**.
+6. Rewrite the nine allocation tests still named after Hamilton, drop the largest remainder tie breaking test, and add a brute force test that asserts the sum to total, no negative, and single adjustment holder invariants across many input combinations, satisfies **AC-6** and **AC-10**.
+7. Add `rounding_adjustment` to the `MemberAllocation` preview schema in OpenAPI and describe it on both `MemberAllocation` and `BillShare` as zero for every member except the Creditor, satisfies **AC-6** and **AC-12**.
 
 ## Rationale
 
-One complete document avoids partial states where items and assignments describe different versions. Exact stored ratios match the mobile percentage model. Integer Hamilton calculation prevents money loss, and versioned review makes the human approval requirement observable rather than inferred from an earlier save.
+One complete document avoids partial states where items and assignments describe different versions. Exact stored ratios match the mobile percentage model. Integer floor calculation with one Creditor reconciliation makes the total exact by construction rather than by a distribution loop, and versioned review makes the human approval requirement observable rather than inferred from an earlier save.

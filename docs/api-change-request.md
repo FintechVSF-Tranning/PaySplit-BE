@@ -1,6 +1,6 @@
-# API Change Request, Member Invites
+# API Change Request: Member Invites & Group Governance / Settings
 
-**Date**: 2026-08-19  
+**Date**: 2026-08-20  
 **Status**: Proposed  
 **Requested by**: PaySplit FE Group Hub spec `0003-group-hub-bills-ui-v1.md`
 
@@ -46,12 +46,79 @@ The empty member request reuses the newest available invite when one exists. Oth
 
 Keep `DELETE /api/v1/groups/{id}/invites/{inviteId}` restricted to the active Captain.
 
+---
+
+## Group Governance & Settings API Changes
+
+### Rename Group
+
+Add `PATCH /api/v1/groups/{id}`.
+
+**Goal**: Cho phép Captain đổi tên nhóm chi tiêu khi có nhu cầu (ví dụ: đổi từ "Du lịch hè" thành "Du lịch Đà Lạt 2026").
+
+- **Quyền & Xác thực**: Bearer Token + Live Session. Người gọi bắt buộc phải là **Active Captain** trong nhóm.
+  - Nếu không phải Captain: Trả về `403 CAPTAIN_REQUIRED`.
+  - Nếu không phải thành viên hoặc nhóm không tồn tại: Trả về `404 GROUP_NOT_FOUND`.
+- **Request Body**:
+  ```json
+  {
+    "name": "Du lịch Đà Lạt 2026"
+  }
+  ```
+- **Validation**:
+  - Áp dụng `strings.TrimSpace(name)`.
+  - Độ dài hợp lệ: Từ 1 đến 100 ký tự Unicode (`utf8.RuneCountInString`).
+  - Nếu tên rỗng hoặc vượt quá 100 ký tự: Trả về `400 VALIDATION_FAILED`.
+- **Khóa & Giao dịch**: Khóa dòng nhóm bằng `SELECT id FROM groups WHERE id = $1 FOR UPDATE`.
+- **Activity**: Ghi 1 dòng vào `group_activities` với `action_type = 'group_renamed'`, mô tả: `"{CaptainName} đã đổi tên nhóm thành \"{NewName}\""`, metadata: `{"old_name": "...", "new_name": "..."}`.
+- **Success Response**: `200 OK`
+  ```json
+  {
+    "group": {
+      "id": "01912345-6789-7abc-def0-1234567890ab",
+      "name": "Du lịch Đà Lạt 2026",
+      "currency": "VND",
+      "created_at": "2026-08-15T08:00:00Z"
+    }
+  }
+  ```
+
+---
+
+### Disband / Delete Group
+
+Add `DELETE /api/v1/groups/{id}`.
+
+**Goal**: Cho phép Captain giải tán và xóa nhóm khi nhóm đã hoàn thành mục đích chi tiêu và không còn bất kỳ nghĩa vụ tài chính nào.
+
+- **Quyền & Xác thực**: Bearer Token + Live Session. Người gọi bắt buộc phải là **Active Captain** trong nhóm.
+  - Nếu không phải Captain: Trả về `403 CAPTAIN_REQUIRED`.
+  - Nếu không phải thành viên hoặc nhóm không tồn tại: Trả về `404 GROUP_NOT_FOUND`.
+- **Điều kiện tiên quyết (Pre-conditions & Invariants)**:
+  - Tất cả các hóa đơn trong nhóm phải ở trạng thái kết thúc (`finalized` hoặc `voided`), không còn hóa đơn nháp (`draft` hoặc `processing` OCR):
+    `SELECT count(*) FROM bills WHERE group_id = $1 AND status = 'draft'` phải bằng `0`.
+  - Toàn bộ công nợ giữa tất cả các thành viên trong nhóm phải được tất toán sạch 100% (không còn bất kỳ dòng nợ nào có trạng thái khác `settled`):
+    `SELECT count(*) FROM debts WHERE group_id = $1 AND status <> 'settled'` phải bằng `0`.
+  - Nếu còn hóa đơn chưa chốt hoặc còn nợ chưa tất toán: Trả về `409 GROUP_HAS_UNSETTLED_OBLIGATIONS` kèm chi tiết số lượng hóa đơn/công nợ tồn đọng.
+- **Hành động**:
+  - Đánh dấu trạng thái tất cả các thành viên active thành `inactive` (`left_at = now()`).
+  - Xóa mềm / Lưu trữ nhóm (`UPDATE groups SET status = 'archived' ...` hoặc xóa nhóm theo chính sách xóa cascade dữ liệu).
+  - Thu hồi tất cả các mã mời active còn lại của nhóm.
+- **Success Response**: `204 No Content`.
+
+---
+
 ## Security And Audit Requirements
 
 Invite codes are sensitive. Return a raw code only from the list and create or reuse responses to active members of that group. Redact codes and invite URLs from HTTP access logs, application logs, activity metadata, analytics, and error reports. Rate limit preview and join attempts by account and IP address, and return the same public error shape for an unknown, expired, revoked, or exhausted code.
 
 Write an `invite_created` activity when a new invite is created. Reusing an existing invite does not write an activity. Include the invite ID and policy fields in activity metadata, never the code or URL.
 
+Write a `group_renamed` activity when group name is updated by the Captain.
+
 ## Frontend Dependency
 
-`PaySplit-FE/docs/specs/0003-group-hub-bills-ui-v1.md` requires this API for the Invite Code Bar and member invite management view.
+`PaySplit-FE/docs/specs/0003-group-hub-bills-ui-v1.md` requires these APIs for:
+1. Member Invite Code Bar and Management Modal Sheet.
+2. Group Settings Modal Bottom Sheet (`GroupSettingsBottomSheet`): Rename group, Member roles & governance, Leave group, and Disband group.
+

@@ -35,11 +35,11 @@ Finalize is one synchronous PostgreSQL transaction guarded by the bill row, curr
 
 | Field | Meaning |
 |---|---|
-| `item_subtotal` | Sum of the member item allocations after item level Hamilton rounding |
+| `item_subtotal` | Sum of the member item allocations after item level floor rounding |
 | `service_charge_share` | Member service allocation, or all service charge for the Creditor when subtotal is zero |
 | `vat_share` | Member VAT allocation, or all VAT for the Creditor when subtotal is zero |
-| `discount_share` | Member discount allocation |
-| `rounding_adjustment` | Sum of component Hamilton results minus each exact component truncated toward zero, with discount contribution subtracted |
+| `discount_share` | Member discount allocation, capped at what that member owes so their final amount never goes below zero |
+| `rounding_adjustment` | Zero for every member other than the Creditor. For the Creditor it is their final amount minus the sum of their four floor components, and it is negative when discount remainders dominate |
 | `final_amount` | Exact immutable amount attributed to the member |
 
 The sum of `final_amount` is bill total. The sum of positive non Creditor final amounts is the sum of debts for the bill. These are different invariants because the Creditor can consume part of the bill.
@@ -62,6 +62,8 @@ The sum of `final_amount` is bill total. The sum of positive non Creditor final 
 | Draft changed after review | `409 VERSION_CONFLICT` or `409 REVIEW_REQUIRED` |
 | Invalid ratios, totals, or assignee | `422 BILL_NOT_READY` with field level blockers |
 | Creditor bank incomplete | `422 BANK_ACCOUNT_REQUIRED` |
+| Creditor unset or no longer an active member | `422 BILL_NOT_READY` before allocation runs |
+| Discount valid in total but concentrated on members who cannot absorb it, so the cascade drives the Creditor below zero | `422 DISCOUNT_NOT_ALLOCATABLE` naming the capped members |
 | Concurrent finalize | one commit, later request replays when key matches or returns `409 BILL_IMMUTABLE` |
 | Share or debt write fails | full rollback, bill remains draft |
 | Notification delivery fails after commit | River retry, finalized bill remains valid |
@@ -74,6 +76,7 @@ The sum of `final_amount` is bill total. The sum of positive non Creditor final 
 3. Build immutable detail reads and verify snapshot to debt traceability, satisfies **AC-10** and **AC-12**.
 4. Build void and replacement checks with payment boundary and concurrent request coverage, satisfies **AC-11**.
 5. Complete failure injection, OpenAPI, metrics, redaction, and end to end tests, satisfies **AC-9** through **AC-14**.
+6. Describe `rounding_adjustment` on the `BillShare` schema in OpenAPI as zero for every member except the Creditor, and add a test for a bill whose discount is valid in total but not allocatable, satisfies **AC-10** and **AC-12**.
 
 ## Rationale
 
