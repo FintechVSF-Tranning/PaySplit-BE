@@ -9,7 +9,6 @@ import (
 
 	"paysplit-backend/internal/modules/notification/domain"
 	"paysplit-backend/internal/modules/notification/repository"
-	"paysplit-backend/internal/platform/notification/fcm"
 
 	"github.com/brpaz/lib-go/pagination"
 )
@@ -84,20 +83,24 @@ func (m *mockRepo) ClearFCMToken(ctx context.Context, userID, fcmToken string) e
 
 type mockPushNotifier struct {
 	sentToken    string
-	sentMsg      fcm.PushMessage
-	broadcastMsg fcm.PushMessage
+	sentMsg      domain.PushMessage
+	broadcastMsg domain.PushMessage
 	errToSend    error
 }
 
-func (m *mockPushNotifier) SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error {
+func (m *mockPushNotifier) SendToDevice(ctx context.Context, fcmToken string, msg domain.PushMessage) error {
 	m.sentToken = fcmToken
 	m.sentMsg = msg
 	return m.errToSend
 }
 
-func (m *mockPushNotifier) SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error {
+func (m *mockPushNotifier) SendToAllUsers(ctx context.Context, msg domain.PushMessage) error {
 	m.broadcastMsg = msg
 	return m.errToSend
+}
+
+func (m *mockPushNotifier) IsInvalidToken(err error) bool {
+	return err != nil && err.Error() == "invalid token"
 }
 
 type mockJobEnqueuer struct {
@@ -113,6 +116,19 @@ func (m *mockJobEnqueuer) EnqueueNotificationTx(ctx context.Context, ex reposito
 	return nil
 }
 
+func samplePushMessage() domain.PushMessage {
+	return domain.PushMessage{
+		Title: "Nhắc nhở thanh toán 💸",
+		Body:  "Lâm vừa nhắc bạn thanh toán 50.000đ.",
+		Data: map[string]string{
+			"type":     domain.TypePaymentReminder,
+			"group_id": "group-1",
+			"bill_id":  "bill-1",
+			"amount":   "50000",
+		},
+	}
+}
+
 func TestSendToUser_WithJobEnqueuer(t *testing.T) {
 	repo := &mockRepo{}
 	notifier := &mockPushNotifier{}
@@ -120,7 +136,7 @@ func TestSendToUser_WithJobEnqueuer(t *testing.T) {
 	service := NewService(repo, notifier, enqueuer)
 
 	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+	msg := samplePushMessage()
 
 	err := service.SendToUser(ctx, "user-1", msg)
 	if err != nil {
@@ -142,7 +158,7 @@ func TestSendToUser_EnqueueFailureDoesNotLeaveOrphanRecord(t *testing.T) {
 	service := NewService(repo, notifier, enqueuer)
 
 	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+	msg := samplePushMessage()
 
 	err := service.SendToUser(ctx, "user-1", msg)
 	if err == nil {
@@ -161,12 +177,12 @@ func TestSendToUser_RejectsEmptyTitleOrBody(t *testing.T) {
 	repo := &mockRepo{}
 	service := NewService(repo, &mockPushNotifier{}, &mockJobEnqueuer{})
 
-	err := service.SendToUser(context.Background(), "user-1", fcm.PushMessage{Title: "", Body: "body"})
+	err := service.SendToUser(context.Background(), "user-1", domain.PushMessage{Title: "", Body: "body"})
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for empty title, got %v", err)
 	}
 
-	err = service.SendToUser(context.Background(), "user-1", fcm.PushMessage{Title: "title", Body: "  "})
+	err = service.SendToUser(context.Background(), "user-1", domain.PushMessage{Title: "title", Body: "  "})
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for empty body, got %v", err)
 	}
@@ -178,7 +194,7 @@ func TestSendToUser_TruncatesOverLongBody(t *testing.T) {
 	service := NewService(repo, &mockPushNotifier{}, enqueuer)
 
 	longBody := strings.Repeat("a", maxBodyLength+500)
-	err := service.SendToUser(context.Background(), "user-1", fcm.PushMessage{Title: "title", Body: longBody})
+	err := service.SendToUser(context.Background(), "user-1", domain.PushMessage{Title: "title", Body: longBody})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -196,7 +212,7 @@ func TestSendToUser_FallbackDirectSend(t *testing.T) {
 	service := NewService(repo, notifier, nil)
 
 	ctx := context.Background()
-	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "group-1", "bill-1")
+	msg := samplePushMessage()
 
 	err := service.SendToUser(ctx, "user-1", msg)
 	if err != nil {

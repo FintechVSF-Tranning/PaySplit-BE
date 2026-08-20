@@ -42,11 +42,11 @@ func (m *mockWorkerRepo) ClearFCMToken(ctx context.Context, userID, fcmToken str
 
 type mockWorkerNotifier struct {
 	sentToken string
-	sentMsg   fcm.PushMessage
+	sentMsg   domain.PushMessage
 	errToSend error
 }
 
-func (m *mockWorkerNotifier) SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error {
+func (m *mockWorkerNotifier) SendToDevice(ctx context.Context, fcmToken string, msg domain.PushMessage) error {
 	m.sentToken = fcmToken
 	m.sentMsg = msg
 	return m.errToSend
@@ -162,5 +162,26 @@ func TestNotificationWorker_Work_NoActiveToken(t *testing.T) {
 	}
 	if notifier.sentToken != "" {
 		t.Errorf("expected nothing sent, got token %s", notifier.sentToken)
+	}
+}
+
+func TestPayloadToData_HandlesVariousTypes(t *testing.T) {
+	// Tests that numeric, boolean, and string fields in payload JSON are converted cleanly to strings
+	raw := []byte(`{"bill_id":"b-123","amount":50000,"is_settled":true,"zero":0}`)
+	data := payloadToData(raw)
+	if data == nil {
+		t.Fatal("expected non-nil data")
+	}
+	if data["bill_id"] != "b-123" {
+		t.Errorf("expected bill_id b-123, got %s", data["bill_id"])
+	}
+	if data["amount"] != "50000" {
+		t.Errorf("expected amount 50000, got %s", data["amount"])
+	}
+	if data["is_settled"] != "true" {
+		t.Errorf("expected is_settled true, got %s", data["is_settled"])
+	}
+	if data["zero"] != "0" {
+		t.Errorf("expected zero 0, got %s", data["zero"])
 	}
 }
