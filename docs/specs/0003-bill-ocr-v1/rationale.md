@@ -67,6 +67,48 @@ Cloudinary reuse avoids another storage provider, and private assets plus short 
 
 The engineer chose live bank profile lookup rather than a finalization snapshot. This keeps Module 3 smaller, but it allows a profile change to affect later QR generation. Module 4 must make that tradeoff visible and choose its own payment time snapshot rule.
 
+## Allocation algorithm revision, 2026 08 20
+
+The original design used Hamilton allocation (largest remainder). A fresh model review on 2026 08 20 found that the exact integer rewrite of that code could produce a total larger than the bill, because a member whose share went negative was clamped to zero and the clamped amount simply vanished. The reconciliation step that the earlier floating point version used to catch this had been removed. See [the review](../../reviews/2026-08-20-fix-ocr-bill.md).
+
+Two ways forward were weighed.
+
+### Option A: Keep Hamilton and restore reconciliation
+
+Keep the largest remainder distribution and add back a step that redistributes any clamped amount, plus an invariant check on the total. (basis: the existing implementation and its test suite)
+
+**Pros**:
+
+1. No spec change, no test rewrite, no change to the meaning of `rounding_adjustment`.
+2. Fairest possible spread of indivisible VND, since the member with the largest fractional remainder is the one who absorbs it.
+
+**Cons**:
+
+1. The reconciliation loop is exactly the part that was already written once, removed once, and got the total wrong. It is the fragile piece.
+2. Correctness depends on the interaction of four separate distribution passes, which is hard to reason about and hard to test exhaustively.
+3. Requires sorting members per component, so cost grows with `n log n` rather than `n`.
+
+### Option B: Floor everything and let the Creditor absorb the remainder (chosen)
+
+Every member receives the floor of each component. The Creditor final amount is computed as bill total minus the sum of every other member final amount. (basis: the pattern used by common bill splitting apps such as Splitwise for remainders too small to be worth spreading)
+
+**Pros**:
+
+1. The total is exact by construction, not by a distribution loop that has to be kept correct. This is what closes the bug class rather than the single bug.
+2. Linear in the number of members, no sorting, no fractional remainder bookkeeping.
+3. Far simpler to read and to test.
+4. The Creditor is the person who paid the whole bill up front, so giving them the leftover VND is defensible to a user.
+
+**Cons**:
+
+1. Less fair in principle for rounding. The Creditor always absorbs the remainder rather than the member who was closest to rounding up. In VND that remainder is at most a few dong per component, so the practical unfairness is negligible.
+2. A separate and much larger unfairness comes from the discount cap. When a member is assigned more discount than they owe, the cut portion moves to the Creditor whole, not as a few dong. On a bill with a big discount concentrated on one small share, the Creditor can absorb a real amount of money. This is disclosed here because the rounding argument above does not cover it. When the cascade pushes the Creditor below zero the bill is rejected rather than silently shifted.
+3. `rounding_adjustment` changes meaning. It is now zero for everyone except the Creditor. The mobile client still gets a truthful answer to who absorbed the indivisible VND.
+4. Nine existing tests named after Hamilton have to be rewritten, and the tie breaking test for largest remainder is dropped.
+5. Discount still needs a per member cap, because a discount share can exceed what a member owes. Floor allocation alone does not remove that case.
+
+Option B was chosen. The deciding factor is that it makes the sum to total invariant structural rather than emergent, which is the property the review found missing.
+
 ## References
 
 **Project sources**:
@@ -83,7 +125,7 @@ The engineer chose live bank profile lookup rather than a finalization snapshot.
 **Practices and standards**:
 
 1. Idempotency keys for money and external side effects.
-2. Exact integer money arithmetic and deterministic Hamilton allocation.
+2. Exact integer money arithmetic and deterministic floor allocation with Creditor remainder absorption.
 3. Short database transactions and consistent row lock ordering.
 4. Composite group foreign keys for tenant isolation.
 5. Partial indexes for active work and cursor pagination for stable list reads.

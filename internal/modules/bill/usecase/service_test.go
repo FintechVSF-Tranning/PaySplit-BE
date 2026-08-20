@@ -1870,3 +1870,35 @@ func TestGetBillDetail_FinalizedBill_DoesNotRecordPreviewDurationMetric(t *testi
 		t.Errorf("preview duration histogram sample count changed for a finalized bill: before=%d after=%d", before, after)
 	}
 }
+
+// mockNilReserveRepo mô phỏng một repository trả về (nil, nil) từ ReserveIdempotencyKey. Trước khi
+// lớp chắn được thêm vào, usecase dereference thẳng con trỏ này và làm sập tiến trình.
+type mockNilReserveRepo struct {
+	repository.Repository
+}
+
+func (m *mockNilReserveRepo) ReserveIdempotencyKey(
+	ctx context.Context,
+	params repository.ReserveIdempotencyParams,
+) (*repository.IdempotencyRecord, error) {
+	return nil, nil
+}
+
+func TestCheckOrReserveIdempotency_NilRecord_ReturnsErrorNotPanic(t *testing.T) {
+	service := usecase.NewService(&mockNilReserveRepo{}, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	rec, err := service.CheckOrReserveIdempotency(
+		context.Background(),
+		uuid.New(),
+		"bill.create",
+		"key-abc",
+		[]byte(`{"a":1}`),
+	)
+
+	if rec != nil {
+		t.Fatalf("mong đợi record nil, nhận %+v", rec)
+	}
+	if !errors.Is(err, domain.ErrIdempotencyInProgress) {
+		t.Fatalf("mong đợi ErrIdempotencyInProgress, nhận %v", err)
+	}
+}

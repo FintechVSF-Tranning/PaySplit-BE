@@ -1,0 +1,1413 @@
+{
+  "info": {
+    "name": "PaySplit BE, Bill va OCR",
+    "description": "Bo suu tap test tay module Bill va OCR.\n\nChay lan luot tu tren xuong. Moi request tu luu bien vao environment, nen ban khong can copy paste ID thu cong va khong can cham database.\n\nTao truoc mot environment co bien base_url = http://localhost:8080",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Chuan bi, tai khoan va nhom",
+      "item": [
+        {
+          "name": "0.1 Dang ky nguoi A (Creditor va Captain)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sign-up",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sign-up"
+              ]
+            },
+            "description": "Chay Pre-request script tu sinh email va so dien thoai moi moi lan, nen ban chay lai bao nhieu lan cung duoc.\n\nTra ve 201 voi status pending_verification. Kiem tra hop thu de lay ma 6 so.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"phone_number\": \"{{phoneA}}\",\n  \"display_name\": \"Nguoi A\",\n  \"password\": \"Passw0rd!23\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = Date.now();",
+                  "pm.environment.set('emailA', 'test' + n + 'a@example.com');",
+                  "pm.environment.set('phoneA', '+8490' + String(n).slice(-7));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('userA_id', d.user.id);",
+                  "console.log('Kiem tra email', pm.environment.get('emailA'), 'de lay ma 6 so');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.2 Xac thuc email nguoi A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            },
+            "description": "Thay 000000 bang ma 6 so trong email that.\n\nNeu ban khong nhan duoc email, xem muc 'Khong nhan duoc email' trong docs/postman/README.md.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"otp\": \"000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.3 Dang nhap nguoi A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sign-in",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sign-in"
+              ]
+            },
+            "description": "device_id la BAT BUOC. Thieu no ban se nhan VALIDATION_FAILED chu khong phai loi noi ro thieu gi.\n\nAccess token song 15 phut. Het han thi chay lai request nay.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"Passw0rd!23\",\n  \"device_id\": \"{{$guid}}\",\n  \"device_name\": \"postman\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('tokenA', d.access_token);",
+                  "pm.environment.set('userA_id', d.user.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.4 Tao nhom",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/groups",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "groups"
+              ]
+            },
+            "description": "Quan trong: membership.id trong response CHINH LA member_id cua nguoi A.\n\nCac API hoa don dung member_id, khong phai user_id. Day la cho de nham nhat.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Nhom test Postman\",\n  \"currency\": \"VND\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('group_id', d.group.id);",
+                  "pm.environment.set('memberA_id', d.membership.id);",
+                  "console.log('memberA_id =', d.membership.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.5 Tao link moi",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/groups/{{group_id}}/invites",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "groups",
+                "{{group_id}}",
+                "invites"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('invite_code', pm.response.json().invite.code);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.6 Dang ky nguoi B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sign-up",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sign-up"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"phone_number\": \"{{phoneB}}\",\n  \"display_name\": \"Nguoi B\",\n  \"password\": \"Passw0rd!23\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = Date.now();",
+                  "pm.environment.set('emailB', 'test' + n + 'b@example.com');",
+                  "pm.environment.set('phoneB', '+8491' + String(n).slice(-7));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.7 Xac thuc email nguoi B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            },
+            "description": "Thay 000000 bang ma 6 so trong email that.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"otp\": \"000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.8 Dang nhap nguoi B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sign-in",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sign-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"password\": \"Passw0rd!23\",\n  \"device_id\": \"{{$guid}}\",\n  \"device_name\": \"postman-b\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.environment.set('tokenB', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.9 Nguoi B vao nhom",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenB}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/groups/join",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "groups",
+                "join"
+              ]
+            },
+            "description": "join.membership_id chinh la member_id cua nguoi B.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{invite_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('memberB_id', d.join.membership_id);",
+                  "console.log('memberB_id =', d.join.membership_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.10 Kiem tra lai member_id (tuy chon)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/groups/{{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "groups",
+                "{{group_id}}"
+              ]
+            },
+            "description": "Neu ban lo mat bien, request nay tra ve members[] voi membership_id cua tung nguoi."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "d.members.forEach(m => console.log(m.role, m.display_name, m.membership_id));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Tao hoa don va xem chia tien",
+      "item": [
+        {
+          "name": "1.1 Tao hoa don thu cong, tong LE 100001",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills"
+              ]
+            },
+            "description": "Dung tong LE (100001) co y, de thay phan du 1 dong di ve dau.\n\n100001 chia doi ra 50000 moi nguoi, du 1 dong. Dong do phai ve Creditor (nguoi tao hoa don, o day la nguoi A).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"{{group_id}}\",\n  \"merchant_name\": \"Quan test\",\n  \"subtotal\": 100001,\n  \"service_charge\": 0,\n  \"vat\": 0,\n  \"discount\": 0,\n  \"total\": 100001,\n  \"split_method\": \"item_ratio\",\n  \"items\": [\n    {\n      \"name\": \"Lau\",\n      \"quantity\": \"1\",\n      \"unit_price\": 100001,\n      \"line_total\": 100001,\n      \"assignments\": [\n        {\n          \"member_id\": \"{{memberA_id}}\",\n          \"weight\": \"1\"\n        },\n        {\n          \"member_id\": \"{{memberB_id}}\",\n          \"weight\": \"1\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('bill_id', d.bill.id);",
+                  "pm.test('Creditor la nguoi A', () => pm.expect(d.bill.creditor_member_id).to.eql(pm.environment.get('memberA_id')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 Xem chia tien",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{bill_id}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{bill_id}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Day la request quan trong nhat.\n\nNhin vao breakdown:\n- Creditor: final_amount 50001, rounding_adjustment 1\n- Nguoi con lai: final_amount 50000, rounding_adjustment 0\n- Tong 100001, khop tuyet doi voi bill.total\n\nTab Test Results se tu kiem tra ba dieu do."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "const b = d.bill, bd = d.breakdown;",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Co breakdown', () => pm.expect(bd).to.be.an('array').with.lengthOf(2));",
+                  "pm.test('mismatch_codes rong', () => pm.expect(b.mismatch_codes).to.eql([]));",
+                  "const tong = bd.reduce((s,a) => s + a.final_amount, 0);",
+                  "pm.test('Tong bang bill.total', () => pm.expect(tong).to.eql(b.total));",
+                  "const cre = bd.find(a => a.member_id === b.creditor_member_id);",
+                  "const khac = bd.find(a => a.member_id !== b.creditor_member_id);",
+                  "pm.test('Creditor hap thu phan du', () => pm.expect(cre.final_amount).to.eql(50001));",
+                  "pm.test('Nguoi kia tron 50000', () => pm.expect(khac.final_amount).to.eql(50000));",
+                  "pm.test('Chi Creditor co adjustment', () => { pm.expect(cre.rounding_adjustment).to.eql(1); pm.expect(khac.rounding_adjustment).to.eql(0); });",
+                  "console.log('CREDITOR', cre.final_amount, 'adj', cre.rounding_adjustment);",
+                  "console.log('THANH VIEN', khac.final_amount, 'adj', khac.rounding_adjustment);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.3 Hoa don co mon chua gan ai, phai co ma chan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"{{group_id}}\",\n  \"merchant_name\": \"Chua gan\",\n  \"subtotal\": 5000,\n  \"total\": 5000,\n  \"split_method\": \"item_ratio\",\n  \"items\": [\n    {\n      \"name\": \"X\",\n      \"quantity\": \"1\",\n      \"unit_price\": 5000,\n      \"line_total\": 5000,\n      \"assignments\": []\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('bill_unassigned', pm.response.json().bill.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.4 Doc hoa don do, xem ma chan",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{bill_unassigned}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{bill_unassigned}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Truoc khi sua, request nay tra 200 voi mismatch_codes rong va khong co breakdown, nen client khong phan biet duoc hoa don hong voi hoa don trong.\n\nBay gio no phai tra ITEM_UNASSIGNED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('Co ma ITEM_UNASSIGNED', () => pm.expect(d.bill.mismatch_codes).to.include('ITEM_UNASSIGNED'));",
+                  "pm.test('Khong co breakdown', () => pm.expect(d.breakdown).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.5 Hoa don giam gia lon hon tien hang",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"{{group_id}}\",\n  \"merchant_name\": \"Giam gia vuot\",\n  \"subtotal\": 100000,\n  \"discount\": 200000,\n  \"total\": 0,\n  \"split_method\": \"item_ratio\",\n  \"items\": [\n    {\n      \"name\": \"X\",\n      \"quantity\": \"1\",\n      \"unit_price\": 100000,\n      \"line_total\": 100000,\n      \"assignments\": [\n        {\n          \"member_id\": \"{{memberA_id}}\",\n          \"weight\": \"1\"\n        },\n        {\n          \"member_id\": \"{{memberB_id}}\",\n          \"weight\": \"1\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('bill_baddiscount', pm.response.json().bill.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.6 Doc hoa don do",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{bill_baddiscount}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{bill_baddiscount}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Phai tra ve hai ma: DISCOUNT_EXCEEDS_BILL va TOTAL_MISMATCH."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const c = pm.response.json().bill.mismatch_codes;",
+                  "pm.test('DISCOUNT_EXCEEDS_BILL', () => pm.expect(c).to.include('DISCOUNT_EXCEEDS_BILL'));",
+                  "pm.test('TOTAL_MISMATCH', () => pm.expect(c).to.include('TOTAL_MISMATCH'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.7 Review hoa don 1.1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{bill_id}}/review?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{bill_id}}",
+                "review"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Version phai la version HIEN TAI cua hoa don. Sai version tra 409 VERSION_CONFLICT.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.environment.set('bill_version', pm.response.json().bill.version);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.8 Chot so",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{bill_id}}/finalize?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{bill_id}}",
+                "finalize"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Chot so doi Creditor co tai khoan ngan hang. Neu nhan 422 BANK_ACCOUNT_REQUIRED thi chay request 1.8b truoc.\n\nSau khi chot so, bill_shares giu dung con so o buoc 1.2, va debts chi co MOT dong 50000 cho nguoi khong phai Creditor.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": \"{{bill_version}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "const shares = d.bill.shares || d.shares || [];",
+                  "if (shares.length) {",
+                  "  const tong = shares.reduce((s,a) => s + a.final_amount, 0);",
+                  "  pm.test('Tong shares bang total', () => pm.expect(tong).to.eql(d.bill.total));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.8b Gan tai khoan ngan hang cho Creditor",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/users/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "description": "Chay cai nay neu 1.8 tra 422 BANK_ACCOUNT_REQUIRED, roi chay lai 1.8.\n\nCAI BAY: bank_code phai la MA NGAN nhu ICB, VCB, BIDV. KHONG phai so BIN 970415.\nDua so BIN vao se nhan 400 UNSUPPORTED_BANK, va thong bao loi khong noi ro la ban dua sai dinh dang.\n\nChay GET /api/v1/banks de xem danh sach: moi ngan hang co ca 'code' (ICB) lan 'bin' (970415). Dung 'code'.\n\nBa truong phai gui cung luc, database co rang buoc bat cả ba cung null hoac cung co gia tri.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bank_code\": \"ICB\",\n  \"bank_account_number\": \"0123456789\",\n  \"bank_account_holder\": \"NGUOI A\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. OCR, Cloudinary va SSE",
+      "item": [
+        {
+          "name": "2.1 Tao hoa don TU ANH (multipart)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills"
+              ]
+            },
+            "description": "QUAN TRONG: sang tab Body > form-data, o dong 'images' bam Select Files va chon anh hoa don cua ban. Postman khong cho collection mang san duong dan file.\n\nDinh dang: JPEG, PNG hoac HEIC, toi da 10 MB, toi da 5 anh (them dong images nua neu muon nhieu anh).\n\nDUNG dat Content-Type thu cong. Postman tu sinh boundary, dat tay se lam hong request.\n\nTra ve 202 (khong phai 201) kem ocr_job o trang thai queued.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "merchant_name",
+                  "value": "Quan OCR",
+                  "type": "text"
+                },
+                {
+                  "key": "images",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const d = pm.response.json();",
+                  "pm.environment.set('ocr_bill_id', d.bill.id);",
+                  "pm.environment.set('ocr_job_id', d.ocr_job.id);",
+                  "pm.test('Job dang queued', () => pm.expect(d.ocr_job.status).to.eql('queued'));",
+                  "pm.test('Co anh duoc luu', () => pm.expect(d.bill.images).to.be.an('array').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 Doi OCR xong",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "DIEU BAN CAN BIET TRUOC: chi tiet hoa don KHONG tra ve trang thai job OCR.\nResponse chi co bill, breakdown, signed_urls. Trong bill khong co truong ocr_job nao.\nToi da kiem chung dieu nay tren server that.\n\nVay lam sao biet OCR xong chua trong Postman? Ba cach, chon mot:\n\nCACH 1, de nhat: doi khoang 30 giay roi chay thang request 2.5 (apply-candidate).\n  - Neu tra 409 OCR_NOT_READY thi job chua xong, doi them roi thu lai.\n  - Neu tra 200 thi xong roi.\n\nCACH 2: mo mot terminal ben canh va chay lenh SSE (xem mo ta request 2.2b).\n  Day la duong duy nhat lo ra trang thai job, va la duong app di dong that su dung.\n\nCACH 3: hoi thang database.\n  docker compose exec -T postgres psql -U postgres -d paysplit -c \\\n    \"SELECT status, attempts FROM ocr_jobs WHERE bill_id='<bill id>';\"\n\nRequest nay van huu ich: no kiem tra ban nhap CHUA bi OCR ghi de, va raw_response khong lot ra API."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Ban nhap chua bi OCR ghi de', () => {",
+                  "  pm.expect(d.bill.subtotal).to.eql(0);",
+                  "  pm.expect(d.bill.version).to.eql(1);",
+                  "  pm.expect(d.bill.items || []).to.be.empty;",
+                  "});",
+                  "pm.test('Khong lo raw_response ra API', () => pm.expect(pm.response.text()).to.not.include('raw_response'));",
+                  "pm.test('Co anh va URL da ky', () => pm.expect(Object.keys(d.signed_urls || {})).to.not.be.empty);",
+                  "if (d.signed_urls) { const u = Object.values(d.signed_urls)[0]; pm.environment.set('signed_url', u); console.log('URL anh da ky:', u); }",
+                  "console.log('Luu y: response nay KHONG chua trang thai job OCR. Xem mo ta request.');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2b Xem SSE (doc mo ta, khong bam Send)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}/events?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Postman xu ly Server-Sent Events rat kem. Ban co the bam Send, nhung nhieu ban Postman se treo\ncho toi khi het timeout roi moi do het mot cuc ra, thay vi hien tung su kien khi chung toi.\n\nCach chac chan hon la chay trong terminal:\n\n  curl -N -H \"Authorization: Bearer <tokenA>\" \\\n    \"http://localhost:8080/api/v1/bills/<ocr_bill_id>/events?group_id=<group_id>\"\n\nLay tokenA, ocr_bill_id va group_id tu tab Environment cua Postman.\n\nBan se thay:\n  event: snapshot      <- ngay khi ket noi, kem trang thai OCR hien tai\n  event: ocr.updated   <- status chuyen processing roi succeeded\n  event: heartbeat     <- moi 15 giay\n\nSau 15 phut server chu dong gui event: close va ngat, buoc client tu ket noi lai.\nCtrl+C de thoat."
+          }
+        },
+        {
+          "name": "2.3 Kiem tra anh that su rieng tu",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/{{signed_url}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "{{signed_url}}"
+              ]
+            },
+            "description": "Request nay tro thang toi Cloudinary, khong qua server cua ban.\n\nSua URL trong o dia chi thanh chinh gia tri bien signed_url (Postman khong noi bien tuyet doi tot o day, cach nhanh nhat la copy URL tu console cua request 2.2 va dan vao).\n\nURL da ky phai tra 200.\n\nSau do sua URL: doi doan /image/private/s--XXXX--/v1/ thanh /image/upload/ roi goi lai. Phai tra 404. Neu no tra 200 thi anh hoa don cua nguoi dung dang lo ra internet, bao ngay."
+          }
+        },
+        {
+          "name": "2.4 Ap dung ket qua OCR, version SAI",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}/apply-candidate?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}",
+                "apply-candidate"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Phai tra 409 VERSION_CONFLICT.\n\nLuu y co HAI loi version khac nhau:\n- VERSION_CONFLICT: ban gui sai version hien tai\n- OCR_RESULT_STALE: version dung nhung hoa don da bi sua ke tu luc job chay",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"{{ocr_job_id}}\",\n  \"version\": 99\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 Ap dung ket qua OCR, version DUNG",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}/apply-candidate?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}",
+                "apply-candidate"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Bay gio ban nhap moi duoc ghi de bang du lieu OCR: merchant, ngay, danh sach mon, tong tien.\nVersion tang tu 1 len 2. Moi mon duoc gan deu cho tat ca thanh vien active theo mac dinh.\n\nNeu tra 409 OCR_NOT_READY nghia la job chua chay xong. Doi them 10 giay roi bam Send lai.\nDay cung la cach don gian nhat de biet OCR da xong chua, vi chi tiet hoa don khong lo trang thai job.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"{{ocr_job_id}}\",\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 409) {",
+                  "  console.log('Job chua xong (OCR_NOT_READY). Doi them roi bam Send lai.');",
+                  "} else {",
+                  "  pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "  const b = pm.response.json().bill;",
+                  "  pm.test('Da co mon tu OCR', () => pm.expect(b.items).to.be.an('array').that.is.not.empty);",
+                  "  pm.environment.set('ocr_bill_version', b.version);",
+                  "  b.items.forEach(i => console.log(i.name, i.line_total));",
+                  "  console.log('subtotal', b.subtotal, 'total', b.total);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 Chay lai OCR",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}/ocr-retry?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}",
+                "ocr-retry"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Tra 202 kem mot job MOI. Job cu va candidate cu van con nguyen, khong bi ghi de.\n\nGioi han BILL_OCR_MANUAL_LIMIT lan (mac dinh 5) trong BILL_OCR_MANUAL_WINDOW_HOURS (mac dinh 24). Vuot qua tra 429 OCR_LIMIT_REACHED.\n\nDoi job cu chua xong ma goi tiep se tra 409 OCR_ALREADY_RUNNING.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.environment.set('ocr_job_id_2', pm.response.json().ocr_job.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 Doc lai, kiem tra sua doi thu cong con nguyen",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Sau khi job thu hai xong, ban nhap phai giu nguyen nhung gi OCR lan mot da ghi vao\ncong voi moi sua doi tay cua ban. Chay lai OCR khong bao gio tu ghi de.\n\nHai candidate deu con, nhung API khong lo chung ra. Muon xem ca hai thi hoi database:\n  docker compose exec -T postgres psql -U postgres -d paysplit -c \\\n    \"SELECT id, status, (candidate->>'total') FROM ocr_jobs WHERE bill_id='<ocr_bill_id>' ORDER BY created_at;\""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json().bill;",
+                  "console.log('subtotal', b.subtotal, 'total', b.total, 'version', b.version, 'so mon', (b.items||[]).length);",
+                  "pm.test('Van con mon, khong bi xoa boi lan OCR thu hai', () => pm.expect(b.items).to.be.an('array').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 Xem chia tien tren so lieu OCR",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tokenA}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bills/{{ocr_bill_id}}?group_id={{group_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bills",
+                "{{ocr_bill_id}}"
+              ],
+              "query": [
+                {
+                  "key": "group_id",
+                  "value": "{{group_id}}"
+                }
+              ]
+            },
+            "description": "Sau khi ap dung OCR, hoa don da co mon va phan cong. Xem breakdown de thay thuat toan chia san chay tren so lieu that.\n\nMuon thay phan du di dau, dung request PUT /bills/{id} sua vat thanh 1 roi doc lai: khong ai trong so nguoi thuong nhan duoc 1 dong VAT do, nen Creditor lay."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "const b = d.bill, bd = d.breakdown || [];",
+                  "if (!bd.length) { console.log('Khong co breakdown, ma chan:', b.mismatch_codes); }",
+                  "else {",
+                  "  const tong = bd.reduce((s,a) => s + a.final_amount, 0);",
+                  "  pm.test('Tong khop bill.total', () => pm.expect(tong).to.eql(b.total));",
+                  "  const nonCre = bd.filter(a => a.member_id !== b.creditor_member_id);",
+                  "  pm.test('Chi Creditor co adjustment', () => nonCre.forEach(a => pm.expect(a.rounding_adjustment).to.eql(0)));",
+                  "  bd.forEach(a => console.log(a.member_id === b.creditor_member_id ? 'CREDITOR' : 'thanh vien', a.final_amount, 'adj', a.rounding_adjustment));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

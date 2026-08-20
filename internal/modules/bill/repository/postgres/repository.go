@@ -1363,7 +1363,17 @@ func (r *postgresRepository) ReserveIdempotencyKey(ctx context.Context, p reposi
 		) VALUES (
 			$1, $2, $3, $4, $5, 'in_progress', $6, $7, now(), now()
 		)
-		ON CONFLICT (actor_user_id, operation, key_hash) DO NOTHING
+		ON CONFLICT (actor_user_id, operation, key_hash) DO UPDATE
+		SET canonical_request_hash = EXCLUDED.canonical_request_hash,
+		    operation_id = EXCLUDED.operation_id,
+		    state = 'in_progress',
+		    response_code = NULL,
+		    response_body = NULL,
+		    resource_id = NULL,
+		    retry_after = EXCLUDED.retry_after,
+		    expires_at = EXCLUDED.expires_at,
+		    updated_at = now()
+		WHERE bill_idempotency_keys.expires_at <= now()
 		RETURNING actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state, response_code, response_body, resource_id, retry_after, expires_at, created_at;
 	`
 
@@ -1395,15 +1405,33 @@ func (r *postgresRepository) ReserveIdempotencyKey(ctx context.Context, p reposi
 		return &rec, nil
 	}
 
+	// Không có dòng trả về nghĩa là đã tồn tại một bản ghi CÒN HẠN cho khóa này (bản ghi hết hạn
+	// đã bị nhánh DO UPDATE ở trên chiếm lại). Đọc lại bản ghi còn hạn đó để tầng usecase quyết định
+	// replay, xung đột hash, hay đang chạy dở (Spec 3 AC-1, AC-9).
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := r.GetIdempotencyKey(ctx, p.ActorUserID, p.Operation, p.KeyHash)
 		if err != nil {
 			return nil, err
 		}
+		if existing == nil {
+			// Chỉ xảy ra khi bản ghi hết hạn ngay giữa hai câu lệnh. Coi như xung đột tạm thời
+			// thay vì trả về nil để tầng trên tự dereference.
+			return nil, domain.ErrIdempotencyInProgress
+		}
 		return existing, nil
 	}
 
 	return nil, fmt.Errorf("reserve idempotency key: %w", err)
+}
+
+// PurgeExpiredIdempotencyKeys xóa các bản ghi idempotency đã hết hạn. Không có bước dọn này thì
+// bảng phình vô hạn và mọi khóa hết hạn phụ thuộc hoàn toàn vào nhánh chiếm lại ở trên.
+func (r *postgresRepository) PurgeExpiredIdempotencyKeys(ctx context.Context) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM bill_idempotency_keys WHERE expires_at <= now();`)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired idempotency keys: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *postgresRepository) ReleaseIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) error {

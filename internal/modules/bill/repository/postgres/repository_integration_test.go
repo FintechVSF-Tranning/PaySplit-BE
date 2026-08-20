@@ -83,6 +83,26 @@ func setupTestGroupAndMembers(t *testing.T, pool *pgxpool.Pool) (groupID, credit
 	return gID, m1ID, m2ID
 }
 
+// setupTestUser tạo một người dùng thật, vì bill_idempotency_keys.actor_user_id có khóa ngoại tới
+// bảng users. setupTestGroupAndMembers trả về group_member ID chứ không phải user ID.
+func setupTestUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+
+	userID := uuid.New()
+	phone := fmt.Sprintf("+847%08d", time.Now().UnixNano()%100000000)
+	_, err := pool.Exec(ctx, `INSERT INTO users (id, email, phone_number, display_name, password_hash, status)
+		VALUES ($1, $2, $3, 'Idempotency User', 'hash', 'active')`,
+		userID, "idem_"+userID.String()[:8]+"@test.com", phone)
+	if err != nil {
+		t.Skipf("Setup user failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, userID)
+	})
+	return userID
+}
+
 func TestIntegration_CreateAndGetBill(t *testing.T) {
 	pool := testPool(t)
 	repo := postgres.New(pool)
@@ -280,5 +300,138 @@ func TestIntegration_ReviewAndFinalizeBill(t *testing.T) {
 	}
 	if voided.Status != domain.BillStatusVoided || voided.Version != 4 {
 		t.Errorf("expected voided status with version 4, got %s (ver: %d)", voided.Status, voided.Version)
+	}
+}
+
+// TestIntegration_ReserveIdempotencyKey_ReclaimsExpiredRow chứng minh rằng một bản ghi idempotency
+// đã hết hạn được chiếm lại thay vì trả về nil. Trước khi sửa, ON CONFLICT DO NOTHING không trả
+// dòng nào, GetIdempotencyKey lọc bỏ bản ghi hết hạn, và tầng usecase dereference con trỏ nil.
+func TestIntegration_ReserveIdempotencyKey_ReclaimsExpiredRow(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	actorID := setupTestUser(t, pool)
+	operation := "bill.create"
+	keyHash := fmt.Sprintf("test-expired-%s", uuid.NewString())
+
+	// Chèn thẳng một bản ghi đã hết hạn từ một giờ trước.
+	_, err := pool.Exec(ctx, `
+		INSERT INTO bill_idempotency_keys (
+			actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state,
+			response_code, expires_at, created_at, updated_at
+		) VALUES ($1, $2, $3, 'old-request-hash', $4, 'completed', 201, now() - interval '1 hour', now(), now());
+	`, actorID, operation, keyHash, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("không chèn được bản ghi hết hạn: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM bill_idempotency_keys WHERE actor_user_id = $1 AND operation = $2 AND key_hash = $3;`,
+			actorID, operation, keyHash)
+	})
+
+	newOpID := uuid.Must(uuid.NewV7())
+	rec, err := repo.ReserveIdempotencyKey(ctx, repository.ReserveIdempotencyParams{
+		ActorUserID:          actorID,
+		Operation:            operation,
+		KeyHash:              keyHash,
+		CanonicalRequestHash: "new-request-hash",
+		OperationID:          newOpID,
+		TTL:                  24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("ReserveIdempotencyKey() lỗi = %v", err)
+	}
+	if rec == nil {
+		t.Fatal("ReserveIdempotencyKey() trả về nil cho bản ghi hết hạn, đây chính là lỗi panic cũ")
+	}
+	if rec.State != "in_progress" {
+		t.Errorf("mong đợi state in_progress, nhận %q", rec.State)
+	}
+	if rec.CanonicalRequestHash != "new-request-hash" {
+		t.Errorf("hash yêu cầu chưa được ghi đè, nhận %q", rec.CanonicalRequestHash)
+	}
+	if rec.OperationID != newOpID {
+		t.Errorf("operation ID chưa được ghi đè, nhận %s", rec.OperationID)
+	}
+	if rec.ResponseCode != 0 {
+		t.Errorf("response cũ chưa được xóa, nhận %d", rec.ResponseCode)
+	}
+	if !rec.ExpiresAt.After(time.Now()) {
+		t.Errorf("expires_at chưa được gia hạn, nhận %s", rec.ExpiresAt)
+	}
+}
+
+// TestIntegration_ReserveIdempotencyKey_KeepsLiveRow xác nhận bản ghi còn hạn không bị chiếm lại.
+func TestIntegration_ReserveIdempotencyKey_KeepsLiveRow(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	actorID := setupTestUser(t, pool)
+	operation := "bill.create"
+	keyHash := fmt.Sprintf("test-live-%s", uuid.NewString())
+	firstOpID := uuid.Must(uuid.NewV7())
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM bill_idempotency_keys WHERE actor_user_id = $1 AND operation = $2 AND key_hash = $3;`,
+			actorID, operation, keyHash)
+	})
+
+	first, err := repo.ReserveIdempotencyKey(ctx, repository.ReserveIdempotencyParams{
+		ActorUserID: actorID, Operation: operation, KeyHash: keyHash,
+		CanonicalRequestHash: "hash-1", OperationID: firstOpID, TTL: 24 * time.Hour,
+	})
+	if err != nil || first == nil {
+		t.Fatalf("lần đặt chỗ đầu tiên thất bại: rec=%v err=%v", first, err)
+	}
+
+	second, err := repo.ReserveIdempotencyKey(ctx, repository.ReserveIdempotencyParams{
+		ActorUserID: actorID, Operation: operation, KeyHash: keyHash,
+		CanonicalRequestHash: "hash-2", OperationID: uuid.Must(uuid.NewV7()), TTL: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("lần đặt chỗ thứ hai lỗi = %v", err)
+	}
+	if second == nil {
+		t.Fatal("lần đặt chỗ thứ hai trả về nil, phải trả về bản ghi còn hạn")
+	}
+	if second.CanonicalRequestHash != "hash-1" || second.OperationID != firstOpID {
+		t.Errorf("bản ghi còn hạn bị ghi đè: hash=%q opID=%s", second.CanonicalRequestHash, second.OperationID)
+	}
+}
+
+// TestIntegration_PurgeExpiredIdempotencyKeys xác nhận job dọn dẹp thực sự xóa bản ghi hết hạn.
+func TestIntegration_PurgeExpiredIdempotencyKeys(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	actorID := setupTestUser(t, pool)
+	keyHash := fmt.Sprintf("test-purge-%s", uuid.NewString())
+	_, err := pool.Exec(ctx, `
+		INSERT INTO bill_idempotency_keys (
+			actor_user_id, operation, key_hash, canonical_request_hash, operation_id, state,
+			expires_at, created_at, updated_at
+		) VALUES ($1, 'bill.create', $2, 'h', $3, 'completed', now() - interval '2 hours', now(), now());
+	`, actorID, keyHash, uuid.Must(uuid.NewV7()))
+	if err != nil {
+		t.Fatalf("không chèn được bản ghi hết hạn: %v", err)
+	}
+
+	if _, err := repo.PurgeExpiredIdempotencyKeys(ctx); err != nil {
+		t.Fatalf("PurgeExpiredIdempotencyKeys() lỗi = %v", err)
+	}
+
+	var remaining int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM bill_idempotency_keys WHERE actor_user_id = $1 AND key_hash = $2;`,
+		actorID, keyHash).Scan(&remaining); err != nil {
+		t.Fatalf("không đếm được bản ghi còn lại: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("mong đợi bản ghi hết hạn bị xóa, còn lại %d", remaining)
 	}
 }

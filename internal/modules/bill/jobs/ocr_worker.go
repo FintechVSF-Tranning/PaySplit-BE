@@ -336,6 +336,39 @@ func (w *OCRRetentionWorker) Work(ctx context.Context, job *river.Job[OCRRetenti
 	return err
 }
 
+// IdempotencyRetentionJobArgs định nghĩa payload công việc dọn các khóa idempotency đã hết hạn.
+// Không có bước dọn này thì bảng bill_idempotency_keys phình vô hạn (Spec 3 AC-11, AC-13).
+type IdempotencyRetentionJobArgs struct{}
+
+// Kind định danh loại job trong River Queue.
+func (IdempotencyRetentionJobArgs) Kind() string { return "bill_idempotency_key_cleanup" }
+
+// IdempotencyRetentionWorker là worker định kỳ xóa các bản ghi idempotency đã hết hạn.
+type IdempotencyRetentionWorker struct {
+	river.WorkerDefaults[IdempotencyRetentionJobArgs]
+	repo repository.Repository
+}
+
+// NewIdempotencyRetentionWorker khởi tạo IdempotencyRetentionWorker.
+func NewIdempotencyRetentionWorker(repo repository.Repository) *IdempotencyRetentionWorker {
+	return &IdempotencyRetentionWorker{repo: repo}
+}
+
+// Work xóa mọi bản ghi idempotency đã quá hạn.
+func (w *IdempotencyRetentionWorker) Work(ctx context.Context, job *river.Job[IdempotencyRetentionJobArgs]) error {
+	if w.repo == nil {
+		return nil
+	}
+	deleted, err := w.repo.PurgeExpiredIdempotencyKeys(ctx)
+	if err != nil {
+		return err
+	}
+	if deleted > 0 {
+		log.Printf("event=bill_idempotency_cleanup deleted=%d", deleted)
+	}
+	return nil
+}
+
 // Enqueuer hỗ trợ đẩy công việc OCR vào River Queue.
 type Enqueuer struct {
 	client         *river.Client[pgx.Tx]

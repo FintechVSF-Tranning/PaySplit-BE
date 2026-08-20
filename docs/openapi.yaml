@@ -923,7 +923,7 @@ paths:
           description: "Stale version (VERSION_CONFLICT)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "422":
-          description: "Bill has unresolved mismatches or is not in a reviewable state (BILL_NOT_READY)"
+          description: "Bill has unresolved mismatches, is not in a reviewable state, or has no Creditor (BILL_NOT_READY), or the discount cannot be allocated across the assigned members (DISCOUNT_NOT_ALLOCATABLE)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/finalize:
@@ -964,7 +964,7 @@ paths:
           description: "Stale version (VERSION_CONFLICT)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "422":
-          description: "Creditor has no bank account on file (BANK_ACCOUNT_REQUIRED), or the bill has not been reviewed yet (BILL_NOT_READY)"
+          description: "Creditor has no bank account on file (BANK_ACCOUNT_REQUIRED), the bill has not been reviewed yet (BILL_NOT_READY), or the discount is valid in total but concentrated on members who cannot absorb it so the cascade drives the Creditor below zero (DISCOUNT_NOT_ALLOCATABLE)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
   /api/v1/bills/{id}/void:
@@ -1396,7 +1396,16 @@ components:
         discount: {type: integer, format: int64}
         total: {type: integer, format: int64}
         split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
-        mismatch_codes: {type: array, items: {type: string}}
+        mismatch_codes:
+          type: array
+          items:
+            type: string
+            enum: [OCR_DATE_AMBIGUOUS, LOW_CONFIDENCE, SUBTOTAL_MISMATCH, TOTAL_MISMATCH, ITEM_UNASSIGNED, INACTIVE_MEMBER_ASSIGNED, DISCOUNT_EXCEEDS_BILL, DISCOUNT_NOT_ALLOCATABLE, CREDITOR_REQUIRED]
+          description: >-
+            Stable blocker codes. On a bill detail read of a draft or reviewed bill these are
+            recomputed at read time and merged with any stored OCR warnings, so the client learns
+            why `breakdown` is absent instead of seeing an unexplained empty response. A non empty
+            list means review and finalize will be refused until it clears.
         replaces_bill_id: {type: string, format: uuid, nullable: true}
         version: {type: integer}
         finalized_at: {type: string, format: date-time, nullable: true}
@@ -1459,7 +1468,13 @@ components:
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
-        rounding_adjustment: {type: integer, format: int64}
+        rounding_adjustment:
+          type: integer
+          format: int64
+          description: >-
+            Zero for every member except the Creditor. For the Creditor it is the residual left after
+            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
+            be negative when discount remainders dominate.
         final_amount: {type: integer, format: int64}
         created_at: {type: string, format: date-time}
 
@@ -1472,6 +1487,13 @@ components:
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
+        rounding_adjustment:
+          type: integer
+          format: int64
+          description: >-
+            Zero for every member except the Creditor. For the Creditor it is the residual left after
+            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
+            be negative when discount remainders dominate.
         final_amount: {type: integer, format: int64}
 
     OCRJob:

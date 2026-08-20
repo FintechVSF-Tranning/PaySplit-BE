@@ -341,15 +341,28 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 		}
 	}
 
-	// Tính toán provisional breakdown nếu bill đang ở trạng thái draft/reviewed
+	// Tính breakdown tạm thời khi bill còn là draft hoặc reviewed. Dùng đúng hàm đối soát mà review
+	// và chốt sổ dùng, nên ba đường đi luôn nói cùng một điều. Khi có mã chặn, chúng được trả về
+	// trong mismatch_codes thay vì để client nhận một response trống không giải thích gì
+	// (Spec 3 AC-6, 0002 mục 10).
 	var breakdown []*MemberAllocation
 	if bill.Status == domain.BillStatusDraft || bill.Status == domain.BillStatusReviewed {
 		previewStart := time.Now()
-		allocInput := toAllocationInput(bill)
-		var allocErr error
-		breakdown, allocErr = CalculateHamiltonAllocation(allocInput)
+
+		var activeSet map[uuid.UUID]bool
+		if activeMembers, listErr := s.repo.ListActiveGroupMembers(ctx, groupID); listErr == nil {
+			activeSet = make(map[uuid.UUID]bool, len(activeMembers))
+			for _, m := range activeMembers {
+				activeSet[m.ID] = true
+			}
+		}
+
+		allocations, blockers := evaluateAllocation(bill, activeSet)
+		breakdown = allocations
+		bill.MismatchCodes = mergeMismatchCodes(bill.MismatchCodes, blockers)
+
 		outcome := "success"
-		if allocErr != nil {
+		if len(blockers) > 0 {
 			outcome = "error"
 		}
 		platformmetrics.RecordBillPreview(outcome, time.Since(previewStart))
@@ -688,17 +701,7 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 		return nil, domain.ErrVersionConflict
 	}
 
-	// Kiểm tra đối soát tổng tiền và phân bổ (Spec 3 AC-5, AC-6)
-	var sumItems int64
-	for _, it := range bill.Items {
-		sumItems += it.LineTotal
-		if len(it.Assignments) == 0 {
-			platformmetrics.RecordBillMismatchBlock("item_unassigned")
-			return nil, domain.ErrBillNotReady
-		}
-	}
-
-	// Lấy danh sách thành viên active để xác thực mọi người được gán món đều đang active
+	// Đối soát tổng tiền và phân bổ qua đúng hàm mà đường đọc và chốt sổ dùng (Spec 3 AC-5, AC-6).
 	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list active group members: %w", err)
@@ -707,25 +710,16 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 	for _, m := range activeMembers {
 		activeSet[m.ID] = true
 	}
-	for _, it := range bill.Items {
-		for _, a := range it.Assignments {
-			if !activeSet[a.MemberID] {
-				platformmetrics.RecordBillMismatchBlock("inactive_member_assigned")
-				return nil, domain.ErrBillNotReady
-			}
-		}
-	}
 
-	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
-	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
-		platformmetrics.RecordBillMismatchBlock("totals_mismatch")
-		return nil, domain.ErrBillNotReady
+	if _, blockers := evaluateAllocation(bill, activeSet); len(blockers) > 0 {
+		recordBlockerMetric(blockers)
+		return nil, blockersToError(blockers)
 	}
 
 	return s.repo.ReviewBill(ctx, billID, groupID, expectedVersion, member.ID)
 }
 
-// FinalizeBill chạy giải thuật Hamilton allocation, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
+// FinalizeBill chạy phân bổ chia sàn, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
 // Bọc ngoài finalizeBillImpl để đo paysplit_bill_finalize_duration_seconds (Spec 3 AC-14).
 func (s *Service) FinalizeBill(ctx context.Context, callerUserID, billID, groupID uuid.UUID, expectedVersion int32) (*domain.Bill, error) {
 	start := time.Now()
@@ -768,22 +762,7 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		return nil, domain.ErrVersionConflict
 	}
 
-	// 3. Re-verify đối soát tổng tiền và tính hợp lệ của assignments (Spec 3 AC-5, AC-6, AC-9)
-	var sumItems int64
-	for _, it := range bill.Items {
-		sumItems += it.LineTotal
-		if len(it.Assignments) == 0 {
-			platformmetrics.RecordBillMismatchBlock("item_unassigned")
-			return nil, domain.ErrBillNotReady
-		}
-	}
-	expectedTotal := bill.Subtotal + bill.ServiceCharge + bill.VAT - bill.Discount
-	if bill.Discount > (bill.Subtotal+bill.ServiceCharge+bill.VAT) || bill.Subtotal != sumItems || bill.Total != expectedTotal {
-		platformmetrics.RecordBillMismatchBlock("totals_mismatch")
-		return nil, domain.ErrBillNotReady
-	}
-
-	// Lấy danh sách thành viên active trong nhóm
+	// 3. Lấy danh sách thành viên active trong nhóm
 	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("list active group members: %w", err)
@@ -794,14 +773,6 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		activeSet[m.ID] = true
 		memberUserMap[m.ID] = m.UserID
 	}
-	for _, it := range bill.Items {
-		for _, a := range it.Assignments {
-			if !activeSet[a.MemberID] {
-				platformmetrics.RecordBillMismatchBlock("inactive_member_assigned")
-				return nil, domain.ErrBillNotReady
-			}
-		}
-	}
 
 	// 4. Kiểm tra tài khoản ngân hàng của Creditor (Spec 3 AC-9: 422 BANK_ACCOUNT_REQUIRED)
 	creditorMember, err := s.repo.GetGroupMemberUser(ctx, bill.CreditorMemberID, groupID)
@@ -810,11 +781,12 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		return nil, domain.ErrBankAccountRequired
 	}
 
-	// 5. Chạy giải thuật Hamilton
-	allocInput := toAllocationInput(bill)
-	allocations, err := CalculateHamiltonAllocation(allocInput)
-	if err != nil {
-		return nil, fmt.Errorf("calculate hamilton allocation: %w", err)
+	// 5. Đối soát lại và chạy phân bổ, cùng một hàm mà đường đọc và review dùng. Người dùng đã thấy
+	// đúng những mã chặn này ở bước xem trước, nên không có bất ngờ ở bước chốt sổ (Spec 3 AC-9, AC-10).
+	allocations, blockers := evaluateAllocation(bill, activeSet)
+	if len(blockers) > 0 {
+		recordBlockerMetric(blockers)
+		return nil, blockersToError(blockers)
 	}
 
 	shares := make([]*domain.BillShare, 0, len(allocations))
@@ -822,10 +794,9 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 	notifications := make([]*repository.NotificationParam, 0, len(allocations))
 
 	for _, a := range allocations {
+		// CalculateFloorAllocation đã bảo đảm FinalAmount không âm và tổng khớp Total, nên ở đây
+		// không kẹp lại lần nữa. Việc kẹp thừa từng che mất lỗi tổng vượt hóa đơn (Spec 3 AC-10).
 		amount := a.FinalAmount
-		if amount < 0 {
-			amount = 0
-		}
 		roundingAdj := a.RoundingAdjustment
 		shares = append(shares, &domain.BillShare{
 			ID:                 uuid.Must(uuid.NewV7()),
@@ -1056,6 +1027,11 @@ func (s *Service) CheckOrReserveIdempotency(
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Lớp chắn: repository không được phép trả về (nil, nil), nhưng nếu điều đó xảy ra thì báo lỗi
+	// thay vì dereference con trỏ nil và làm sập tiến trình (Spec 3 AC-1, AC-9).
+	if rec == nil {
+		return nil, domain.ErrIdempotencyInProgress
 	}
 
 	if rec.CanonicalRequestHash != reqHash {

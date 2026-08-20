@@ -78,6 +78,14 @@ var (
 	// ErrInvalidCursor trả về khi cursor phân trang không hợp lệ (Spec 3 AC-12).
 	ErrInvalidCursor = errors.New("invalid cursor")
 
+	// ErrCreditorRequired trả về khi hóa đơn chưa có Creditor nên không thể phân bổ tiền. Không có
+	// người hấp thụ phần dư thứ hai, nên đây là điều kiện bắt buộc (Spec 3 AC-6, AC-10).
+	ErrCreditorRequired = errors.New("creditor required for allocation")
+
+	// ErrDiscountNotAllocatable trả về khi giảm giá hợp lệ so với tổng hóa đơn nhưng dồn vào những
+	// thành viên không hấp thụ hết, khiến phần bị chặn trần đẩy Creditor xuống âm (Spec 3 AC-10).
+	ErrDiscountNotAllocatable = errors.New("discount not allocatable across members")
+
 	// ErrIdempotencyInProgress trả về khi request cùng idempotency key đang được xử lý (Spec 3 AC-1, AC-9).
 	ErrIdempotencyInProgress = errors.New("idempotency in progress")
 

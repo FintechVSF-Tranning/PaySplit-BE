@@ -169,7 +169,15 @@ func New(ctx context.Context) (*App, error) {
 	ocrWorker.SetRetryBaseDelay(cfg.OCR.RetryBaseDelay)
 	river.AddWorker(riverWorkers, ocrWorker)
 
-	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{MaxWorkers: cfg.River.WorkerCount, FetchCooldown: cfg.River.FetchCooldown})
+	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
+	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
+	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays)
+
+	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{
+		MaxWorkers:    cfg.River.WorkerCount,
+		FetchCooldown: cfg.River.FetchCooldown,
+		PeriodicJobs:  billPeriodicJobs,
+	})
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create river client: %w", err)

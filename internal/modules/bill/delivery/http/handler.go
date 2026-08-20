@@ -680,6 +680,12 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrBillNotReady):
 		status = http.StatusUnprocessableEntity
 		code = "BILL_NOT_READY"
+	case errors.Is(err, domain.ErrCreditorRequired):
+		status = http.StatusUnprocessableEntity
+		code = "BILL_NOT_READY"
+	case errors.Is(err, domain.ErrDiscountNotAllocatable):
+		status = http.StatusUnprocessableEntity
+		code = "DISCOUNT_NOT_ALLOCATABLE"
 	case errors.Is(err, domain.ErrOcrAlreadyRunning):
 		status = http.StatusConflict
 		code = "OCR_ALREADY_RUNNING"

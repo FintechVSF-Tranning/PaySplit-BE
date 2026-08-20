@@ -213,4 +213,7 @@ type Repository interface {
 	// ReleaseIdempotencyKey xóa một reservation "in_progress" khi mutation thất bại, để lần retry sau
 	// với cùng key không bị kẹt 409 IDEMPOTENCY_IN_PROGRESS suốt 24h (Spec 3 AC-1, AC-9).
 	ReleaseIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) error
+	// PurgeExpiredIdempotencyKeys xóa các bản ghi idempotency đã hết hạn. Chạy định kỳ, nếu không
+	// bảng phình vô hạn (Spec 3 AC-11, AC-13).
+	PurgeExpiredIdempotencyKeys(ctx context.Context) (int64, error)
 }
