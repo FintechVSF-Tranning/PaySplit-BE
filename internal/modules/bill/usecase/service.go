@@ -980,26 +980,10 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 	items := make([]ItemInput, 0, len(b.Items))
 	for _, it := range b.Items {
 		assigns := make([]ItemAssignmentInput, 0, len(it.Assignments))
-		totalWeight := 0.0
 		for _, a := range it.Assignments {
-			w, _ := strconv.ParseFloat(a.Weight, 64)
-			if w <= 0 {
-				w = 1.0
-			}
-			totalWeight += w
-		}
-		if totalWeight <= 0 {
-			totalWeight = 1.0
-		}
-
-		for _, a := range it.Assignments {
-			w, _ := strconv.ParseFloat(a.Weight, 64)
-			if w <= 0 {
-				w = 1.0
-			}
 			assigns = append(assigns, ItemAssignmentInput{
 				MemberID: a.MemberID,
-				Ratio:    w / totalWeight,
+				Weight:   parseWeightToScaledInt(a.Weight),
 			})
 		}
 
@@ -1019,6 +1003,18 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 		Total:         b.Total,
 		Items:         items,
 	}
+}
+
+func parseWeightToScaledInt(weightStr string) int64 {
+	w, err := strconv.ParseFloat(weightStr, 64)
+	if err != nil || w <= 0 {
+		return 10000 // default 1.0000
+	}
+	scaled := int64(math.Round(w * 10000))
+	if scaled <= 0 {
+		return 10000
+	}
+	return scaled
 }
 
 func computeLineTotal(unitPrice int64, quantityStr string) int64 {

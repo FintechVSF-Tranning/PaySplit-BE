@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// MemberAllocation chứa chi tiết phân bổ nợ cho một thành viên theo Spec 3 (Hamilton Method).
+// MemberAllocation contains the calculated share for one member under the Hamilton Method.
 type MemberAllocation struct {
 	MemberID           uuid.UUID `json:"member_id"`
 	ItemSubtotal       int64     `json:"item_subtotal"`
@@ -20,20 +20,35 @@ type MemberAllocation struct {
 	FinalAmount        int64     `json:"final_amount"`
 }
 
-// ItemInput chứa thông tin món ăn và tỷ lệ chia để tính toán phân bổ.
+// ItemInput contains item details and member assignments for allocation.
 type ItemInput struct {
 	ID          uuid.UUID
 	LineTotal   int64
 	Assignments []ItemAssignmentInput
 }
 
-// ItemAssignmentInput chứa thành viên và tỷ lệ gánh món (tổng tỷ lệ của 1 item phải = 1.0).
+// ItemAssignmentInput contains member and weight for an item.
 type ItemAssignmentInput struct {
 	MemberID uuid.UUID
-	Ratio    float64
+	Weight   int64
+	Ratio    float64 // Fallback support for float ratio inputs
 }
 
-// AllocationInput chứa toàn bộ dữ liệu đầu vào để phân bổ nợ hóa đơn.
+// getWeight returns the assignment weight as an integer.
+func (a ItemAssignmentInput) getWeight() int64 {
+	if a.Weight > 0 {
+		return a.Weight
+	}
+	if a.Ratio > 0 {
+		scaled := int64(math.Round(a.Ratio * 100000000))
+		if scaled > 0 {
+			return scaled
+		}
+	}
+	return 10000
+}
+
+// AllocationInput contains all inputs required to calculate debt allocation.
 type AllocationInput struct {
 	CreditorID    uuid.UUID
 	Subtotal      int64
@@ -45,13 +60,13 @@ type AllocationInput struct {
 	Members       []uuid.UUID
 }
 
-// CalculateHamiltonAllocation tính toán phân bổ nợ theo giải thuật Hamilton Largest Remainder Method (Spec 3 AC-6, AC-9).
+// CalculateHamiltonAllocation calculates member shares using exact integer Hamilton Largest Remainder arithmetic.
 func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error) {
 	if in.Total < 0 || in.Subtotal < 0 || in.ServiceCharge < 0 || in.VAT < 0 || in.Discount < 0 {
 		return nil, errors.New("monetary values must be non-negative")
 	}
 
-	// 1. Tập hợp danh sách tất cả các thành viên tham gia (bao gồm cả Creditor và assignees)
+	// 1. Collect all participating members (Creditor, explicit members, and item assignees)
 	memberSet := make(map[uuid.UUID]struct{})
 	if in.CreditorID != uuid.Nil {
 		memberSet[in.CreditorID] = struct{}{}
@@ -70,10 +85,9 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		allMembers = append(allMembers, m)
 	}
 
-	// Sắp xếp danh sách thành viên theo thứ tự 16-byte UUID chuẩn (deterministic tie-breaking)
+	// Sort members by canonical 16 byte UUID order for deterministic tie breaking
 	sortUUIDs(allMembers)
 
-	// Khởi tạo map phân bổ và map lưu trữ floor exact để tính RoundingAdjustment
 	allocMap := make(map[uuid.UUID]*MemberAllocation, len(allMembers))
 	itemFloorMap := make(map[uuid.UUID]int64, len(allMembers))
 	scFloorMap := make(map[uuid.UUID]int64, len(allMembers))
@@ -86,25 +100,40 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		}
 	}
 
-	// 2. Bước 1: Phân bổ từng món ăn (Item-level Hamilton allocation)
+	// 2. Step 1: Item level exact integer Hamilton allocation
 	for _, it := range in.Items {
 		if it.LineTotal <= 0 || len(it.Assignments) == 0 {
 			continue
 		}
 
+		var totalWeight int64
+		for _, a := range it.Assignments {
+			w := a.getWeight()
+			if w > 0 {
+				totalWeight += w
+			}
+		}
+		if totalWeight <= 0 {
+			totalWeight = int64(len(it.Assignments))
+		}
+
 		type memberShare struct {
 			memberID  uuid.UUID
 			floorVal  int64
-			remainder float64
+			remainder int64
 		}
 
 		shares := make([]memberShare, 0, len(it.Assignments))
 		var sumFloor int64
 
 		for _, a := range it.Assignments {
-			exact := float64(it.LineTotal) * a.Ratio
-			floor := int64(math.Floor(exact))
-			rem := exact - float64(floor)
+			w := a.getWeight()
+			if w <= 0 {
+				w = 1
+			}
+
+			floor := (it.LineTotal * w) / totalWeight
+			rem := (it.LineTotal * w) % totalWeight
 
 			shares = append(shares, memberShare{
 				memberID:  a.MemberID,
@@ -117,9 +146,9 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 
 		undistributed := it.LineTotal - sumFloor
 
-		// Sắp xếp theo remainder giảm dần; nếu bằng nhau thì theo thứ tự UUID byte tăng dần
+		// Sort shares by remainder descending; break ties by ascending UUID byte order
 		sort.SliceStable(shares, func(i, j int) bool {
-			if math.Abs(shares[i].remainder-shares[j].remainder) > 1e-9 {
+			if shares[i].remainder != shares[j].remainder {
 				return shares[i].remainder > shares[j].remainder
 			}
 			return bytes.Compare(shares[i].memberID[:], shares[j].memberID[:]) < 0
@@ -134,14 +163,13 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		}
 	}
 
-	// 3. Bước 2: Phân bổ Service Charge, VAT và Discount theo tỷ lệ ItemSubtotal
+	// 3. Step 2: Allocate Service Charge, VAT, and Discount proportionally by ItemSubtotal
 	var totalItemSubtotal int64
 	for _, a := range allocMap {
 		totalItemSubtotal += a.ItemSubtotal
 	}
 
 	if totalItemSubtotal > 0 {
-		// Hamilton allocation cho ServiceCharge
 		if in.ServiceCharge > 0 {
 			scShares, scFloors := runHamiltonForTotal(in.ServiceCharge, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range scShares {
@@ -150,7 +178,6 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 			}
 		}
 
-		// Hamilton allocation cho VAT
 		if in.VAT > 0 {
 			vatShares, vatFloors := runHamiltonForTotal(in.VAT, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range vatShares {
@@ -159,7 +186,6 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 			}
 		}
 
-		// Hamilton allocation cho Discount
 		if in.Discount > 0 {
 			discShares, discFloors := runHamiltonForTotal(in.Discount, totalItemSubtotal, allMembers, allocMap)
 			for m, v := range discShares {
@@ -168,7 +194,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 			}
 		}
 	} else if in.CreditorID != uuid.Nil {
-		// Nếu không có món ăn nào (subtotal = 0), toàn bộ thuế/phí/giảm giá quy về Creditor (Spec 3 AC-10)
+		// When subtotal is zero, creditor bears fees and discount (Spec 3 AC-10)
 		allocMap[in.CreditorID].ServiceChargeShare = in.ServiceCharge
 		allocMap[in.CreditorID].VATShare = in.VAT
 		allocMap[in.CreditorID].DiscountShare = in.Discount
@@ -177,14 +203,11 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		discFloorMap[in.CreditorID] = in.Discount
 	}
 
-	// 4. Bước 3: Tính RoundingAdjustment và FinalAmount cho từng thành viên (Spec 3 index.md:130, 0002:41, 0003:42)
+	// 4. Step 3: Compute RoundingAdjustment and FinalAmount for each member
 	result := make([]*MemberAllocation, 0, len(allMembers))
-	var computedTotalSum int64
-
 	for _, m := range allMembers {
 		a := allocMap[m]
 
-		// rounding_adjustment = (item_alloc - item_floor) + (sc_alloc - sc_floor) + (vat_alloc - vat_floor) - (disc_alloc - disc_floor)
 		itemAdj := a.ItemSubtotal - itemFloorMap[m]
 		scAdj := a.ServiceChargeShare - scFloorMap[m]
 		vatAdj := a.VATShare - vatFloorMap[m]
@@ -195,45 +218,7 @@ func CalculateHamiltonAllocation(in AllocationInput) ([]*MemberAllocation, error
 		if a.FinalAmount < 0 {
 			a.FinalAmount = 0
 		}
-		computedTotalSum += a.FinalAmount
 		result = append(result, a)
-	}
-
-	// Nếu có độ lệch do discount lớn hơn tổng thành phần thì điều chỉnh an toàn để tổng bằng in.Total
-	if computedTotalSum != in.Total && len(result) > 0 {
-		diff := in.Total - computedTotalSum
-		if diff > 0 {
-			maxIdx := 0
-			for i := 1; i < len(result); i++ {
-				if result[i].FinalAmount > result[maxIdx].FinalAmount {
-					maxIdx = i
-				}
-			}
-			result[maxIdx].FinalAmount += diff
-			result[maxIdx].RoundingAdjustment += diff
-		} else if diff < 0 {
-			remaining := -diff
-			for remaining > 0 {
-				maxIdx := -1
-				var maxAmount int64
-				for i := 0; i < len(result); i++ {
-					if result[i].FinalAmount > maxAmount {
-						maxAmount = result[i].FinalAmount
-						maxIdx = i
-					}
-				}
-				if maxIdx == -1 || maxAmount <= 0 {
-					break
-				}
-				deduct := remaining
-				if deduct > maxAmount {
-					deduct = maxAmount
-				}
-				result[maxIdx].FinalAmount -= deduct
-				result[maxIdx].RoundingAdjustment -= deduct
-				remaining -= deduct
-			}
-		}
 	}
 
 	return result, nil
@@ -248,7 +233,7 @@ func runHamiltonForTotal(
 	type memberShare struct {
 		memberID  uuid.UUID
 		floorVal  int64
-		remainder float64
+		remainder int64
 	}
 
 	shares := make([]memberShare, 0, len(members))
@@ -257,9 +242,8 @@ func runHamiltonForTotal(
 
 	for _, m := range members {
 		base := allocMap[m].ItemSubtotal
-		exact := float64(targetTotal) * (float64(base) / float64(totalBase))
-		floor := int64(math.Floor(exact))
-		rem := exact - float64(floor)
+		floor := (targetTotal * base) / totalBase
+		rem := (targetTotal * base) % totalBase
 
 		shares = append(shares, memberShare{
 			memberID:  m,
@@ -272,9 +256,9 @@ func runHamiltonForTotal(
 
 	undistributed := targetTotal - sumFloor
 
-	// Sắp xếp theo remainder giảm dần; nếu bằng nhau thì theo UUID byte tăng dần
+	// Sort shares by remainder descending; break ties by ascending UUID byte order
 	sort.SliceStable(shares, func(i, j int) bool {
-		if math.Abs(shares[i].remainder-shares[j].remainder) > 1e-9 {
+		if shares[i].remainder != shares[j].remainder {
 			return shares[i].remainder > shares[j].remainder
 		}
 		return bytes.Compare(shares[i].memberID[:], shares[j].memberID[:]) < 0

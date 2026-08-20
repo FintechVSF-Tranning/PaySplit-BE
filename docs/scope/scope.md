@@ -79,7 +79,7 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
   - [x] Safe void and replacement history, payment race protection, OpenAPI, module documentation, metrics, redaction, and end to end verification (satisfies AC-11, AC-12, AC-13, AC-14)
 - [x] Verify it: `/check verify bill and OCR v1`
 - [x] Test it: `/test bill and OCR v1`
-- [x] Review it (fresh model): `/check review bill and OCR v1`
+- [ ] Review it (fresh model): `/check review bill and OCR v1`
 - [ ] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
