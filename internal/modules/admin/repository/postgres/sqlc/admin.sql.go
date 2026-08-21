@@ -146,7 +146,7 @@ SELECT
     COALESCE(sum(d.amount), 0)::bigint AS total_credit_amount_vnd
 FROM debts d
 JOIN group_members gm ON gm.id = d.creditor_member_id
-WHERE gm.user_id = $1 AND d.status <> 'settled'
+WHERE gm.user_id = $1 AND d.status NOT IN ('settled', 'voided')
 `
 
 type GetOutstandingCreditsByUserIDRow struct {
@@ -167,7 +167,7 @@ SELECT
     COALESCE(sum(d.amount), 0)::bigint AS total_debt_amount_vnd
 FROM debts d
 JOIN group_members gm ON gm.id = d.debtor_member_id
-WHERE gm.user_id = $1 AND d.status <> 'settled'
+WHERE gm.user_id = $1 AND d.status NOT IN ('settled', 'voided')
 `
 
 type GetOutstandingDebtsByUserIDRow struct {

@@ -24,6 +24,15 @@ The `payments` and `debts` tables, plus the `debt_status` and `activity_type` en
 
 **`v_member_balances` view.** The live view sums `status <> 'settled'`, so once spec 0003 lands the `voided` debt status, a voided debt would still count toward a member's net balance, silently disagreeing with this spec's own data model table (`status NOT IN ('settled', 'voided')`) and with 0002's member exit invariant. Decision: redefine the view in this feature's migration to exclude `voided` explicitly, sequenced after spec 0003's migration adds that enum value.
 
+## Drift check against the shipped spec 0003 (2026-08-21)
+
+Spec 0003 (`docs/specs/0003-bill-ocr-v1/`) shipped since this spec was written, including two child specs added mid build: `0004-item-discount-ocr-parsing.md` (OCR normalizer folds `KM` style promotion lines into `bill_items.discount_amount`/`final_price`) and `0005-manual-edit-item-discount.md` (the same fields round trip through manual bill edits). A cross check of the live database (2026-08-21) against this spec's assumptions found:
+
+- **The `debt_status`/`debts` dependency this spec flagged as pending is now satisfied.** `debt_status` has `voided`, `debts.voided_at` exists, and `debts_check1` already allows `voided` with a null `payment_id`, exactly as this spec's Data model sketch and Key invariant 10 required. Nothing left to flag to whoever builds spec 0003, it is built. `index.md`'s dependency notes and the two matching Follow-up items were updated to reflect this rather than describe a still open dependency.
+- **A real gap: this spec's personal expense breakdown never accounted for item level discounts.** `expense_item` (the `GET /expenses/me` response shape) had `line_total` but no way to show that an item's own promotion already reduced it, and its `item_share`/`discount_share` value sourcing never named `bill_items.final_price` as the base for the member's item share. Since the underlying allocator (spec 0003's `usecase/allocation.go`) already computes shares from `final_price`, not the gross `line_total`, this spec's design would either have under specified the exact number to display or an implementer would have quietly used the wrong base and double counted a member's own item discount inside `discount_share` as well. Decision: add `item_discount_amount`/`item_final_price` to `expense_item`, name `bill_items.final_price` as `item_share`'s source, and state explicitly that `discount_share` covers only `bills.general_discount`. This is additive to an unbuilt feature, no migration or already written code is affected.
+
+Both are reflected in `index.md`: the Data model sketch dependency note, Key invariants 10 and 11, the `expense_item` schema, the Value sourcing table, and the Follow-up list.
+
 ## Options considered
 
 ### Option 1: Direct single bill debt settlement without aggregation

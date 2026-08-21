@@ -709,7 +709,7 @@ func (q *Queries) RevokeInviteByID(ctx context.Context, arg RevokeInviteByIDPara
 const sumOpenCreditorTotal = `-- name: SumOpenCreditorTotal :one
 SELECT COALESCE(SUM(amount), 0)::bigint AS total
 FROM debts
-WHERE group_id = $1 AND creditor_member_id = $2 AND status <> 'settled'
+WHERE group_id = $1 AND creditor_member_id = $2 AND status NOT IN ('settled', 'voided')
 `
 
 type SumOpenCreditorTotalParams struct {
@@ -727,7 +727,7 @@ func (q *Queries) SumOpenCreditorTotal(ctx context.Context, arg SumOpenCreditorT
 const sumOpenDebtorTotal = `-- name: SumOpenDebtorTotal :one
 SELECT COALESCE(SUM(amount), 0)::bigint AS total
 FROM debts
-WHERE group_id = $1 AND debtor_member_id = $2 AND status <> 'settled'
+WHERE group_id = $1 AND debtor_member_id = $2 AND status NOT IN ('settled', 'voided')
 `
 
 type SumOpenDebtorTotalParams struct {

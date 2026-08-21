@@ -114,12 +114,12 @@ SELECT * FROM group_members WHERE id = $1 AND group_id = $2 FOR UPDATE;
 -- name: SumOpenDebtorTotal :one
 SELECT COALESCE(SUM(amount), 0)::bigint AS total
 FROM debts
-WHERE group_id = $1 AND debtor_member_id = $2 AND status <> 'settled';
+WHERE group_id = $1 AND debtor_member_id = $2 AND status NOT IN ('settled', 'voided');
 
 -- name: SumOpenCreditorTotal :one
 SELECT COALESCE(SUM(amount), 0)::bigint AS total
 FROM debts
-WHERE group_id = $1 AND creditor_member_id = $2 AND status <> 'settled';
+WHERE group_id = $1 AND creditor_member_id = $2 AND status NOT IN ('settled', 'voided');
 
 -- name: MarkMembershipInactive :exec
 UPDATE group_members SET status = 'inactive', left_at = $2 WHERE id = $1;
