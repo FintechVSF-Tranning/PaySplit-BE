@@ -4,15 +4,26 @@ info:
   version: 1.0.0
 servers:
   - url: http://localhost:8080
+tags:
+  - name: Health
+  - name: Auth
+  - name: Users
+  - name: Banks
+  - name: Groups
+  - name: Notifications
+  - name: Bills
+  - name: Admin
 paths:
   /health:
     get:
       operationId: health
+      tags: [Health]
       responses:
         "200": {description: Healthy}
   /api/v1/auth/sign-up:
     post:
       operationId: signUp
+      tags: [Auth]
       requestBody:
         required: true
         content:
@@ -30,6 +41,7 @@ paths:
   /api/v1/auth/verify-email:
     post:
       operationId: verifyEmail
+      tags: [Auth]
       requestBody: {$ref: "#/components/requestBodies/VerifyEmail"}
       responses:
         "200":
@@ -44,6 +56,7 @@ paths:
   /api/v1/auth/resend-verification:
     post:
       operationId: resendVerification
+      tags: [Auth]
       requestBody: {$ref: "#/components/requestBodies/Email"}
       responses:
         "202": {$ref: "#/components/responses/EmailAccepted"}
@@ -52,6 +65,7 @@ paths:
   /api/v1/auth/sign-in:
     post:
       operationId: signIn
+      tags: [Auth]
       requestBody:
         required: true
         content:
@@ -70,6 +84,7 @@ paths:
   /api/v1/auth/refresh:
     post:
       operationId: refresh
+      tags: [Auth]
       requestBody:
         required: true
         content:
@@ -91,6 +106,7 @@ paths:
   /api/v1/auth/sign-out:
     post:
       operationId: signOut
+      tags: [Auth]
       security: [{bearerAuth: []}]
       responses:
         "204": {description: Session revoked}
@@ -98,6 +114,7 @@ paths:
   /api/v1/auth/forgot-password:
     post:
       operationId: forgotPassword
+      tags: [Auth]
       requestBody: {$ref: "#/components/requestBodies/Email"}
       responses:
         "202": {$ref: "#/components/responses/EmailAccepted"}
@@ -106,6 +123,7 @@ paths:
   /api/v1/auth/reset-password:
     post:
       operationId: resetPassword
+      tags: [Auth]
       requestBody:
         required: true
         content:
@@ -124,6 +142,7 @@ paths:
   /api/v1/users/me:
     get:
       operationId: getMyProfile
+      tags: [Users]
       security: [{bearerAuth: []}]
       responses:
         "200":
@@ -137,6 +156,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
     patch:
       operationId: patchMyProfile
+      tags: [Users]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -158,6 +178,7 @@ paths:
   /api/v1/users/me/password:
     put:
       operationId: changeMyPassword
+      tags: [Users]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -177,6 +198,7 @@ paths:
   /api/v1/users/me/avatar:
     put:
       operationId: uploadMyAvatar
+      tags: [Users]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -202,6 +224,7 @@ paths:
         "502": {$ref: "#/components/responses/BadRequest"}
     delete:
       operationId: deleteMyAvatar
+      tags: [Users]
       security: [{bearerAuth: []}]
       responses:
         "204": {description: Avatar reference cleared}
@@ -209,6 +232,7 @@ paths:
   /api/v1/users/me/fcm-token:
     put:
       operationId: updateMyFCMToken
+      tags: [Users]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -235,6 +259,7 @@ paths:
   /api/v1/banks:
     get:
       operationId: listBanks
+      tags: [Banks]
       summary: List supported and available banks
       description: Returns the list of banks from the VietQR snapshot directory.
       parameters:
@@ -256,6 +281,7 @@ paths:
   /api/v1/groups:
     post:
       operationId: createGroup
+      tags: [Groups]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -272,6 +298,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
     get:
       operationId: listGroups
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: cursor
@@ -292,6 +319,7 @@ paths:
   /api/v1/groups/{id}:
     get:
       operationId: getGroupDetail
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -309,6 +337,7 @@ paths:
   /api/v1/groups/{id}/invites:
     post:
       operationId: createGroupInvite
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -337,6 +366,7 @@ paths:
   /api/v1/groups/{id}/invites/{inviteId}:
     delete:
       operationId: revokeGroupInvite
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -355,6 +385,7 @@ paths:
   /api/v1/groups/invites/{code}:
     get:
       operationId: previewGroupInvite
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: code
@@ -373,6 +404,7 @@ paths:
   /api/v1/groups/join:
     post:
       operationId: joinGroup
+      tags: [Groups]
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -392,6 +424,7 @@ paths:
   /api/v1/groups/{id}/members/{memberId}:
     delete:
       operationId: leaveOrRemoveMember
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -417,6 +450,7 @@ paths:
   /api/v1/groups/{id}/members/{memberId}/role:
     put:
       operationId: transferCaptain
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -450,6 +484,7 @@ paths:
   /api/v1/groups/{id}/activities:
     get:
       operationId: listGroupActivities
+      tags: [Groups]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -475,6 +510,7 @@ paths:
   /api/v1/notifications:
     get:
       operationId: listNotifications
+      tags: [Notifications]
       security: [{bearerAuth: []}]
       parameters:
         - name: page
@@ -495,6 +531,7 @@ paths:
   /api/v1/notifications/unread-count:
     get:
       operationId: getUnreadNotificationsCount
+      tags: [Notifications]
       security: [{bearerAuth: []}]
       responses:
         "200":
@@ -510,6 +547,7 @@ paths:
   /api/v1/notifications/read-all:
     patch:
       operationId: markAllNotificationsAsRead
+      tags: [Notifications]
       security: [{bearerAuth: []}]
       responses:
         "200":
@@ -525,6 +563,7 @@ paths:
   /api/v1/notifications/{id}/read:
     patch:
       operationId: markNotificationAsRead
+      tags: [Notifications]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -549,6 +588,7 @@ paths:
     post:
       summary: Create a manual or image-based bill draft
       operationId: createBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: Idempotency-Key
@@ -635,6 +675,7 @@ paths:
     get:
       summary: List bills in a group with cursor pagination
       operationId: listBills
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: group_id
@@ -668,6 +709,7 @@ paths:
     get:
       summary: Get bill detail with breakdown and image URLs
       operationId: getBillDetail
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -700,6 +742,7 @@ paths:
       summary: Update draft bill fields, items, and assignments
       description: PATCH on this same path is accepted as an alias and routes to the identical handler.
       operationId: updateDraftBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -763,6 +806,7 @@ paths:
     delete:
       summary: Delete an editable draft bill
       operationId: deleteDraftBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -783,6 +827,7 @@ paths:
     get:
       summary: Stream bill events via Server-Sent Events (SSE)
       operationId: streamBillEvents
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -805,6 +850,7 @@ paths:
     post:
       summary: Retry OCR extraction for bill images
       operationId: retryOCR
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -846,6 +892,7 @@ paths:
     post:
       summary: Apply OCR candidate to draft bill
       operationId: applyCandidate
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -891,6 +938,7 @@ paths:
     post:
       summary: Mark a reconciled draft bill as reviewed
       operationId: reviewBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -932,6 +980,7 @@ paths:
     post:
       summary: Finalize a reviewed bill into immutable shares and debts
       operationId: finalizeBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -973,6 +1022,7 @@ paths:
     post:
       summary: Void an unpaid finalized bill
       operationId: voidBill
+      tags: [Bills]
       security: [{bearerAuth: []}]
       parameters:
         - name: id
@@ -1007,6 +1057,123 @@ paths:
         "409":
           description: "Bill already voided (BILL_ALREADY_VOIDED), or a payment for this bill has already started (PAYMENT_ALREADY_STARTED)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
+  /api/v1/admin/accounts:
+    get:
+      summary: List user accounts with search, filter, sort, and pagination
+      operationId: listAccounts
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, default: 20}
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending_verification, active, suspended, locked]}
+        - name: role
+          in: query
+          schema: {type: string, enum: [user, admin]}
+        - name: search
+          in: query
+          schema: {type: string}
+          description: Matches email, display name, or phone number
+        - name: sort_by
+          in: query
+          schema: {type: string}
+        - name: sort_order
+          in: query
+          schema: {type: string, enum: [asc, desc]}
+      responses:
+        "200":
+          description: Paginated list of accounts
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ListAccountsResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /api/v1/admin/accounts/{id}:
+    get:
+      summary: Get full account detail for admin review
+      operationId: getAccountDetail
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Account detail with bank info, sessions, groups, financials, and recent audit logs
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccountDetailResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404":
+          description: "Account not found (ACCOUNT_NOT_FOUND)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
+  /api/v1/admin/accounts/{id}/status:
+    put:
+      summary: Update an account's status (suspend, lock, reactivate)
+      operationId: updateAccountStatus
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, reason]
+              additionalProperties: false
+              properties:
+                status: {type: string, enum: [pending_verification, active, suspended, locked]}
+                reason: {type: string, minLength: 1}
+      responses:
+        "200":
+          description: Status updated; warning flags any unsettled debts/credits the target still has
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UpdateStatusResponse"}
+        "400":
+          description: "Validation failed (VALIDATION_FAILED), or invalid status transition (INVALID_STATUS_TRANSITION)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403":
+          description: "Insufficient permissions (INSUFFICIENT_PERMISSIONS), cannot modify own account (CANNOT_MODIFY_SELF), or cannot modify another admin account (CANNOT_MODIFY_ADMIN)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "404":
+          description: "Account not found (ACCOUNT_NOT_FOUND)"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
+  /api/v1/admin/system/overview:
+    get:
+      summary: Aggregate system health and business metrics
+      operationId: getSystemOverview
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Counts across users, groups, bills, debts, media cleanup, OCR jobs, and runtime stats
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SystemOverviewResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
 components:
   securitySchemes:
@@ -1517,3 +1684,152 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         completed_at: {type: string, format: date-time, nullable: true}
+
+    AccountSummary:
+      type: object
+      required: [id, email, display_name, phone_number, role, status, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        display_name: {type: string}
+        avatar_url: {type: string, format: uri}
+        phone_number: {type: string}
+        role: {type: string, enum: [user, admin]}
+        status: {type: string, enum: [pending_verification, active, suspended, locked]}
+        email_verified_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    AdminPagination:
+      type: object
+      required: [total, page, limit, total_pages]
+      properties:
+        total: {type: integer, format: int64}
+        page: {type: integer}
+        limit: {type: integer}
+        total_pages: {type: integer}
+    ListAccountsResponse:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: "#/components/schemas/AccountSummary"}}
+        pagination: {$ref: "#/components/schemas/AdminPagination"}
+    AdminBankInfo:
+      type: object
+      properties:
+        bank_code: {type: string, nullable: true}
+        bank_account_number: {type: string, nullable: true}
+        bank_account_holder: {type: string, nullable: true}
+    AdminGroupMembership:
+      type: object
+      required: [group_id, group_name, role, status, joined_at]
+      properties:
+        group_id: {type: string, format: uuid}
+        group_name: {type: string}
+        role: {type: string, enum: [captain, member]}
+        status: {type: string, enum: [active, inactive]}
+        joined_at: {type: string, format: date-time}
+    AdminFinancialSummary:
+      type: object
+      required: [outstanding_debts_count, total_debt_amount_vnd, outstanding_credits_count, total_credit_amount_vnd]
+      properties:
+        outstanding_debts_count: {type: integer, format: int64}
+        total_debt_amount_vnd: {type: integer, format: int64}
+        outstanding_credits_count: {type: integer, format: int64}
+        total_credit_amount_vnd: {type: integer, format: int64}
+    AdminAuditLog:
+      type: object
+      required: [id, admin_id, admin_email, target_user_id, action, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        admin_id: {type: string, format: uuid}
+        admin_email: {type: string, format: email}
+        target_user_id: {type: string, format: uuid}
+        action: {type: string}
+        reason: {type: string}
+        created_at: {type: string, format: date-time}
+    AccountDetailResponse:
+      type: object
+      required: [id, email, display_name, phone_number, role, status, created_at, updated_at, failed_login_count, bank, active_sessions_count, groups, financials, recent_audit_logs]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        display_name: {type: string}
+        avatar_url: {type: string, format: uri}
+        phone_number: {type: string}
+        role: {type: string, enum: [user, admin]}
+        status: {type: string, enum: [pending_verification, active, suspended, locked]}
+        email_verified_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        failed_login_count: {type: integer}
+        login_blocked_until: {type: string, format: date-time, nullable: true}
+        bank: {$ref: "#/components/schemas/AdminBankInfo"}
+        active_sessions_count: {type: integer, format: int64}
+        groups: {type: array, items: {$ref: "#/components/schemas/AdminGroupMembership"}}
+        financials: {$ref: "#/components/schemas/AdminFinancialSummary"}
+        recent_audit_logs: {type: array, items: {$ref: "#/components/schemas/AdminAuditLog"}}
+    UpdateStatusWarning:
+      type: object
+      required: [unsettled_debts_count, unsettled_credits_count]
+      properties:
+        unsettled_debts_count: {type: integer, format: int64}
+        unsettled_credits_count: {type: integer, format: int64}
+    UpdateStatusResponse:
+      type: object
+      required: [account, warning]
+      properties:
+        account: {$ref: "#/components/schemas/AccountSummary"}
+        warning: {$ref: "#/components/schemas/UpdateStatusWarning"}
+    SystemOverviewResponse:
+      type: object
+      required: [users, groups, bills, debts, media_cleanup, ocr_jobs, runtime]
+      properties:
+        users:
+          type: object
+          required: [total, active, pending_verification, suspended, locked]
+          properties:
+            total: {type: integer, format: int64}
+            active: {type: integer, format: int64}
+            pending_verification: {type: integer, format: int64}
+            suspended: {type: integer, format: int64}
+            locked: {type: integer, format: int64}
+        groups:
+          type: object
+          required: [total]
+          properties:
+            total: {type: integer, format: int64}
+        bills:
+          type: object
+          required: [total_finalized, total_draft]
+          properties:
+            total_finalized: {type: integer, format: int64}
+            total_draft: {type: integer, format: int64}
+        debts:
+          type: object
+          required: [awaiting, pending_confirmation, stalled_confirmation, rejected, settled]
+          properties:
+            awaiting: {type: integer, format: int64}
+            pending_confirmation: {type: integer, format: int64}
+            stalled_confirmation: {type: integer, format: int64}
+            rejected: {type: integer, format: int64}
+            settled: {type: integer, format: int64}
+        media_cleanup:
+          type: object
+          required: [pending_jobs_count]
+          properties:
+            pending_jobs_count: {type: integer, format: int64}
+        ocr_jobs:
+          type: object
+          required: [queued, processing, succeeded, failed]
+          properties:
+            queued: {type: integer, format: int64}
+            processing: {type: integer, format: int64}
+            succeeded: {type: integer, format: int64}
+            failed: {type: integer, format: int64}
+        runtime:
+          type: object
+          required: [goroutines_count, alloc_memory_bytes, uptime_seconds]
+          properties:
+            goroutines_count: {type: integer}
+            alloc_memory_bytes: {type: integer, format: int64}
+            uptime_seconds: {type: integer, format: int64}
