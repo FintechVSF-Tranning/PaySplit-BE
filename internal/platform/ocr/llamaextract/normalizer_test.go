@@ -154,3 +154,174 @@ func TestNormalizeWithMismatchesAndAmbiguousDate(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalize_VMRoyalCityBenchmark khớp Spec 3 AC-15, AC-17, AC-18: 5 món với 3 dòng khuyến mãi
+// KM xen kẽ phải gộp đúng vào món liền trước và tổng phải khớp tuyệt đối.
+func TestNormalize_VMRoyalCityBenchmark(t *testing.T) {
+	rawJSON := []byte(`{
+		"merchant_name": "VM Royal City",
+		"items": [
+			{"name": "Lẩu bò", "quantity": "1", "unit_price": 189500, "line_total": 189500},
+			{"name": "KM", "quantity": null, "unit_price": null, "line_total": -64125},
+			{"name": "Rau muống", "quantity": "2", "unit_price": 25000, "line_total": 50000},
+			{"name": "Bia Tiger", "quantity": "6", "unit_price": 20000, "line_total": 120000},
+			{"name": "Khuyến mãi", "quantity": null, "unit_price": null, "line_total": -68175},
+			{"name": "Nước ngọt", "quantity": "4", "unit_price": 15000, "line_total": 60000},
+			{"name": "Tôm hấp", "quantity": "1", "unit_price": 125900, "line_total": 125900},
+			{"name": "KM", "quantity": null, "unit_price": null, "line_total": -59900}
+		],
+		"discount": 0
+	}`)
+
+	candidate, err := Normalize(rawJSON)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	if len(candidate.Items) != 5 {
+		t.Fatalf("expected 5 clean items, got %d: %+v", len(candidate.Items), candidate.Items)
+	}
+	if candidate.Subtotal != 545400 {
+		t.Errorf("expected gross subtotal 545400, got %d", candidate.Subtotal)
+	}
+	if candidate.TotalItemDiscount != 192200 {
+		t.Errorf("expected total_item_discount 192200, got %d", candidate.TotalItemDiscount)
+	}
+	if candidate.GeneralDiscount != 0 {
+		t.Errorf("expected general_discount 0, got %d", candidate.GeneralDiscount)
+	}
+	if candidate.Discount != 192200 {
+		t.Errorf("expected total discount 192200, got %d", candidate.Discount)
+	}
+	if candidate.Total != 545400-192200 {
+		t.Errorf("expected total %d, got %d", 545400-192200, candidate.Total)
+	}
+	for _, w := range candidate.Warnings {
+		if w == domain.WarningTotalMismatch || w == domain.WarningSubtotalMismatch {
+			t.Errorf("did not expect mismatch warning, got %v", candidate.Warnings)
+		}
+	}
+
+	// Lẩu bò hấp thụ khuyến mãi -64.125 liền sau nó.
+	if candidate.Items[0].DiscountAmount != 64125 || candidate.Items[0].FinalPrice != 189500-64125 {
+		t.Errorf("unexpected folded discount on item 0: %+v", candidate.Items[0])
+	}
+	// Bia Tiger hấp thụ khuyến mãi -68.175 liền sau nó.
+	if candidate.Items[2].DiscountAmount != 68175 || candidate.Items[2].FinalPrice != 120000-68175 {
+		t.Errorf("unexpected folded discount on item 2 (Bia Tiger): %+v", candidate.Items[2])
+	}
+	// Tôm hấp hấp thụ khuyến mãi -59.900 liền sau nó.
+	if candidate.Items[4].DiscountAmount != 59900 || candidate.Items[4].FinalPrice != 125900-59900 {
+		t.Errorf("unexpected folded discount on item 4 (Tôm hấp): %+v", candidate.Items[4])
+	}
+}
+
+// TestNormalize_ItemDiscountPlusVoucher khớp Spec 3 AC-17: giảm giá theo món và voucher chung
+// phải được tách riêng, không cộng dồn sai.
+func TestNormalize_ItemDiscountPlusVoucher(t *testing.T) {
+	rawJSON := []byte(`{
+		"items": [
+			{"name": "Bò bít tết", "quantity": "1", "unit_price": 250000, "line_total": 250000},
+			{"name": "KM", "quantity": null, "unit_price": null, "line_total": -50000}
+		],
+		"subtotal": 250000,
+		"discount": 80000,
+		"total": 170000
+	}`)
+
+	candidate, err := Normalize(rawJSON)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	if candidate.TotalItemDiscount != 50000 {
+		t.Errorf("expected total_item_discount 50000, got %d", candidate.TotalItemDiscount)
+	}
+	if candidate.GeneralDiscount != 30000 {
+		t.Errorf("expected general_discount 30000, got %d", candidate.GeneralDiscount)
+	}
+	if candidate.Discount != 80000 {
+		t.Errorf("expected total discount 80000, got %d", candidate.Discount)
+	}
+}
+
+// TestNormalize_OrphanPromotionLine khớp Spec 3 AC-16: dòng khuyến mãi không có món liền trước
+// phải chuyển thành giảm giá chung kèm cảnh báo OCR_ORPHAN_ITEM_DISCOUNT.
+func TestNormalize_OrphanPromotionLine(t *testing.T) {
+	rawJSON := []byte(`{
+		"items": [
+			{"name": "Voucher giảm giá", "quantity": null, "unit_price": null, "line_total": -30000},
+			{"name": "Cà phê sữa", "quantity": "2", "unit_price": 25000, "line_total": 50000}
+		],
+		"subtotal": 50000,
+		"discount": 0,
+		"total": 20000
+	}`)
+
+	candidate, err := Normalize(rawJSON)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	if len(candidate.Items) != 1 {
+		t.Fatalf("expected 1 clean item, got %d: %+v", len(candidate.Items), candidate.Items)
+	}
+	if candidate.Items[0].DiscountAmount != 0 {
+		t.Errorf("expected preserved item to carry no discount, got %+v", candidate.Items[0])
+	}
+	if candidate.TotalItemDiscount != 0 {
+		t.Errorf("expected total_item_discount 0, got %d", candidate.TotalItemDiscount)
+	}
+	if candidate.GeneralDiscount != 30000 {
+		t.Errorf("expected general_discount 30000 from orphan line, got %d", candidate.GeneralDiscount)
+	}
+
+	found := false
+	for _, w := range candidate.Warnings {
+		if w == domain.WarningOCROrphanItemDiscount {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected OCR_ORPHAN_ITEM_DISCOUNT warning, got %v", candidate.Warnings)
+	}
+}
+
+// TestNormalize_ItemDiscountExceedsLinePrice khớp Spec 3 AC-16: giảm giá vượt quá giá gốc của
+// chính món đó phải bị chặn về 0 và phần dư chuyển sang giảm giá chung.
+func TestNormalize_ItemDiscountExceedsLinePrice(t *testing.T) {
+	rawJSON := []byte(`{
+		"items": [
+			{"name": "Trà sữa", "quantity": "1", "unit_price": 100000, "line_total": 100000},
+			{"name": "KM", "quantity": null, "unit_price": null, "line_total": -150000}
+		],
+		"subtotal": 100000,
+		"discount": 0,
+		"total": -50000
+	}`)
+
+	candidate, err := Normalize(rawJSON)
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+
+	if len(candidate.Items) != 1 {
+		t.Fatalf("expected 1 clean item, got %d: %+v", len(candidate.Items), candidate.Items)
+	}
+	if candidate.Items[0].DiscountAmount != 100000 || candidate.Items[0].FinalPrice != 0 {
+		t.Errorf("expected discount clamped to line total with final_price 0, got %+v", candidate.Items[0])
+	}
+	if candidate.GeneralDiscount != 50000 {
+		t.Errorf("expected excess 50000 moved to general_discount, got %d", candidate.GeneralDiscount)
+	}
+
+	found := false
+	for _, w := range candidate.Warnings {
+		if w == domain.WarningOCRItemDiscountExceeded {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected OCR_ITEM_DISCOUNT_EXCEEDED warning, got %v", candidate.Warnings)
+	}
+}

@@ -22,12 +22,21 @@ func billFixture(creditor uuid.UUID, items []*domain.BillItem, subtotal, sc, vat
 }
 
 func itemFixture(lineTotal int64, memberIDs ...uuid.UUID) *domain.BillItem {
-	it := &domain.BillItem{ID: uuid.New(), LineTotal: lineTotal}
+	it := &domain.BillItem{ID: uuid.New(), LineTotal: lineTotal, FinalPrice: lineTotal}
 	for _, m := range memberIDs {
 		it.Assignments = append(it.Assignments, &domain.BillItemAssignment{
 			ID: uuid.New(), MemberID: m, Weight: "1.0000",
 		})
 	}
+	return it
+}
+
+// discountedItemFixture là itemFixture với khuyến mãi riêng theo món đã gộp (Spec 3 AC-15, AC-17):
+// finalPrice = lineTotal - discountAmount.
+func discountedItemFixture(lineTotal, discountAmount int64, memberIDs ...uuid.UUID) *domain.BillItem {
+	it := itemFixture(lineTotal, memberIDs...)
+	it.DiscountAmount = discountAmount
+	it.FinalPrice = lineTotal - discountAmount
 	return it
 }
 
@@ -126,6 +135,51 @@ func TestEvaluateAllocation_MissingCreditor(t *testing.T) {
 
 	if _, blockers := evaluateAllocation(bill, map[uuid.UUID]bool{m: true}); !hasCode(blockers, BlockerCreditorRequired) {
 		t.Fatalf("mong đợi %s, nhận %v", BlockerCreditorRequired, blockers)
+	}
+}
+
+// TestEvaluateAllocation_ItemDiscountStaysWithAssignee khớp Spec 3 AC-17: khuyến mãi gắn riêng cho
+// một món chỉ được lợi cho đúng thành viên được gán món đó, không bị chia đều cho cả nhóm như
+// giảm giá chung. Tái hiện đúng lỗi gốc đã sửa: toAllocationInput từng truyền LineTotal (giá gốc)
+// và Discount gộp cả khoản khuyến mãi theo món, khiến khuyến mãi bị rải đều cho mọi thành viên.
+func TestEvaluateAllocation_ItemDiscountStaysWithAssignee(t *testing.T) {
+	creditor, other := uuid.New(), uuid.New()
+
+	// Món của creditor: 100.000đ, khuyến mãi riêng 20.000đ -> final_price 80.000đ.
+	itemWithDiscount := discountedItemFixture(100000, 20000, creditor)
+	// Món của other: 50.000đ, không khuyến mãi.
+	itemPlain := itemFixture(50000, other)
+
+	bill := &domain.Bill{
+		ID:                uuid.New(),
+		CreditorMemberID:  creditor,
+		Subtotal:          150000, // tổng gộp trước khuyến mãi: 100000 + 50000
+		TotalItemDiscount: 20000,
+		GeneralDiscount:   0,
+		Discount:          20000, // = TotalItemDiscount + GeneralDiscount
+		Total:             130000,
+		Items:             []*domain.BillItem{itemWithDiscount, itemPlain},
+	}
+
+	allocs, blockers := evaluateAllocation(bill, map[uuid.UUID]bool{creditor: true, other: true})
+	if len(blockers) != 0 {
+		t.Fatalf("mong đợi không có mã chặn, nhận %v", blockers)
+	}
+
+	byMember := make(map[uuid.UUID]*MemberAllocation, len(allocs))
+	for _, a := range allocs {
+		byMember[a.MemberID] = a
+	}
+
+	// other không dính món có khuyến mãi nên phải trả đủ 50.000đ, không được hưởng một phần của
+	// khoản giảm giá 20.000đ dành cho món của creditor.
+	if got := byMember[other].FinalAmount; got != 50000 {
+		t.Errorf("other phải trả đủ 50000 (không chia sẻ khuyến mãi của món khác), nhận %d", got)
+	}
+	// creditor nhận phần còn lại: net_items_total (130000) - other (50000) = 80000, đúng bằng
+	// final_price của món creditor.
+	if got := byMember[creditor].FinalAmount; got != 80000 {
+		t.Errorf("creditor phải chỉ còn 80000 sau khuyến mãi riêng của món, nhận %d", got)
 	}
 }
 

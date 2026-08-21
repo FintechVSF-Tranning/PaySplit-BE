@@ -49,6 +49,8 @@ type Bill struct {
 	MismatchCodes      []string           `json:"mismatch_codes"`
 	ReviewedAt         pgtype.Timestamptz `json:"reviewed_at"`
 	ReviewedByMemberID pgtype.UUID        `json:"reviewed_by_member_id"`
+	TotalItemDiscount  int64              `json:"total_item_discount"`
+	GeneralDiscount    int64              `json:"general_discount"`
 }
 
 type BillIdempotencyKey struct {
@@ -77,16 +79,18 @@ type BillImage struct {
 }
 
 type BillItem struct {
-	ID        pgtype.UUID        `json:"id"`
-	BillID    pgtype.UUID        `json:"bill_id"`
-	GroupID   pgtype.UUID        `json:"group_id"`
-	Name      string             `json:"name"`
-	Quantity  pgtype.Numeric     `json:"quantity"`
-	UnitPrice int64              `json:"unit_price"`
-	LineTotal int64              `json:"line_total"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
-	Position  int16              `json:"position"`
+	ID             pgtype.UUID        `json:"id"`
+	BillID         pgtype.UUID        `json:"bill_id"`
+	GroupID        pgtype.UUID        `json:"group_id"`
+	Name           string             `json:"name"`
+	Quantity       pgtype.Numeric     `json:"quantity"`
+	UnitPrice      int64              `json:"unit_price"`
+	LineTotal      int64              `json:"line_total"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Position       int16              `json:"position"`
+	DiscountAmount int64              `json:"discount_amount"`
+	FinalPrice     int64              `json:"final_price"`
 }
 
 type BillItemAssignment struct {
@@ -125,6 +129,7 @@ type Debt struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	SettledAt        pgtype.Timestamptz `json:"settled_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	VoidedAt         pgtype.Timestamptz `json:"voided_at"`
 }
 
 type Group struct {

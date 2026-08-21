@@ -10,6 +10,8 @@ INSERT INTO bills (
     service_charge,
     vat,
     discount,
+    total_item_discount,
+    general_discount,
     total,
     split_method,
     mismatch_codes,
@@ -18,7 +20,7 @@ INSERT INTO bills (
     created_at,
     updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, now(), now()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 1, now(), now()
 ) RETURNING *;
 
 -- name: GetBillByID :one
@@ -59,15 +61,17 @@ SET merchant_name = $3,
     service_charge = $6,
     vat = $7,
     discount = $8,
-    total = $9,
-    split_method = $10,
-    mismatch_codes = $11,
+    total_item_discount = $9,
+    general_discount = $10,
+    total = $11,
+    split_method = $12,
+    mismatch_codes = $13,
     status = 'draft',
     reviewed_at = NULL,
     reviewed_by_member_id = NULL,
     version = version + 1,
     updated_at = now()
-WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $12
+WHERE id = $1 AND group_id = $2 AND status IN ('draft', 'reviewed') AND version = $14
 RETURNING *;
 
 -- name: ReviewBill :one
@@ -140,11 +144,13 @@ INSERT INTO bill_items (
     quantity,
     unit_price,
     line_total,
+    discount_amount,
+    final_price,
     position,
     created_at,
     updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, now(), now()
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now()
 ) RETURNING *;
 
 -- name: ListBillItems :many

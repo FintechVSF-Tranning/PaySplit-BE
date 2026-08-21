@@ -92,11 +92,15 @@ func (s *Service) SetManualOCRConfig(limit int, window time.Duration) {
 // ============================================================================
 
 type CreateBillItemRequest struct {
-	Name        string                        `json:"name"`
-	Quantity    string                        `json:"quantity"`
-	UnitPrice   int64                         `json:"unit_price"`
-	LineTotal   int64                         `json:"line_total"`
-	Assignments []CreateItemAssignmentRequest `json:"assignments"`
+	Name      string `json:"name"`
+	Quantity  string `json:"quantity"`
+	UnitPrice int64  `json:"unit_price"`
+	LineTotal int64  `json:"line_total"`
+	// DiscountAmount là khuyến mãi riêng theo món (VND), mặc định 0 khi không gửi lên.
+	// Máy chủ tự tính lại final_price và tổng hợp total_item_discount, không nhận final_price
+	// trực tiếp từ client (Spec 3 AC-19, AC-20).
+	DiscountAmount int64                         `json:"discount_amount"`
+	Assignments    []CreateItemAssignmentRequest `json:"assignments"`
 }
 
 type CreateItemAssignmentRequest struct {
@@ -166,6 +170,11 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	if len(req.Items) > 100 {
 		return nil, fmt.Errorf("%w: maximum 100 items allowed", domain.ErrInvalidInput)
 	}
+	// Spec 3 AC-21: CreateBill trước đây không có kiểm tra này, khiến discount > 0 vi phạm
+	// check_bills_discount_composition ở tầng database và trả về lỗi 500 không kiểm soát.
+	if req.Discount < 0 {
+		return nil, fmt.Errorf("%w: discount must not be negative", domain.ErrInvalidInput)
+	}
 
 	// Kiểm tra tính hợp lệ của replaces_bill_id nếu được truyền (Spec 3 AC-11)
 	if req.ReplacesBillID != nil && *req.ReplacesBillID != uuid.Nil {
@@ -178,16 +187,6 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		}
 		if replacedBill.Status != domain.BillStatusVoided {
 			return nil, fmt.Errorf("%w: replaced bill must be voided", domain.ErrInvalidInput)
-		}
-	}
-
-	// Kiểm tra tính hợp lệ của trọng số assignments
-	for _, it := range req.Items {
-		for _, assign := range it.Assignments {
-			w, err := strconv.ParseFloat(assign.Weight, 64)
-			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
-				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
-			}
 		}
 	}
 
@@ -228,36 +227,57 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		})
 	}
 
-	// 3. Chuẩn bị danh sách món ăn
+	// 3. Chuẩn bị danh sách món ăn, kiểm tra discount_amount theo từng món (Spec 3 AC-19, AC-20, AC-21)
 	items := make([]*domain.BillItem, 0, len(req.Items))
+	var totalItemDiscount int64
 	for i, it := range req.Items {
 		itemID := uuid.Must(uuid.NewV7())
 		lineTotal := it.LineTotal
 		if lineTotal == 0 && it.UnitPrice > 0 {
 			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
 		}
-
-		domItem := &domain.BillItem{
-			ID:        itemID,
-			BillID:    billID,
-			GroupID:   req.GroupID,
-			Name:      it.Name,
-			Quantity:  it.Quantity,
-			UnitPrice: it.UnitPrice,
-			LineTotal: lineTotal,
-			Position:  int16(i),
+		if lineTotal < 0 {
+			return nil, fmt.Errorf("%w: item %d: line_total must not be negative", domain.ErrInvalidInput, i)
 		}
+		if it.DiscountAmount < 0 || it.DiscountAmount > lineTotal {
+			return nil, fmt.Errorf("%w: item %d: discount_amount must be between 0 and line_total", domain.ErrInvalidInput, i)
+		}
+		totalItemDiscount += it.DiscountAmount
 
+		items = append(items, &domain.BillItem{
+			ID:             itemID,
+			BillID:         billID,
+			GroupID:        req.GroupID,
+			Name:           it.Name,
+			Quantity:       it.Quantity,
+			UnitPrice:      it.UnitPrice,
+			LineTotal:      lineTotal,
+			DiscountAmount: it.DiscountAmount,
+			FinalPrice:     lineTotal - it.DiscountAmount,
+			Position:       int16(i),
+		})
+	}
+
+	generalDiscount := req.Discount - totalItemDiscount
+	if generalDiscount < 0 {
+		return nil, fmt.Errorf("%w: discount is less than the sum of item discounts", domain.ErrInvalidInput)
+	}
+
+	// Kiểm tra tính hợp lệ của trọng số assignments, sau khi discount đã hợp lệ (Spec 3 AC-19)
+	for i, it := range req.Items {
 		for _, assign := range it.Assignments {
-			domItem.Assignments = append(domItem.Assignments, &domain.BillItemAssignment{
+			w, err := strconv.ParseFloat(assign.Weight, 64)
+			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
+				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
+			}
+			items[i].Assignments = append(items[i].Assignments, &domain.BillItemAssignment{
 				ID:         uuid.Must(uuid.NewV7()),
-				BillItemID: itemID,
+				BillItemID: items[i].ID,
 				GroupID:    req.GroupID,
 				MemberID:   assign.MemberID,
 				Weight:     assign.Weight,
 			})
 		}
-		items = append(items, domItem)
 	}
 
 	// 4. Chuẩn bị Bill domain entity
@@ -267,20 +287,22 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	}
 
 	bill := &domain.Bill{
-		ID:               billID,
-		GroupID:          req.GroupID,
-		CreditorMemberID: member.ID,
-		MerchantName:     req.MerchantName,
-		BillDate:         req.BillDate,
-		Subtotal:         req.Subtotal,
-		ServiceCharge:    req.ServiceCharge,
-		VAT:              req.VAT,
-		Discount:         req.Discount,
-		Total:            req.Total,
-		SplitMethod:      splitMethod,
-		ReplacesBillID:   req.ReplacesBillID,
-		Status:           domain.BillStatusDraft,
-		Version:          1,
+		ID:                billID,
+		GroupID:           req.GroupID,
+		CreditorMemberID:  member.ID,
+		MerchantName:      req.MerchantName,
+		BillDate:          req.BillDate,
+		Subtotal:          req.Subtotal,
+		ServiceCharge:     req.ServiceCharge,
+		VAT:               req.VAT,
+		Discount:          req.Discount,
+		TotalItemDiscount: totalItemDiscount,
+		GeneralDiscount:   generalDiscount,
+		Total:             req.Total,
+		SplitMethod:       splitMethod,
+		ReplacesBillID:    req.ReplacesBillID,
+		Status:            domain.BillStatusDraft,
+		Version:           1,
 	}
 
 	// 5. Nếu có ảnh -> tạo kèm OCRJob (Spec 3 AC-2)
@@ -537,6 +559,8 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	bill.ServiceCharge = candidate.ServiceCharge
 	bill.VAT = candidate.VAT
 	bill.Discount = candidate.Discount
+	bill.TotalItemDiscount = candidate.TotalItemDiscount
+	bill.GeneralDiscount = candidate.GeneralDiscount
 	bill.Total = candidate.Total
 	bill.MismatchCodes = candidate.Warnings
 
@@ -545,14 +569,16 @@ func (s *Service) ApplyCandidate(ctx context.Context, callerUserID, billID, grou
 	for i, cItem := range candidate.Items {
 		itemID := uuid.Must(uuid.NewV7())
 		domItem := &domain.BillItem{
-			ID:        itemID,
-			BillID:    billID,
-			GroupID:   groupID,
-			Name:      cItem.Name,
-			Quantity:  cItem.Quantity,
-			UnitPrice: cItem.UnitPrice,
-			LineTotal: cItem.LineTotal,
-			Position:  int16(i),
+			ID:             itemID,
+			BillID:         billID,
+			GroupID:        groupID,
+			Name:           cItem.Name,
+			Quantity:       cItem.Quantity,
+			UnitPrice:      cItem.UnitPrice,
+			LineTotal:      cItem.LineTotal,
+			DiscountAmount: cItem.DiscountAmount,
+			FinalPrice:     cItem.FinalPrice,
+			Position:       int16(i),
 		}
 
 		// Gán chia đều mặc định cho toàn bộ thành viên nhóm
@@ -607,16 +633,59 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 
 	// Kiểm tra giá trị discount không được âm
 	if req.Discount < 0 {
-		return nil, domain.ErrInvalidInput
+		return nil, fmt.Errorf("%w: discount must not be negative", domain.ErrInvalidInput)
 	}
 
-	// Kiểm tra tính hợp lệ của trọng số assignments
-	for _, it := range req.Items {
+	// Chuẩn bị danh sách món ăn, kiểm tra discount_amount theo từng món (Spec 3 AC-19)
+	items := make([]*domain.BillItem, 0, len(req.Items))
+	var totalItemDiscount int64
+	for i, it := range req.Items {
+		itemID := uuid.Must(uuid.NewV7())
+		lineTotal := it.LineTotal
+		if lineTotal == 0 && it.UnitPrice > 0 {
+			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
+		}
+		if lineTotal < 0 {
+			return nil, fmt.Errorf("%w: item %d: line_total must not be negative", domain.ErrInvalidInput, i)
+		}
+		if it.DiscountAmount < 0 || it.DiscountAmount > lineTotal {
+			return nil, fmt.Errorf("%w: item %d: discount_amount must be between 0 and line_total", domain.ErrInvalidInput, i)
+		}
+		totalItemDiscount += it.DiscountAmount
+
+		items = append(items, &domain.BillItem{
+			ID:             itemID,
+			BillID:         billID,
+			GroupID:        groupID,
+			Name:           it.Name,
+			Quantity:       it.Quantity,
+			UnitPrice:      it.UnitPrice,
+			LineTotal:      lineTotal,
+			DiscountAmount: it.DiscountAmount,
+			FinalPrice:     lineTotal - it.DiscountAmount,
+			Position:       int16(i),
+		})
+	}
+
+	generalDiscount := req.Discount - totalItemDiscount
+	if generalDiscount < 0 {
+		return nil, fmt.Errorf("%w: discount is less than the sum of item discounts", domain.ErrInvalidInput)
+	}
+
+	// Kiểm tra tính hợp lệ của trọng số assignments, sau khi discount đã hợp lệ (Spec 3 AC-19)
+	for i, it := range req.Items {
 		for _, assign := range it.Assignments {
 			w, err := strconv.ParseFloat(assign.Weight, 64)
 			if err != nil || w <= 0 || math.IsNaN(w) || math.IsInf(w, 0) {
 				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
 			}
+			items[i].Assignments = append(items[i].Assignments, &domain.BillItemAssignment{
+				ID:         uuid.Must(uuid.NewV7()),
+				BillItemID: items[i].ID,
+				GroupID:    groupID,
+				MemberID:   assign.MemberID,
+				Weight:     assign.Weight,
+			})
 		}
 	}
 
@@ -626,39 +695,10 @@ func (s *Service) UpdateDraftBill(ctx context.Context, callerUserID, billID, gro
 	bill.ServiceCharge = req.ServiceCharge
 	bill.VAT = req.VAT
 	bill.Discount = req.Discount
+	bill.TotalItemDiscount = totalItemDiscount
+	bill.GeneralDiscount = generalDiscount
 	bill.Total = req.Total
 	bill.SplitMethod = req.SplitMethod
-
-	items := make([]*domain.BillItem, 0, len(req.Items))
-	for i, it := range req.Items {
-		itemID := uuid.Must(uuid.NewV7())
-		lineTotal := it.LineTotal
-		if lineTotal == 0 && it.UnitPrice > 0 {
-			lineTotal = computeLineTotal(it.UnitPrice, it.Quantity)
-		}
-
-		domItem := &domain.BillItem{
-			ID:        itemID,
-			BillID:    billID,
-			GroupID:   groupID,
-			Name:      it.Name,
-			Quantity:  it.Quantity,
-			UnitPrice: it.UnitPrice,
-			LineTotal: lineTotal,
-			Position:  int16(i),
-		}
-
-		for _, assign := range it.Assignments {
-			domItem.Assignments = append(domItem.Assignments, &domain.BillItemAssignment{
-				ID:         uuid.Must(uuid.NewV7()),
-				BillItemID: itemID,
-				GroupID:    groupID,
-				MemberID:   assign.MemberID,
-				Weight:     assign.Weight,
-			})
-		}
-		items = append(items, domItem)
-	}
 
 	return s.repo.UpdateDraftBill(ctx, repository.UpdateDraftParams{
 		Bill:            bill,
@@ -959,8 +999,10 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 		}
 
 		items = append(items, ItemInput{
-			ID:          it.ID,
-			LineTotal:   it.LineTotal,
+			ID: it.ID,
+			// Dùng FinalPrice (giá đã trừ khuyến mãi riêng của món) chứ không phải LineTotal (giá gốc),
+			// để khuyến mãi theo món chỉ có lợi cho đúng người được gán món đó (Spec 3 AC-17).
+			LineTotal:   it.FinalPrice,
 			Assignments: assigns,
 		})
 	}
@@ -970,9 +1012,11 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 		Subtotal:      b.Subtotal,
 		ServiceCharge: b.ServiceCharge,
 		VAT:           b.VAT,
-		Discount:      b.Discount,
-		Total:         b.Total,
-		Items:         items,
+		// Chỉ phân bổ giảm giá chung theo tỷ lệ; giảm giá riêng theo món đã nằm sẵn trong FinalPrice
+		// ở trên nên không được cộng dồn lại ở đây (Spec 3 AC-17, AC-18).
+		Discount: b.GeneralDiscount,
+		Total:    b.Total,
+		Items:    items,
 	}
 }
 

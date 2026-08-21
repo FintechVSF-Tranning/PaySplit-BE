@@ -596,6 +596,7 @@ paths:
                       quantity: {type: string}
                       unit_price: {type: integer, format: int64}
                       line_total: {type: integer, format: int64}
+                      discount_amount: {type: integer, format: int64, description: "Khuyến mãi riêng cho món này (VND), mặc định 0. Máy chủ tự tính lại final_price, không nhận trực tiếp từ client."}
                       assignments:
                         type: array
                         items:
@@ -736,6 +737,7 @@ paths:
                       quantity: {type: string}
                       unit_price: {type: integer, format: int64}
                       line_total: {type: integer, format: int64}
+                      discount_amount: {type: integer, format: int64, description: "Khuyến mãi riêng cho món này (VND), mặc định 0. Máy chủ tự tính lại final_price, không nhận trực tiếp từ client."}
                       assignments:
                         type: array
                         items:
@@ -1393,7 +1395,9 @@ components:
         subtotal: {type: integer, format: int64}
         service_charge: {type: integer, format: int64}
         vat: {type: integer, format: int64}
-        discount: {type: integer, format: int64}
+        discount: {type: integer, format: int64, description: "Tổng giảm giá = total_item_discount + general_discount"}
+        total_item_discount: {type: integer, format: int64, description: "Tổng khuyến mãi gắn theo từng món"}
+        general_discount: {type: integer, format: int64, description: "Giảm giá chung/voucher của cả hóa đơn"}
         total: {type: integer, format: int64}
         split_method: {type: string, enum: [even, item_ratio, exact, shares, percentage]}
         mismatch_codes:
@@ -1440,6 +1444,8 @@ components:
         quantity: {type: string}
         unit_price: {type: integer, format: int64}
         line_total: {type: integer, format: int64}
+        discount_amount: {type: integer, format: int64, description: "Khuyến mãi riêng cho món này (VND)"}
+        final_price: {type: integer, format: int64, description: "line_total trừ discount_amount, dùng để chia cho thành viên"}
         position: {type: integer}
         assignments: {type: array, items: {$ref: "#/components/schemas/BillItemAssignment"}}
         created_at: {type: string, format: date-time}
