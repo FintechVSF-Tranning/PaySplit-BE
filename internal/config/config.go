@@ -25,6 +25,9 @@ type Config struct {
 	Firebase   FirebaseConfig
 	River      RiverConfig
 	Group      GroupConfig
+	OCR        OCRConfig
+	BillImage  BillImageConfig
+	BillSSE    BillSSEConfig
 	Metrics    MetricsConfig
 }
 
@@ -107,6 +110,33 @@ type RiverConfig struct {
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
 type GroupConfig struct {
 	InviteBaseURL string
+}
+
+// OCRConfig chứa cấu hình tích hợp dịch vụ LlamaExtract và background retry/retention cho OCR.
+type OCRConfig struct {
+	APIKey            string
+	Endpoint          string
+	ProviderTimeout   time.Duration
+	MaxAttempts       int
+	RetryBaseDelay    time.Duration
+	ManualLimit       int
+	ManualWindowHours time.Duration
+	RawRetentionDays  time.Duration
+}
+
+// BillImageConfig chứa cấu hình tải lên, xử lý và tạo signed URL cho ảnh hóa đơn.
+type BillImageConfig struct {
+	MaxCount          int
+	MaxBytes          int64
+	UploadTimeout     time.Duration
+	ProcessingTimeout time.Duration
+	SignedURLTTL      time.Duration
+}
+
+// BillSSEConfig chứa cấu hình SSE streaming cho bill events (Spec 3 AC-2, AC-8).
+type BillSSEConfig struct {
+	HeartbeatInterval time.Duration
+	MaxConnectionAge  time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -211,6 +241,58 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	ocrProviderTimeout, err := durationEnv("BILL_OCR_PROVIDER_TIMEOUT_SECONDS", 8, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrMaxAttempts, err := intEnv("BILL_OCR_MAX_ATTEMPTS", 3)
+	if err != nil {
+		return nil, err
+	}
+	ocrRetryBaseDelay, err := durationEnv("BILL_OCR_RETRY_BASE_DELAY_SECONDS", 1, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualLimit, err := intEnv("BILL_OCR_MANUAL_LIMIT", 5)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualWindow, err := durationEnv("BILL_OCR_MANUAL_WINDOW_HOURS", 24, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	ocrRawRetention, err := durationEnv("BILL_OCR_RAW_RETENTION_DAYS", 30, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	billImageMaxCount, err := intEnv("BILL_IMAGE_MAX_COUNT", 5)
+	if err != nil {
+		return nil, err
+	}
+	billImageMaxBytes, err := intEnv("BILL_IMAGE_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	billImageUploadTimeout, err := durationEnv("BILL_IMAGE_UPLOAD_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageProcessingTimeout, err := durationEnv("BILL_IMAGE_PROCESSING_TIMEOUT_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageSignedURLTTL, err := durationEnv("BILL_IMAGE_SIGNED_URL_TTL_MINUTES", 5, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	billSSEHeartbeat, err := durationEnv("BILL_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billSSEMaxAge, err := durationEnv("BILL_SSE_MAX_CONNECTION_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
 
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
@@ -265,6 +347,27 @@ func Load() (*Config, error) {
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
 		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
 		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		OCR: OCRConfig{
+			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
+			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
+			ProviderTimeout:   ocrProviderTimeout,
+			MaxAttempts:       ocrMaxAttempts,
+			RetryBaseDelay:    ocrRetryBaseDelay,
+			ManualLimit:       ocrManualLimit,
+			ManualWindowHours: ocrManualWindow,
+			RawRetentionDays:  ocrRawRetention,
+		},
+		BillImage: BillImageConfig{
+			MaxCount:          billImageMaxCount,
+			MaxBytes:          int64(billImageMaxBytes),
+			UploadTimeout:     billImageUploadTimeout,
+			ProcessingTimeout: billImageProcessingTimeout,
+			SignedURLTTL:      billImageSignedURLTTL,
+		},
+		BillSSE: BillSSEConfig{
+			HeartbeatInterval: billSSEHeartbeat,
+			MaxConnectionAge:  billSSEMaxAge,
+		},
 		Metrics: MetricsConfig{
 			Enabled:     boolEnv("METRICS_ENABLED", true),
 			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
@@ -339,6 +442,18 @@ func (c *Config) Validate() error {
 	}
 	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
 		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
+	}
+	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
+		return errors.New("OCR settings must be positive")
+	}
+	if c.BillImage.MaxCount <= 0 || c.BillImage.MaxBytes <= 0 || c.BillImage.UploadTimeout <= 0 || c.BillImage.ProcessingTimeout <= 0 || c.BillImage.SignedURLTTL <= 0 {
+		return errors.New("bill image settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval <= 0 || c.BillSSE.MaxConnectionAge <= 0 {
+		return errors.New("bill sse settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
+		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
 	}
 	return nil
 }

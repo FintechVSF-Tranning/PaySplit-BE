@@ -51,6 +51,9 @@ func (s *AvatarStorage) Delete(ctx context.Context, publicID string) error {
 	if result == nil {
 		return errors.New("empty Cloudinary destroy response")
 	}
+	if result.Result != "ok" {
+		return fmt.Errorf("destroy Cloudinary avatar: result=%q", result.Result)
+	}
 	return nil
 }
 func (s *AvatarStorage) URL(publicID string) string {

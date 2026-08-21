@@ -3,16 +3,18 @@ package fcm
 import (
 	"fmt"
 	"strconv"
+
+	"paysplit-backend/internal/modules/notification/domain"
 )
 
 const (
-	TypePaymentReminder    = "payment_reminder"
-	TypeNewBill            = "new_bill"
-	TypePaymentConfirmed   = "payment_confirmed"
-	TypePaymentRejected    = "payment_rejected"
-	TypeGroupInvitation    = "group_invitation"
-	TypeBillUpdated        = "bill_updated"
-	TypeSystemAnnouncement = "system_announcement"
+	TypePaymentReminder    = domain.TypePaymentReminder
+	TypeNewBill            = domain.TypeNewBill
+	TypePaymentConfirmed   = domain.TypePaymentConfirmed
+	TypePaymentRejected    = domain.TypePaymentRejected
+	TypeGroupInvitation    = domain.TypeGroupInvitation
+	TypeBillUpdated        = domain.TypeBillUpdated
+	TypeSystemAnnouncement = domain.TypeSystemAnnouncement
 )
 
 // Action bắt sự kiện click thông báo mặc định cho Flutter

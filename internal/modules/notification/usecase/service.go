@@ -9,7 +9,6 @@ import (
 
 	"paysplit-backend/internal/modules/notification/domain"
 	"paysplit-backend/internal/modules/notification/repository"
-	"paysplit-backend/internal/platform/notification/fcm"
 
 	"github.com/brpaz/lib-go/pagination"
 )
@@ -23,8 +22,9 @@ const (
 )
 
 type PushNotifier interface {
-	SendToDevice(ctx context.Context, fcmToken string, msg fcm.PushMessage) error
-	SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error
+	SendToDevice(ctx context.Context, fcmToken string, msg domain.PushMessage) error
+	SendToAllUsers(ctx context.Context, msg domain.PushMessage) error
+	IsInvalidToken(err error) bool
 }
 
 // JobEnqueuer là interface đại diện cho hàng đợi bất đồng bộ (River Queue). Việc enqueue luôn
@@ -54,7 +54,7 @@ func NewService(repo repository.Repository, pushNotifier PushNotifier, enqueuer 
 // SendToUser thực hiện 2 việc:
 // 1. Lưu thông báo vào Database (In-App notification)
 // 2. Đẩy job gửi Push Notification vào River Queue (hoặc gửi trực tiếp nếu không có queue)
-func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMessage) error {
+func (s *Service) SendToUser(ctx context.Context, userID string, msg domain.PushMessage) error {
 	if userID == "" {
 		return domain.ErrInvalidInput
 	}
@@ -67,7 +67,7 @@ func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMes
 
 	notifType := strings.TrimSpace(msg.Data["type"])
 	if notifType == "" {
-		notifType = fcm.TypeSystemAnnouncement
+		notifType = domain.TypeSystemAnnouncement
 	}
 
 	// Cắt bớt về giới hạn CHECK constraint của DB thay vì để insert thất bại bằng lỗi 500,
@@ -119,7 +119,7 @@ func (s *Service) SendToUser(ctx context.Context, userID string, msg fcm.PushMes
 			log.Printf("event=fcm_token_lookup_failed user_id=%s err=%v", userID, err)
 		} else if token != "" {
 			if sendErr := s.pushNotifier.SendToDevice(ctx, token, msg); sendErr != nil {
-				if fcm.IsInvalidTokenError(sendErr) {
+				if s.pushNotifier.IsInvalidToken(sendErr) {
 					_ = s.repo.ClearFCMToken(ctx, userID, token)
 				} else {
 					log.Printf("event=fcm_send_failed user_id=%s err=%v", userID, sendErr)
@@ -146,7 +146,7 @@ func truncate(s string, max int) string {
 }
 
 // SendToAllUsers gửi thông báo hệ thống tới toàn bộ người dùng đã cài app
-func (s *Service) SendToAllUsers(ctx context.Context, msg fcm.PushMessage) error {
+func (s *Service) SendToAllUsers(ctx context.Context, msg domain.PushMessage) error {
 	if s.pushNotifier == nil {
 		return nil
 	}

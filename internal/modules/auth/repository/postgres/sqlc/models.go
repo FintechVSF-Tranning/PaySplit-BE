@@ -26,23 +26,54 @@ type AuthRateLimitEvent struct {
 }
 
 type Bill struct {
-	ID               pgtype.UUID        `json:"id"`
-	GroupID          pgtype.UUID        `json:"group_id"`
-	CreditorMemberID pgtype.UUID        `json:"creditor_member_id"`
-	Status           interface{}        `json:"status"`
-	MerchantName     pgtype.Text        `json:"merchant_name"`
-	BillDate         pgtype.Date        `json:"bill_date"`
-	ImageObjectKey   pgtype.Text        `json:"image_object_key"`
-	Subtotal         int64              `json:"subtotal"`
-	ServiceCharge    int64              `json:"service_charge"`
-	Vat              int64              `json:"vat"`
-	Discount         int64              `json:"discount"`
-	Total            int64              `json:"total"`
-	MismatchWarning  bool               `json:"mismatch_warning"`
-	Version          int32              `json:"version"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	FinalizedAt      pgtype.Timestamptz `json:"finalized_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	GroupID            pgtype.UUID        `json:"group_id"`
+	CreditorMemberID   pgtype.UUID        `json:"creditor_member_id"`
+	Status             interface{}        `json:"status"`
+	MerchantName       pgtype.Text        `json:"merchant_name"`
+	BillDate           pgtype.Date        `json:"bill_date"`
+	ImageObjectKey     pgtype.Text        `json:"image_object_key"`
+	Subtotal           int64              `json:"subtotal"`
+	ServiceCharge      int64              `json:"service_charge"`
+	Vat                int64              `json:"vat"`
+	Discount           int64              `json:"discount"`
+	Total              int64              `json:"total"`
+	MismatchWarning    bool               `json:"mismatch_warning"`
+	Version            int32              `json:"version"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	FinalizedAt        pgtype.Timestamptz `json:"finalized_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ReplacesBillID     pgtype.UUID        `json:"replaces_bill_id"`
+	VoidedAt           pgtype.Timestamptz `json:"voided_at"`
+	SplitMethod        string             `json:"split_method"`
+	MismatchCodes      []string           `json:"mismatch_codes"`
+	ReviewedAt         pgtype.Timestamptz `json:"reviewed_at"`
+	ReviewedByMemberID pgtype.UUID        `json:"reviewed_by_member_id"`
+}
+
+type BillIdempotencyKey struct {
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	Operation            string             `json:"operation"`
+	KeyHash              string             `json:"key_hash"`
+	CanonicalRequestHash string             `json:"canonical_request_hash"`
+	OperationID          pgtype.UUID        `json:"operation_id"`
+	State                interface{}        `json:"state"`
+	ResponseCode         pgtype.Int4        `json:"response_code"`
+	ResponseBody         []byte             `json:"response_body"`
+	ResourceID           pgtype.UUID        `json:"resource_id"`
+	RetryAfter           pgtype.Timestamptz `json:"retry_after"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BillImage struct {
+	ID        pgtype.UUID        `json:"id"`
+	BillID    pgtype.UUID        `json:"bill_id"`
+	GroupID   pgtype.UUID        `json:"group_id"`
+	ImageKey  string             `json:"image_key"`
+	Position  int16              `json:"position"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type BillItem struct {
@@ -55,6 +86,7 @@ type BillItem struct {
 	LineTotal int64              `json:"line_total"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	Position  int16              `json:"position"`
 }
 
 type BillItemAssignment struct {
@@ -64,6 +96,20 @@ type BillItemAssignment struct {
 	MemberID   pgtype.UUID        `json:"member_id"`
 	Weight     pgtype.Numeric     `json:"weight"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type BillShare struct {
+	ID                 pgtype.UUID        `json:"id"`
+	BillID             pgtype.UUID        `json:"bill_id"`
+	GroupID            pgtype.UUID        `json:"group_id"`
+	MemberID           pgtype.UUID        `json:"member_id"`
+	ItemSubtotal       int64              `json:"item_subtotal"`
+	ServiceChargeShare int64              `json:"service_charge_share"`
+	VatShare           int64              `json:"vat_share"`
+	DiscountShare      int64              `json:"discount_share"`
+	RoundingAdjustment int64              `json:"rounding_adjustment"`
+	FinalAmount        int64              `json:"final_amount"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type Debt struct {
@@ -155,6 +201,8 @@ type OcrJob struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	CompletedAt  pgtype.Timestamptz `json:"completed_at"`
+	Candidate    []byte             `json:"candidate"`
+	Version      int32              `json:"version"`
 }
 
 type Payment struct {

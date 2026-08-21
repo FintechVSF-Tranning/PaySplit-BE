@@ -21,3 +21,20 @@ type Notification struct {
 func (n Notification) IsRead() bool {
 	return n.ReadAt != nil
 }
+
+// PushMessage đại diện cho nội dung thông báo đẩy gửi tới thiết bị người dùng.
+type PushMessage struct {
+	Title string            `json:"title"`
+	Body  string            `json:"body"`
+	Data  map[string]string `json:"data,omitempty"`
+}
+
+const (
+	TypePaymentReminder    = "payment_reminder"
+	TypeNewBill            = "new_bill"
+	TypePaymentConfirmed   = "payment_confirmed"
+	TypePaymentRejected    = "payment_rejected"
+	TypeGroupInvitation    = "group_invitation"
+	TypeBillUpdated        = "bill_updated"
+	TypeSystemAnnouncement = "system_announcement"
+)

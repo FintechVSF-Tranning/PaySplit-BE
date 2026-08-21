@@ -15,6 +15,7 @@ import (
 type Config struct {
 	MaxWorkers    int
 	FetchCooldown time.Duration
+	PeriodicJobs  []*river.PeriodicJob
 }
 
 // AutoMigrate tự động chạy migration để tạo/cập nhật các bảng nội bộ của River trong PostgreSQL
@@ -59,6 +60,7 @@ func NewClient(dbPool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river
 		},
 		Workers:       workers,
 		FetchCooldown: fetchCooldown,
+		PeriodicJobs:  cfg.PeriodicJobs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create river client: %w", err)
