@@ -1,7 +1,7 @@
 # 0003. Bill and OCR v1
 
 **Date**: 2026-08-17
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -13,6 +13,7 @@ Bill and OCR v1 lets a group member create a manual bill or upload up to five re
 2. [Allocation and review](0002-allocation-review.md) defines draft editing, item ratios, preview calculation, reconciliation, optimistic locking, and explicit review.
 3. [Finalize and void](0003-finalize-void.md) defines floor allocation with Creditor remainder absorption, immutable share snapshots, debt creation, notification jobs, and safe void with replacement history.
 4. [Item discount OCR parsing](0004-item-discount-ocr-parsing.md) defines sequential folding of item promotions, net item pricing, and separation of item versus general discounts.
+5. [Manual edit preserves item level discount](0005-manual-edit-item-discount.md) defines how `POST /bills` and `PUT /bills/{id}` accept and validate `discount_amount` per item so a manual edit does not erase what OCR extracted.
 
 The cross child contract is that every bill scoped row carries `group_id`, every money value is `bigint` VND, every mutable draft operation checks and increments `bills.version`, and every mutation that changes bill meaning clears `reviewed_at` and `reviewed_by_member_id`.
 

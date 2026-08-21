@@ -38,6 +38,14 @@ Fixture: `testdata/bills/image.png`, a 425 by 470 PNG of a restaurant receipt.
 - [x] The 30 day raw OCR purge really deletes. Both job rows were aged 40 days past `completed_at`, the server restarted so the periodic job fired, and afterwards `raw_response` is NULL on both rows while `candidate` is untouched. Five expired idempotency keys were deleted in the same pass. This is the worker that was never wired up before. (satisfies AC-11, AC-13)
 - [x] Void keeps history. `POST /api/v1/bills/{id}/void` with the current version returns 200. The bill and its debt both move to `voided`, and the two `bill_shares` rows survive with their sum still exactly 100001. A void without the version returns `409 VERSION_CONFLICT`. (satisfies AC-11)
 
+### Item discount OCR parsing (spec 0004), live provider run 2026 08 21
+
+Fixture: `testdata/bills/anh2.png`, a real VinCommerce (VM Royal City) supermarket receipt with three interleaved `KM` promotion lines, the exact real world pattern spec 0004 was designed against.
+
+- [x] `go test -run TestIntegration_LlamaExtract ./internal/platform/ocr/llamaextract/` passes in 22.7 seconds against the live LlamaExtract provider (not a synthetic fixture). Raw JSON returned three separate `{"name":"KM","line_total":-64125}`-style lines interleaved with five real items and `"subtotal":null`. (satisfies AC-3)
+- [x] The normalizer folds all three real `KM` lines into their preceding item correctly: 5 clean items in the candidate, zero orphan lines, each with `discount_amount`/`final_price` matching `line_total` minus its immediately following `KM` line (e.g. `149625 - 64125 = 85500`). (satisfies AC-15)
+- [x] Aggregate reconciliation on real provider output, not synthetic numbers: `subtotal` (derived from item sum, since the provider returned `subtotal: null`) `545500`, `total_item_discount` `192200`, `general_discount` `0`, `discount` `192200`, `total` `353300`, exactly matching the raw provider's own `total: 353300` with no `mismatch_warning`. (satisfies AC-17, AC-18)
+
 ## Not exercised in this run
 - Multi image drafts of two to five files. Only a single image draft was run.
 - Concurrent finalize and concurrent edit races. Covered by the integration tests, not by a live run.
@@ -58,3 +66,16 @@ Fixture: `testdata/bills/image.png`, a 425 by 470 PNG of a restaurant receipt.
 - [x] AC-12: List and detail reads expose bill state, breakdown, and signed image URLs.
 - [x] AC-13: Draft deletion removes bill records and enqueues Cloudinary media cleanup jobs.
 - [x] AC-14: In memory calculation and short database transactions protect performance and safety.
+- [x] AC-19: `PUT /bills/{id}` accepts `discount_amount` per item, validates it against the derived `line_total`, and item level discounts survive a manual edit.
+- [x] AC-20: `POST /bills` accepts the same `discount_amount` field with the same validation and derivation as `PUT`.
+- [x] AC-21: `CreateBill` rejects a negative `discount` and no longer violates `check_bills_discount_composition` when `discount > 0` with no item level discount.
+
+## Manual edit item discount (spec 0005), runtime evidence 2026 08 21
+
+Server started with `go run ./cmd/api`, bound to `localhost:8080`, against the PostgreSQL 18 container on port 5433.
+
+- [x] `POST /bills` with `discount: 20000` and no item level discount returns `201` (previously `500`, `check_bills_discount_composition` violation): response carries `total_item_discount: 0`, `general_discount: 20000`, `discount: 20000`. (satisfies AC-21)
+- [x] `PUT /bills/{id}` with one item carrying `discount_amount: 15000` on a `line_total: 50000` item returns `200`: response carries `item.discount_amount: 15000`, `item.final_price: 35000`, `bill.total_item_discount: 15000`. (satisfies AC-19)
+- [x] `PUT /bills/{id}` with `discount_amount: 999999` on a `line_total: 50000` item returns `400 VALIDATION_FAILED`, `"item 0: discount_amount must be between 0 and line_total"`, and does not write anything (bill version unchanged). (satisfies AC-19)
+- [x] `go test ./internal/modules/bill/usecase/...` covers `discount_amount` exceeding the **derived** `line_total` (`unit_price × quantity` fallback, not the raw request value), the item discount round trip through `UpdateDraftBill` reassignment, and the `CreateBill` discount composition regression. (satisfies AC-19, AC-20, AC-21)
+- [x] `go test ./internal/modules/bill/repository/postgres/...` against the live database, migrations 1 through 7 applied, all pass. (satisfies AC-19, AC-20, AC-21)

@@ -13,7 +13,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 |---|---|---|---|
 | 1 | Auth and account v1 | Slice 1 | in-progress |
 | 2 | Group management v1 | Slice 2 | done |
-| 3 | Bill and OCR v1 | Slice 3 | in-progress |
+| 3 | Bill and OCR v1 | Slice 3 | done |
 | 4 | Split and settlement v1 | Slice 4 | in-progress |
 | 5 | Admin v1 | Slice 5 | in-progress |
 | 6 | Notification and background queue v1 | Slice 6 | done |
@@ -64,11 +64,11 @@ Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/mod
 
 ## Slice 3: Bill and OCR
 
-### 3. Bill and OCR v1 · in-progress
+### 3. Bill and OCR v1 · done
 
 Provide manual and multi image bill drafts, private receipt storage, durable LlamaExtract OCR, versioned correction, ratio based item allocation, explicit review, exact floor allocation with Creditor remainder absorption, transactional finalization into immutable shares and debts, and safe void with replacement history.
 
-**Done when:** all fourteen acceptance criteria in spec 0003 pass against PostgreSQL 18, OCR retries never overwrite user edits, preview and finalized amounts reconcile exactly, concurrent mutations preserve one reviewed version, and every storage, queue, financial, authorization, cleanup, SSE, and observability contract is verified.
+**Done when:** all twenty one acceptance criteria in spec 0003 (including its item discount children 0004 and 0005) pass against PostgreSQL 18, OCR retries never overwrite user edits, preview and finalized amounts reconcile exactly, concurrent mutations preserve one reviewed version, item level discounts survive a manual edit, and every storage, queue, financial, authorization, cleanup, SSE, and observability contract is verified.
 
 - [x] Design it (spec): `/architect bill and OCR v1`
 - [x] Build it: `/develop bill and OCR v1`
@@ -77,10 +77,12 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
   - [x] Ratio allocation and explicit review thread with reconciliation, floor allocation preview, limits, and concurrency coverage (satisfies AC-5, AC-6, AC-7, AC-8, AC-10, AC-14)
   - [x] Transactional finalize thread with immutable member shares, debts, activity, notifications, bank eligibility, and idempotent replay (satisfies AC-7, AC-9, AC-10, AC-14)
   - [x] Safe void and replacement history, payment race protection, OpenAPI, module documentation, metrics, redaction, and end to end verification (satisfies AC-11, AC-12, AC-13, AC-14)
+  - [x] Item discount OCR parsing and mapping: sequential promotion folding, net item pricing, item versus general discount separation (satisfies AC-15, AC-16, AC-17, AC-18)
+  - [x] Manual edit preserves item level discount: `discount_amount` round trips through `POST /bills` and `PUT /bills/{id}`, plus the pre existing `CreateBill` discount composition bug fix (satisfies AC-19, AC-20, AC-21)
 - [x] Verify it: `/check verify bill and OCR v1`
 - [x] Test it: `/test bill and OCR v1`
-- [x] Review it (fresh model): `/check review bill and OCR v1`
-- [x] Document it: `/document bill and OCR v1`
+- [ ] Review it (fresh model): `/check review bill and OCR v1`
+- [ ] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 

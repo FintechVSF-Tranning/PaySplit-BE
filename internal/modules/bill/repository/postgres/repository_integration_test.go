@@ -140,14 +140,15 @@ func TestIntegration_CreateAndGetBill(t *testing.T) {
 	itemID := uuid.New()
 	items := []*domain.BillItem{
 		{
-			ID:        itemID,
-			BillID:    billID,
-			GroupID:   groupID,
-			Name:      "Phở Đặc Biệt",
-			Quantity:  "1",
-			UnitPrice: 100000,
-			LineTotal: 100000,
-			Position:  0,
+			ID:         itemID,
+			BillID:     billID,
+			GroupID:    groupID,
+			Name:       "Phở Đặc Biệt",
+			Quantity:   "1",
+			UnitPrice:  100000,
+			LineTotal:  100000,
+			FinalPrice: 100000,
+			Position:   0,
 			Assignments: []*domain.BillItemAssignment{
 				{
 					ID:         uuid.New(),
@@ -433,5 +434,76 @@ func TestIntegration_PurgeExpiredIdempotencyKeys(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Errorf("mong đợi bản ghi hết hạn bị xóa, còn lại %d", remaining)
+	}
+}
+
+// TestIntegration_CreateBill_ItemDiscountRoundTrips khớp Spec 3 AC-15, AC-17: discount_amount,
+// final_price theo món và total_item_discount, general_discount ở cấp bill phải ghi và đọc lại
+// đúng qua tầng repository thật, không chỉ đúng ở tầng usecase (satisfies AC-19, AC-20, AC-21 build
+// plan bước 3: chứng minh check_bills_discount_composition và check_bill_items_discount không bị
+// vi phạm khi discount_amount > 0).
+func TestIntegration_CreateBill_ItemDiscountRoundTrips(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, _ := setupTestGroupAndMembers(t, pool)
+
+	billID := uuid.New()
+	itemID := uuid.New()
+	ctx := context.Background()
+
+	createdBill, err := repo.CreateBill(ctx, repository.CreateBillParams{
+		Bill: &domain.Bill{
+			ID:                billID,
+			GroupID:           groupID,
+			CreditorMemberID:  creditorID,
+			Status:            domain.BillStatusDraft,
+			Subtotal:          250000,
+			Discount:          80000,
+			TotalItemDiscount: 50000,
+			GeneralDiscount:   30000,
+			Total:             170000,
+			SplitMethod:       domain.SplitMethodEven,
+		},
+		Items: []*domain.BillItem{
+			{
+				ID:             itemID,
+				BillID:         billID,
+				GroupID:        groupID,
+				Name:           "Bò bít tết",
+				Quantity:       "1",
+				UnitPrice:      250000,
+				LineTotal:      250000,
+				DiscountAmount: 50000,
+				FinalPrice:     200000,
+				Position:       0,
+				Assignments: []*domain.BillItemAssignment{
+					{ID: uuid.New(), BillItemID: itemID, GroupID: groupID, MemberID: creditorID, Weight: "1.0000"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBill() error = %v", err)
+	}
+	if createdBill.TotalItemDiscount != 50000 || createdBill.GeneralDiscount != 30000 {
+		t.Errorf("expected total_item_discount 50000 and general_discount 30000 on create, got %d/%d",
+			createdBill.TotalItemDiscount, createdBill.GeneralDiscount)
+	}
+	if len(createdBill.Items) != 1 || createdBill.Items[0].DiscountAmount != 50000 || createdBill.Items[0].FinalPrice != 200000 {
+		t.Fatalf("expected item discount_amount 50000 and final_price 200000 on create, got %+v", createdBill.Items)
+	}
+
+	// Đọc lại từ database (không phải giá trị vừa truyền vào) để chứng minh cột thật sự lưu đúng,
+	// không chỉ đúng trên object trong bộ nhớ.
+	fetched, err := repo.GetBillByID(ctx, billID, groupID)
+	if err != nil {
+		t.Fatalf("GetBillByID() error = %v", err)
+	}
+	if fetched.TotalItemDiscount != 50000 || fetched.GeneralDiscount != 30000 || fetched.Discount != 80000 {
+		t.Errorf("expected persisted total_item_discount 50000, general_discount 30000, discount 80000, got %d/%d/%d",
+			fetched.TotalItemDiscount, fetched.GeneralDiscount, fetched.Discount)
+	}
+	if len(fetched.Items) != 1 || fetched.Items[0].DiscountAmount != 50000 || fetched.Items[0].FinalPrice != 200000 {
+		t.Fatalf("expected persisted item discount_amount 50000 and final_price 200000, got %+v", fetched.Items)
 	}
 }

@@ -48,7 +48,9 @@ type Bill struct {
 	Subtotal           int64       `json:"subtotal"`
 	ServiceCharge      int64       `json:"service_charge"`
 	VAT                int64       `json:"vat"`
-	Discount           int64       `json:"discount"`
+	Discount           int64       `json:"discount"` // Tổng giảm giá = TotalItemDiscount + GeneralDiscount
+	TotalItemDiscount  int64       `json:"total_item_discount"` // Giảm giá gắn theo từng món (Spec 3 AC-17)
+	GeneralDiscount    int64       `json:"general_discount"`   // Giảm giá chung/voucher của cả hóa đơn (Spec 3 AC-17)
 	Total              int64       `json:"total"`
 	SplitMethod        SplitMethod `json:"split_method"`
 	MismatchCodes      []string    `json:"mismatch_codes"`
@@ -79,17 +81,19 @@ type BillImage struct {
 
 // BillItem đại diện cho một món hoặc dịch vụ trong hóa đơn.
 type BillItem struct {
-	ID          uuid.UUID             `json:"id"`
-	BillID      uuid.UUID             `json:"bill_id"`
-	GroupID     uuid.UUID             `json:"group_id"`
-	Name        string                `json:"name"`
-	Quantity    string                `json:"quantity"` // Chuỗi số thập phân, ví dụ "1", "2.5"
-	UnitPrice   int64                 `json:"unit_price"`
-	LineTotal   int64                 `json:"line_total"`
-	Position    int16                 `json:"position"`
-	CreatedAt   time.Time             `json:"created_at"`
-	UpdatedAt   time.Time             `json:"updated_at"`
-	Assignments []*BillItemAssignment `json:"assignments,omitempty"`
+	ID             uuid.UUID             `json:"id"`
+	BillID         uuid.UUID             `json:"bill_id"`
+	GroupID        uuid.UUID             `json:"group_id"`
+	Name           string                `json:"name"`
+	Quantity       string                `json:"quantity"` // Chuỗi số thập phân, ví dụ "1", "2.5"
+	UnitPrice      int64                 `json:"unit_price"`
+	LineTotal      int64                 `json:"line_total"`      // Tổng tiền gốc trước khuyến mãi
+	DiscountAmount int64                 `json:"discount_amount"` // Khuyến mãi gắn riêng cho món này (Spec 3 AC-15)
+	FinalPrice     int64                 `json:"final_price"`     // Giá còn lại = LineTotal - DiscountAmount, dùng để chia cho thành viên (Spec 3 AC-17)
+	Position       int16                 `json:"position"`
+	CreatedAt      time.Time             `json:"created_at"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+	Assignments    []*BillItemAssignment `json:"assignments,omitempty"`
 }
 
 // BillItemAssignment ghi nhận thành viên gánh món nào và tỷ trọng/portions (Spec 3 AC-5).

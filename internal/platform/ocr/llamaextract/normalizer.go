@@ -85,9 +85,11 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 		}
 	}
 
-	// 3. Chuẩn hóa items
+	// 3. Chuẩn hóa items và gộp các dòng khuyến mãi theo món liền trước (Spec 3 AC-15, AC-16)
 	items := make([]domain.OCRCandidateItem, 0, len(raw.Items))
 	var calculatedSubtotal int64
+	var orphanItemDiscount int64    // Dòng khuyến mãi không có món liền trước (Case B)
+	var exceededExcessDiscount int64 // Phần giảm giá vượt quá giá gốc của chính món đó
 	for _, rawItem := range raw.Items {
 		itemMap, ok := rawItem.(map[string]any)
 		if !ok {
@@ -97,6 +99,41 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 		name := strings.TrimSpace(fmt.Sprint(itemMap["name"]))
 		if name == "" || name == "<nil>" {
 			name = "Món chưa đặt tên"
+		}
+
+		rawLineTotal := parseVNDAmountSigned(itemMap["line_total"])
+		isPromotionLine := isPromotionMarker(name) ||
+			rawLineTotal < 0 ||
+			(isNullOrZeroQuantity(itemMap["quantity"]) && rawLineTotal <= 0)
+
+		if isPromotionLine {
+			promoValue := absInt64(rawLineTotal)
+			if promoValue == 0 {
+				// Dòng khuyến mãi không mang giá trị nào để gộp, bỏ qua an toàn.
+				continue
+			}
+
+			if len(items) == 0 {
+				// Không có món liền trước để gộp vào, coi như giảm giá chung (Spec 3 AC-16).
+				orphanItemDiscount += promoValue
+				warnings = append(warnings, domain.WarningOCROrphanItemDiscount)
+				continue
+			}
+
+			preceding := &items[len(items)-1]
+			preceding.DiscountAmount += promoValue
+			if preceding.DiscountAmount > preceding.LineTotal {
+				// Giảm giá vượt quá giá gốc của chính món đó: chặn về 0, phần dư chuyển sang
+				// giảm giá chung (Spec 3 AC-16).
+				excess := preceding.DiscountAmount - preceding.LineTotal
+				preceding.DiscountAmount = preceding.LineTotal
+				preceding.FinalPrice = 0
+				exceededExcessDiscount += excess
+				warnings = append(warnings, domain.WarningOCRItemDiscountExceeded)
+			} else {
+				preceding.FinalPrice = preceding.LineTotal - preceding.DiscountAmount
+			}
+			continue
 		}
 
 		quantity := NormalizeQuantity(itemMap["quantity"])
@@ -117,10 +154,11 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 		}
 
 		items = append(items, domain.OCRCandidateItem{
-			Name:      name,
-			Quantity:  quantity,
-			UnitPrice: unitPrice,
-			LineTotal: lineTotal,
+			Name:       name,
+			Quantity:   quantity,
+			UnitPrice:  unitPrice,
+			LineTotal:  lineTotal,
+			FinalPrice: lineTotal, // Không có khuyến mãi riêng: giá cuối bằng giá gốc
 		})
 
 		calculatedSubtotal += lineTotal
@@ -129,12 +167,28 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 		}
 	}
 
+	// 3b. Tách giảm giá theo món ra khỏi giảm giá chung của hóa đơn (Spec 3 AC-17)
+	var totalItemDiscount int64
+	for _, it := range items {
+		totalItemDiscount += it.DiscountAmount
+	}
+
 	// 4. Chuẩn hóa các trường tiền tệ
 	subtotal := ParseVNDAmount(raw.Subtotal)
 	serviceCharge := ParseVNDAmount(raw.ServiceCharge)
 	vat := ParseVNDAmount(raw.VAT)
-	discount := ParseVNDAmount(raw.Discount)
+	rawDiscount := ParseVNDAmount(raw.Discount) + orphanItemDiscount
 	total := ParseVNDAmount(raw.Total)
+
+	generalDiscount := rawDiscount - totalItemDiscount
+	if generalDiscount < 0 {
+		generalDiscount = 0
+	}
+	// Phần vượt trần của một món (đã bị chặn về LineTotal ở trên) chuyển thẳng vào giảm giá chung,
+	// độc lập với phép trừ total_item_discount ở trên vì total_item_discount đã tính trên giá trị
+	// bị chặn, không phải giá trị gốc trước khi chặn (Spec 3 AC-16).
+	generalDiscount += exceededExcessDiscount
+	totalDiscount := totalItemDiscount + generalDiscount
 
 	// Nếu subtotal không quét được nhưng có items, gán bằng tổng line_total
 	if subtotal == 0 && calculatedSubtotal > 0 {
@@ -143,18 +197,18 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 
 	// Nếu total không quét được, gán theo công thức
 	if total == 0 && (subtotal > 0 || serviceCharge > 0 || vat > 0) {
-		total = subtotal + serviceCharge + vat - discount
+		total = subtotal + serviceCharge + vat - totalDiscount
 		if total < 0 {
 			total = 0
 		}
 	}
 
-	// 5. Kiểm tra đối soát để sinh Warning (Spec 3 AC-3, AC-5)
+	// 5. Kiểm tra đối soát để sinh Warning (Spec 3 AC-3, AC-5, AC-18)
 	if subtotal > 0 && calculatedSubtotal > 0 && subtotal != calculatedSubtotal {
 		warnings = append(warnings, domain.WarningSubtotalMismatch)
 	}
 
-	expectedTotal := subtotal + serviceCharge + vat - discount
+	expectedTotal := subtotal + serviceCharge + vat - totalDiscount
 	if expectedTotal < 0 {
 		expectedTotal = 0
 	}
@@ -174,39 +228,46 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 	}
 
 	return &domain.OCRCandidate{
-		MerchantName:  merchantName,
-		BillDate:      billDate,
-		Items:         items,
-		Subtotal:      subtotal,
-		ServiceCharge: serviceCharge,
-		VAT:           vat,
-		Discount:      discount,
-		Total:         total,
-		Confidence:    confidence,
-		Warnings:      warnings,
+		MerchantName:      merchantName,
+		BillDate:          billDate,
+		Items:             items,
+		Subtotal:          subtotal,
+		TotalItemDiscount: totalItemDiscount,
+		GeneralDiscount:   generalDiscount,
+		ServiceCharge:     serviceCharge,
+		VAT:               vat,
+		Discount:          totalDiscount,
+		Total:             total,
+		Confidence:        confidence,
+		Warnings:          warnings,
 	}, nil
 }
 
 // ParseVNDAmount chuẩn hóa các dạng số và chuỗi tiền tệ VND về int64.
 // Hỗ trợ xử lý dấu phân cách hàng nghìn (50.000, 50,000, 50k, 50K, 50 000).
+// Giá trị âm luôn được kẹp về 0 (dùng cho các trường tiền không thể âm).
 func ParseVNDAmount(val any) int64 {
+	n := parseVNDAmountSigned(val)
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// parseVNDAmountSigned chuẩn hóa tương tự ParseVNDAmount nhưng giữ nguyên dấu âm, dùng để nhận
+// diện các dòng khuyến mãi có line_total âm trong hóa đơn thô (Spec 3 AC-15).
+func parseVNDAmountSigned(val any) int64 {
 	if val == nil {
 		return 0
 	}
 
 	switch v := val.(type) {
 	case int:
-		if v < 0 {
-			return 0
-		}
 		return int64(v)
 	case int64:
-		if v < 0 {
-			return 0
-		}
 		return v
 	case float64:
-		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
 			return 0
 		}
 		return int64(math.Round(v))
@@ -282,7 +343,7 @@ func ParseVNDAmount(val any) int64 {
 			f *= 1000
 		}
 
-		if f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0
 		}
 
@@ -290,6 +351,71 @@ func ParseVNDAmount(val any) int64 {
 	default:
 		return 0
 	}
+}
+
+// absInt64 trả về giá trị tuyệt đối của một số nguyên có dấu.
+func absInt64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// isNullOrZeroQuantity báo giá trị quantity thô là null, rỗng, hoặc bằng 0 (Spec 3 AC-15).
+func isNullOrZeroQuantity(val any) bool {
+	if val == nil {
+		return true
+	}
+	switch v := val.(type) {
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" || s == "<nil>" {
+			return true
+		}
+		if f, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", "."), 64); err == nil {
+			return f == 0
+		}
+		return false
+	case float64:
+		return v == 0
+	case int:
+		return v == 0
+	case int64:
+		return v == 0
+	default:
+		return false
+	}
+}
+
+// vnDiacriticsFolder loại bỏ dấu tiếng Việt để so khớp nhãn khuyến mãi không phân biệt dấu.
+var vnDiacriticsFolder = strings.NewReplacer(
+	"à", "a", "á", "a", "ả", "a", "ã", "a", "ạ", "a",
+	"ă", "a", "ằ", "a", "ắ", "a", "ẳ", "a", "ẵ", "a", "ặ", "a",
+	"â", "a", "ầ", "a", "ấ", "a", "ẩ", "a", "ẫ", "a", "ậ", "a",
+	"è", "e", "é", "e", "ẻ", "e", "ẽ", "e", "ẹ", "e",
+	"ê", "e", "ề", "e", "ế", "e", "ể", "e", "ễ", "e", "ệ", "e",
+	"ì", "i", "í", "i", "ỉ", "i", "ĩ", "i", "ị", "i",
+	"ò", "o", "ó", "o", "ỏ", "o", "õ", "o", "ọ", "o",
+	"ô", "o", "ồ", "o", "ố", "o", "ổ", "o", "ỗ", "o", "ộ", "o",
+	"ơ", "o", "ờ", "o", "ớ", "o", "ở", "o", "ỡ", "o", "ợ", "o",
+	"ù", "u", "ú", "u", "ủ", "u", "ũ", "u", "ụ", "u",
+	"ư", "u", "ừ", "u", "ứ", "u", "ử", "u", "ữ", "u", "ự", "u",
+	"ỳ", "y", "ý", "y", "ỷ", "y", "ỹ", "y", "ỵ", "y",
+	"đ", "d",
+)
+
+// promotionMarkers là các nhãn khuyến mãi thường gặp trên hóa đơn siêu thị và quán ăn (Spec 3 AC-15).
+var promotionMarkers = []string{"km", "khuyen mai", "chiet khau", "giam gia"}
+
+// isPromotionMarker báo tên món có chứa nhãn khuyến mãi, không phân biệt hoa thường và dấu.
+func isPromotionMarker(name string) bool {
+	folded := vnDiacriticsFolder.Replace(strings.ToLower(name))
+	for _, marker := range promotionMarkers {
+		if strings.Contains(folded, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeQuantity chuẩn hóa số lượng món thành chuỗi thập phân chuẩn (ví dụ "1", "2.5").

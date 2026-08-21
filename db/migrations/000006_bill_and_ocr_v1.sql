@@ -1,12 +1,19 @@
+-- +goose NO TRANSACTION
 -- +goose Up
 -- ---------------------------------------------------------------------------
 -- Module 3: Bill & OCR v1 (Spec 0003)
 -- ---------------------------------------------------------------------------
--- +goose StatementBegin
+-- Toàn bộ migration chạy NO TRANSACTION vì PostgreSQL cấm dùng giá trị enum mới thêm
+-- (ALTER TYPE ... ADD VALUE) trong cùng transaction đã tạo ra nó (SQLSTATE 55P04).
+-- Không bọc StatementBegin/StatementEnd quanh toàn bộ file: làm vậy khiến goose gửi cả khối
+-- này như MỘT câu lệnh nhiều statement, và PostgreSQL luôn tự bọc transaction ngầm cho một
+-- query nhiều statement bất kể cờ NO TRANSACTION, gây lại đúng lỗi 55P04 ở trên.
 
--- 1. Bổ sung các giá trị 'reviewed', 'voided' vào enum bill_status và 'voided_bill', 'reviewed_bill' vào activity_type
+-- 1. Bổ sung các giá trị 'reviewed', 'voided' vào enum bill_status, 'voided' vào debt_status,
+-- và 'voided_bill', 'reviewed_bill' vào activity_type
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'reviewed' BEFORE 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN ALTER TYPE bill_status ADD VALUE IF NOT EXISTS 'voided' AFTER 'finalized'; EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN ALTER TYPE debt_status ADD VALUE IF NOT EXISTS 'voided'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'voided_bill'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'reviewed_bill'; EXCEPTION WHEN duplicate_object THEN null; END $$;
 
@@ -37,9 +44,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_bills_replacement ON bills(replaces_bill_id
 CREATE INDEX IF NOT EXISTS idx_bills_group_created ON bills(group_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bills_group_cursor ON bills(group_id, created_at DESC, id DESC);
 
--- Cập nhật ràng buộc debts cho phép status 'voided'
+-- Cập nhật bảng debts: bổ sung voided_at và ràng buộc cho phép status 'voided'
+ALTER TABLE debts ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
+UPDATE debts SET voided_at = now() WHERE status = 'voided' AND voided_at IS NULL;
 ALTER TABLE debts DROP CONSTRAINT IF EXISTS debts_check1;
 ALTER TABLE debts ADD CONSTRAINT debts_check1 CHECK ((status IN ('awaiting', 'voided')) = (payment_id IS NULL));
+ALTER TABLE debts DROP CONSTRAINT IF EXISTS debts_voided_check;
+ALTER TABLE debts ADD CONSTRAINT debts_voided_check CHECK (status <> 'voided' OR voided_at IS NOT NULL);
 
 -- 3. Tạo bảng bill_images: Lưu trữ danh sách ảnh hóa đơn theo thứ tự (1-5 ảnh, Spec 3 AC-1)
 CREATE TABLE IF NOT EXISTS bill_images (
@@ -95,10 +106,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ocr_jobs_active_bill ON ocr_jobs(bill_id) W
 CREATE INDEX IF NOT EXISTS idx_ocr_jobs_bill_created ON ocr_jobs(bill_id, created_at DESC);
 
 -- 7. Tạo bảng bill_idempotency_keys: Quản lý tính lũy đẳng 24h cho các thao tác mutation (Spec 3 AC-1, AC-2, AC-9, AC-11, AC-13)
+-- +goose StatementBegin
 DO $$ BEGIN
     CREATE TYPE idempotency_state AS ENUM ('in_progress', 'completed');
 EXCEPTION WHEN duplicate_object THEN null;
 END $$;
+-- +goose StatementEnd
 
 CREATE TABLE IF NOT EXISTS bill_idempotency_keys (
     actor_user_id           UUID NOT NULL REFERENCES users(id),
@@ -118,10 +131,11 @@ CREATE TABLE IF NOT EXISTS bill_idempotency_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_bill_idempotency_keys_expiry ON bill_idempotency_keys(expires_at);
 
--- +goose StatementEnd
-
 -- +goose Down
--- +goose StatementBegin
+ALTER TABLE debts
+    DROP CONSTRAINT IF EXISTS debts_voided_check,
+    DROP COLUMN IF EXISTS voided_at;
+
 DROP TABLE IF EXISTS bill_idempotency_keys CASCADE;
 DO $$ BEGIN DROP TYPE IF EXISTS idempotency_state; EXCEPTION WHEN undefined_object THEN null; END $$;
 
@@ -150,4 +164,3 @@ ALTER TABLE bills
     DROP COLUMN IF EXISTS split_method,
     DROP COLUMN IF EXISTS voided_at,
     DROP COLUMN IF EXISTS replaces_bill_id;
--- +goose StatementEnd

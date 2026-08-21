@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -1900,5 +1901,391 @@ func TestCheckOrReserveIdempotency_NilRecord_ReturnsErrorNotPanic(t *testing.T) 
 	}
 	if !errors.Is(err, domain.ErrIdempotencyInProgress) {
 		t.Fatalf("mong đợi ErrIdempotencyInProgress, nhận %v", err)
+	}
+}
+
+// TestCreateBill_ItemDiscount_ComputesFinalPriceAndTotals khớp Spec 3 AC-20: POST /bills nhận
+// discount_amount theo món, tự tính final_price và total_item_discount/general_discount.
+func TestCreateBill_ItemDiscount_ComputesFinalPriceAndTotals(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID:  groupID,
+		Discount: 80000, // 50000 theo món (Bò bít tết) + 30000 giảm giá chung
+		Total:    170000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:           "Bò bít tết",
+				LineTotal:      250000,
+				DiscountAmount: 50000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBill() unexpected error = %v", err)
+	}
+	if len(res.Bill.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(res.Bill.Items))
+	}
+	item := res.Bill.Items[0]
+	if item.DiscountAmount != 50000 || item.FinalPrice != 200000 {
+		t.Errorf("expected discount_amount 50000 and final_price 200000, got %d/%d", item.DiscountAmount, item.FinalPrice)
+	}
+	if res.Bill.TotalItemDiscount != 50000 {
+		t.Errorf("expected total_item_discount 50000, got %d", res.Bill.TotalItemDiscount)
+	}
+	if res.Bill.GeneralDiscount != 30000 {
+		t.Errorf("expected general_discount 30000, got %d", res.Bill.GeneralDiscount)
+	}
+}
+
+// TestCreateBill_ItemDiscountExceedsLineTotal_ReturnsInvalidInput khớp Spec 3 AC-19/AC-20: validate
+// discount_amount dựa trên line_total đã suy ra (unit_price × quantity), không phải giá trị thô.
+func TestCreateBill_ItemDiscountExceedsLineTotal_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   0,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				// line_total gửi lên là 0, nhưng giá trị dùng để validate phải là giá trị suy ra
+				// 100000 x 2 = 200000, nên discount_amount 250000 phải bị từ chối.
+				Name:           "Trà sữa",
+				LineTotal:      0,
+				UnitPrice:      100000,
+				Quantity:       "2",
+				DiscountAmount: 250000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for discount_amount exceeding derived line_total, got %v", err)
+	}
+}
+
+// TestCreateBill_DiscountCompositionBug_NoLongerFails khớp Spec 3 AC-21: trước đây CreateBill
+// không set total_item_discount/general_discount, khiến discount > 0 vi phạm
+// check_bills_discount_composition ở tầng database (500 không kiểm soát trên DB thật). Ở tầng
+// usecase, hồi quy được xác nhận qua việc general_discount giờ được tính đúng thay vì bỏ trống.
+func TestCreateBill_DiscountCompositionBug_NoLongerFails(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID:  groupID,
+		Discount: 20000,
+		Total:    30000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:      "Cà phê",
+				LineTotal: 50000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBill() unexpected error = %v", err)
+	}
+	if res.Bill.TotalItemDiscount != 0 {
+		t.Errorf("expected total_item_discount 0, got %d", res.Bill.TotalItemDiscount)
+	}
+	if res.Bill.GeneralDiscount != 20000 {
+		t.Errorf("expected general_discount 20000 (= discount, no item discount), got %d", res.Bill.GeneralDiscount)
+	}
+	if res.Bill.Discount != res.Bill.TotalItemDiscount+res.Bill.GeneralDiscount {
+		t.Errorf("discount composition invariant broken: discount=%d, total_item_discount=%d, general_discount=%d",
+			res.Bill.Discount, res.Bill.TotalItemDiscount, res.Bill.GeneralDiscount)
+	}
+}
+
+// TestUpdateDraftBill_ItemDiscount_RoundTrips khớp Spec 3 AC-19: PUT /bills/{id} nhận lại
+// discount_amount theo món khi người dùng gán lại (reassign) món cho đúng thành viên, không còn
+// bị quy hết về general_discount như hành vi cũ.
+func TestUpdateDraftBill_ItemDiscount_RoundTrips(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	member2ID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	updated, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version:  1,
+		Discount: 50000,
+		Total:    200000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:           "Bò bít tết",
+				LineTotal:      250000,
+				DiscountAmount: 50000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"}, // gán lại cho creditor thay vì chia đều
+				},
+			},
+			{
+				Name:      "Nước ngọt",
+				LineTotal: 30000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: member2ID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraftBill() unexpected error = %v", err)
+	}
+	if updated.TotalItemDiscount != 50000 {
+		t.Errorf("expected total_item_discount 50000 to survive the manual edit, got %d", updated.TotalItemDiscount)
+	}
+	if updated.GeneralDiscount != 0 {
+		t.Errorf("expected general_discount 0, got %d", updated.GeneralDiscount)
+	}
+	if len(updated.Items) != 2 || updated.Items[0].FinalPrice != 200000 {
+		t.Fatalf("expected item 0 final_price 200000, got %+v", updated.Items)
+	}
+}
+
+// TestCreateBill_NegativeItemDiscount_ReturnsInvalidInput khớp Spec 3 AC-19/AC-20: discount_amount
+// âm phải bị từ chối, không chỉ trường hợp vượt line_total.
+func TestCreateBill_NegativeItemDiscount_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   50000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:           "Item 1",
+				LineTotal:      50000,
+				DiscountAmount: -1,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for negative discount_amount, got %v", err)
+	}
+}
+
+// TestCreateBill_ItemDiscount_ErrorIdentifiesFailingItemIndex khớp Spec 3 AC-19: thông báo lỗi
+// phải chỉ đúng item nào sai khi có nhiều món, không phải luôn báo item 0.
+func TestCreateBill_ItemDiscount_ErrorIdentifiesFailingItemIndex(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   80000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:      "Item hợp lệ",
+				LineTotal: 30000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+			{
+				// Món thứ hai (index 1) mới là món sai, thông báo lỗi phải nêu đúng index này.
+				Name:           "Item lỗi",
+				LineTotal:      50000,
+				DiscountAmount: 999999,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "item 1") {
+		t.Errorf("expected error message to identify item 1 as the failing item, got %v", err)
+	}
+}
+
+// TestUpdateDraftBill_ItemDiscountExceedsLineTotal_ReturnsInvalidInput khớp Spec 3 AC-19: PUT
+// cũng phải áp dụng đúng validate discount_amount theo món như POST.
+func TestUpdateDraftBill_ItemDiscountExceedsLineTotal_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version: 1,
+		Total:   0,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:           "Item lỗi",
+				LineTotal:      50000,
+				DiscountAmount: 60000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for discount_amount exceeding line_total in UpdateDraftBill, got %v", err)
+	}
+}
+
+// TestUpdateDraftBill_GeneralDiscountNegative_ReturnsInvalidInput khớp Spec 3 AC-19: nếu tổng
+// discount_amount theo món vượt quá bill.discount khai báo, general_discount âm phải bị từ chối.
+func TestUpdateDraftBill_GeneralDiscountNegative_ReturnsInvalidInput(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	captainMemberID := uuid.New()
+	billID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      captainMemberID,
+			GroupID: groupID,
+			UserID:  userID,
+			Role:    "captain",
+			Status:  "active",
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: captainMemberID,
+			Status:           domain.BillStatusDraft,
+			Version:          1,
+		},
+	}
+
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+	_, err := service.UpdateDraftBill(context.Background(), userID, billID, groupID, usecase.UpdateDraftRequest{
+		Version:  1,
+		Discount: 10000, // nhỏ hơn tổng discount_amount theo món (20000)
+		Total:    0,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:           "Item 1",
+				LineTotal:      50000,
+				DiscountAmount: 20000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: captainMemberID, Weight: "1"},
+				},
+			},
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("expected ErrInvalidInput for general_discount going negative, got %v", err)
 	}
 }

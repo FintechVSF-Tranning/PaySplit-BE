@@ -77,20 +77,22 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 	}
 
 	dbBill, err := q.CreateBill(ctx, sqlc.CreateBillParams{
-		ID:               pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
-		GroupID:          pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
-		CreditorMemberID: pgtype.UUID{Bytes: p.Bill.CreditorMemberID, Valid: true},
-		Status:           statusStr,
-		MerchantName:     merchantName,
-		BillDate:         billDate,
-		Subtotal:         p.Bill.Subtotal,
-		ServiceCharge:    p.Bill.ServiceCharge,
-		Vat:              p.Bill.VAT,
-		Discount:         p.Bill.Discount,
-		Total:            p.Bill.Total,
-		SplitMethod:      splitMethod,
-		MismatchCodes:    mismatchCodes,
-		ReplacesBillID:   replacesID,
+		ID:                pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
+		GroupID:           pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+		CreditorMemberID:  pgtype.UUID{Bytes: p.Bill.CreditorMemberID, Valid: true},
+		Status:            statusStr,
+		MerchantName:      merchantName,
+		BillDate:          billDate,
+		Subtotal:          p.Bill.Subtotal,
+		ServiceCharge:     p.Bill.ServiceCharge,
+		Vat:               p.Bill.VAT,
+		Discount:          p.Bill.Discount,
+		TotalItemDiscount: p.Bill.TotalItemDiscount,
+		GeneralDiscount:   p.Bill.GeneralDiscount,
+		Total:             p.Bill.Total,
+		SplitMethod:       splitMethod,
+		MismatchCodes:     mismatchCodes,
+		ReplacesBillID:    replacesID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create bill row: %w", err)
@@ -121,14 +123,16 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		}
 
 		dbItem, err := q.CreateBillItem(ctx, sqlc.CreateBillItemParams{
-			ID:        pgtype.UUID{Bytes: item.ID, Valid: true},
-			BillID:    pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
-			GroupID:   pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
-			Name:      item.Name,
-			Quantity:  qtyNum,
-			UnitPrice: item.UnitPrice,
-			LineTotal: item.LineTotal,
-			Position:  item.Position,
+			ID:             pgtype.UUID{Bytes: item.ID, Valid: true},
+			BillID:         pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
+			GroupID:        pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+			Name:           item.Name,
+			Quantity:       qtyNum,
+			UnitPrice:      item.UnitPrice,
+			LineTotal:      item.LineTotal,
+			DiscountAmount: item.DiscountAmount,
+			FinalPrice:     item.FinalPrice,
+			Position:       item.Position,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create bill item %s: %w", item.Name, err)
@@ -443,18 +447,20 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 	}
 
 	dbBill, err := q.UpdateDraftBill(ctx, sqlc.UpdateDraftBillParams{
-		ID:            pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
-		GroupID:       pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
-		MerchantName:  merchantName,
-		BillDate:      billDate,
-		Subtotal:      p.Bill.Subtotal,
-		ServiceCharge: p.Bill.ServiceCharge,
-		Vat:           p.Bill.VAT,
-		Discount:      p.Bill.Discount,
-		Total:         p.Bill.Total,
-		SplitMethod:   splitMethod,
-		MismatchCodes: mismatchCodes,
-		Version:       p.ExpectedVersion,
+		ID:                pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
+		GroupID:           pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+		MerchantName:      merchantName,
+		BillDate:          billDate,
+		Subtotal:          p.Bill.Subtotal,
+		ServiceCharge:     p.Bill.ServiceCharge,
+		Vat:               p.Bill.VAT,
+		Discount:          p.Bill.Discount,
+		TotalItemDiscount: p.Bill.TotalItemDiscount,
+		GeneralDiscount:   p.Bill.GeneralDiscount,
+		Total:             p.Bill.Total,
+		SplitMethod:       splitMethod,
+		MismatchCodes:     mismatchCodes,
+		Version:           p.ExpectedVersion,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -476,14 +482,16 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 		}
 
 		dbItem, err := q.CreateBillItem(ctx, sqlc.CreateBillItemParams{
-			ID:        pgtype.UUID{Bytes: item.ID, Valid: true},
-			BillID:    pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
-			GroupID:   pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
-			Name:      item.Name,
-			Quantity:  qtyNum,
-			UnitPrice: item.UnitPrice,
-			LineTotal: item.LineTotal,
-			Position:  item.Position,
+			ID:             pgtype.UUID{Bytes: item.ID, Valid: true},
+			BillID:         pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
+			GroupID:        pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
+			Name:           item.Name,
+			Quantity:       qtyNum,
+			UnitPrice:      item.UnitPrice,
+			LineTotal:      item.LineTotal,
+			DiscountAmount: item.DiscountAmount,
+			FinalPrice:     item.FinalPrice,
+			Position:       item.Position,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create replacement bill item %s: %w", item.Name, err)
@@ -1186,6 +1194,8 @@ func toDomainBill(b *sqlc.Bill) *domain.Bill {
 		ServiceCharge:      b.ServiceCharge,
 		VAT:                b.Vat,
 		Discount:           b.Discount,
+		TotalItemDiscount:  b.TotalItemDiscount,
+		GeneralDiscount:    b.GeneralDiscount,
 		Total:              b.Total,
 		SplitMethod:        domain.SplitMethod(b.SplitMethod),
 		MismatchCodes:      b.MismatchCodes,
@@ -1226,16 +1236,18 @@ func toDomainBillItem(it *sqlc.BillItem) *domain.BillItem {
 	}
 
 	return &domain.BillItem{
-		ID:        uuid.UUID(it.ID.Bytes),
-		BillID:    uuid.UUID(it.BillID.Bytes),
-		GroupID:   uuid.UUID(it.GroupID.Bytes),
-		Name:      it.Name,
-		Quantity:  qtyStr,
-		UnitPrice: it.UnitPrice,
-		LineTotal: it.LineTotal,
-		Position:  it.Position,
-		CreatedAt: it.CreatedAt.Time,
-		UpdatedAt: it.UpdatedAt.Time,
+		ID:             uuid.UUID(it.ID.Bytes),
+		BillID:         uuid.UUID(it.BillID.Bytes),
+		GroupID:        uuid.UUID(it.GroupID.Bytes),
+		Name:           it.Name,
+		Quantity:       qtyStr,
+		UnitPrice:      it.UnitPrice,
+		LineTotal:      it.LineTotal,
+		DiscountAmount: it.DiscountAmount,
+		FinalPrice:     it.FinalPrice,
+		Position:       it.Position,
+		CreatedAt:      it.CreatedAt.Time,
+		UpdatedAt:      it.UpdatedAt.Time,
 	}
 }
 
