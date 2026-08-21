@@ -54,6 +54,8 @@ Hệ thống dùng River Queue (PostgreSQL-backed job queue) để xử lý OCR 
 
 ### Đặc điểm của luồng OCR:
 * **Không tự động ghi đè**: Kết quả OCR thành công chỉ là "candidate" gắn với `ocr_jobs.id`; không có gì thay đổi trên bill cho tới khi người dùng gọi apply-candidate.
+* **Xử lý khuyến mãi theo món (Item Promotions Folding)**: Các dòng khuyến mãi (`KM`, `Chiết khấu`, `Giảm giá` hoặc `line_total < 0`) nằm dưới từng món ăn được tự động gộp vào món đứng trước nó dưới dạng `discount_amount` dương. Món được tính lại `final_price = line_total - discount_amount`, dòng `KM` bị xóa khỏi danh sách món.
+* **Tách biệt KM món và KM chung**: Hệ thống tính `total_item_discount = Σ item.discount_amount` và tách khuyến mãi chung áp dụng cho toàn bill: `general_discount = max(0, payload.discount - total_item_discount)`. Khi chia tiền nhóm, chỉ `general_discount` mới được chia tỷ lệ, còn KM món thuộc về người gánh món đó.
 * **Chống stale apply**: Mỗi `ocr_jobs` row lưu `version` (phiên bản bill tại thời điểm job bắt đầu). Áp dụng candidate khi bill đã đổi version từ lúc đó sẽ bị từ chối bằng `409 OCR_RESULT_STALE`, giữ nguyên các sửa đổi thủ công đã có.
 * **Giữ mọi candidate cũ**: Chạy lại OCR tạo một `ocr_jobs` row mới với candidate riêng. Không row nào bị ghi đè, nên lịch sử mọi lần trích xuất đều truy vết được.
 * **Giới hạn retry thủ công**: Người dùng chủ động chạy lại OCR (`ocr-retry`) tối đa `BILL_OCR_MANUAL_LIMIT` lần trong cửa sổ `BILL_OCR_MANUAL_WINDOW_HOURS`.
@@ -123,7 +125,7 @@ Hóa đơn, là bảng trung tâm của module:
 * `id` (UUID v7), `group_id`, `creditor_member_id` (người đã ứng tiền, không thể đổi sau khi tạo)
 * `status` (`bill_status`: `'draft'`, `'reviewed'`, `'finalized'`, `'voided'`)
 * `merchant_name`, `bill_date`, `image_object_key` (cột ảnh đơn cũ, giữ tương thích)
-* `subtotal`, `service_charge`, `vat`, `discount`, `total` (BIGINT, VND)
+* `subtotal`, `total_item_discount`, `general_discount`, `discount`, `service_charge`, `vat`, `total` (BIGINT, VND)
 * `version` (INT, optimistic lock — mọi mutation phải kiểm tra và tăng cột này)
 * `mismatch_warning` (BOOL), `mismatch_codes` (TEXT[]) — cột lưu cảnh báo OCR. Khi đọc chi tiết một hóa đơn `draft` hoặc `reviewed`, giá trị trả về cho client là danh sách mã chặn **tính lại tại thời điểm đọc** gộp với cảnh báo OCR đã lưu, không phải giá trị thô trong cột (xem mục 4). Luôn là mảng, rỗng khi hóa đơn sạch, không bao giờ `null`
 * `split_method` (TEXT: `even`, `item_ratio`, `exact`, `shares`, `percentage`)
@@ -143,7 +145,8 @@ Hóa đơn, là bảng trung tâm của module:
 ### `bill_items`
 Danh sách món hàng của hóa đơn (tối đa 100 dòng):
 * `id`, `bill_id`, `group_id`, `name`, `position` (SMALLINT)
-* `quantity` (NUMERIC(10,2)), `unit_price` (BIGINT), `line_total` (BIGINT — độc lập với `quantity × unit_price`)
+* `quantity` (NUMERIC(10,2)), `unit_price` (BIGINT), `line_total` (BIGINT — tổng giá gốc trước giảm giá món)
+* `discount_amount` (BIGINT — tiền khuyến mãi riêng của món), `final_price` (BIGINT — giá thực tế sau giảm giá: `line_total - discount_amount`)
 
 ### `bill_item_assignments`
 Gán món hàng cho thành viên theo tỷ lệ:
