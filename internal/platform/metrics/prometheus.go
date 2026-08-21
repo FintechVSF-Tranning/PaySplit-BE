@@ -165,6 +165,8 @@ var (
 		},
 		[]string{"outcome"},
 	)
+	SettlementOperationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "paysplit", Subsystem: "settlement", Name: "operations_total", Help: "Settlement operations by operation and outcome."}, []string{"operation", "outcome"})
+	SettlementWorkerRunsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "paysplit", Subsystem: "settlement", Name: "worker_runs_total", Help: "Settlement background worker runs by kind and outcome."}, []string{"kind", "outcome"})
 )
 
 var activePool *pgxpool.Pool
@@ -185,6 +187,15 @@ func init() {
 	prometheus.MustRegister(MediaCleanupFailuresTotal)
 	prometheus.MustRegister(BillFinalizeDuration)
 	prometheus.MustRegister(BillPreviewDuration)
+	prometheus.MustRegister(SettlementOperationsTotal)
+	prometheus.MustRegister(SettlementWorkerRunsTotal)
+}
+
+func RecordSettlementOperation(operation, outcome string) {
+	SettlementOperationsTotal.WithLabelValues(operation, outcome).Inc()
+}
+func RecordSettlementWorkerRun(kind, outcome string) {
+	SettlementWorkerRunsTotal.WithLabelValues(kind, outcome).Inc()
 }
 
 // Helper methods ghi nhận metrics cho Module 3

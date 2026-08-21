@@ -29,6 +29,7 @@ type Config struct {
 	BillImage  BillImageConfig
 	BillSSE    BillSSEConfig
 	Metrics    MetricsConfig
+	Settlement SettlementConfig
 }
 
 // MetricsConfig chứa cấu hình Prometheus metrics scraper.
@@ -137,6 +138,16 @@ type BillImageConfig struct {
 type BillSSEConfig struct {
 	HeartbeatInterval time.Duration
 	MaxConnectionAge  time.Duration
+}
+
+type SettlementConfig struct {
+	VietQRServiceBaseURL   string
+	VietQRTemplate         string
+	ProofMaxBytes          int64
+	ProofSignedURLTTL      time.Duration
+	ReminderStaleAge       time.Duration
+	ReminderMaxCount       int
+	StalledConfirmationAge time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -285,6 +296,26 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	paymentProofMaxBytes, err := intEnv("PAYMENT_PROOF_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	paymentProofSignedTTL, err := durationEnv("PAYMENT_PROOF_SIGNED_URL_TTL", 300, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderAge, err := durationEnv("PAYMENT_REMINDER_STALE_HOURS", 72, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderMax, err := intEnv("PAYMENT_REMINDER_MAX_COUNT", 3)
+	if err != nil {
+		return nil, err
+	}
+	stalledConfirmationAge, err := durationEnv("STALLED_CONFIRMATION_HOURS", 48, time.Hour)
+	if err != nil {
+		return nil, err
+	}
 	billSSEHeartbeat, err := durationEnv("BILL_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
 	if err != nil {
 		return nil, err
@@ -372,6 +403,13 @@ func Load() (*Config, error) {
 			Enabled:     boolEnv("METRICS_ENABLED", true),
 			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
 		},
+		Settlement: SettlementConfig{
+			VietQRServiceBaseURL: stringEnv("VIETQR_SERVICE_BASE_URL", "https://img.vietqr.io/image"),
+			VietQRTemplate:       stringEnv("VIETQR_TEMPLATE", "compact"),
+			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
+			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
+			StalledConfirmationAge: stalledConfirmationAge,
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -454,6 +492,9 @@ func (c *Config) Validate() error {
 	}
 	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
 		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
+	}
+	if c.Settlement.VietQRServiceBaseURL != "" && (strings.TrimSpace(c.Settlement.VietQRTemplate) == "" || c.Settlement.ProofMaxBytes <= 0 || c.Settlement.ProofSignedURLTTL <= 0 || c.Settlement.ReminderStaleAge <= 0 || c.Settlement.ReminderMaxCount != 3 || c.Settlement.StalledConfirmationAge <= 0) {
+		return errors.New("settlement settings are invalid")
 	}
 	return nil
 }

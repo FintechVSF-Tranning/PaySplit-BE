@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	cld "github.com/cloudinary/cloudinary-go/v2"
@@ -56,6 +59,7 @@ func (s *BillStorage) Upload(ctx context.Context, data []byte, publicID string) 
 		PublicID:       publicID,
 		ResourceType:   "image",
 		Type:           api.Private,
+		Format:         "jpg",
 		Overwrite:      &overwrite,
 		UniqueFilename: &unique,
 	})
@@ -82,19 +86,29 @@ func (s *BillStorage) SignedURL(publicID string, ttl time.Duration) (string, err
 		ttl = 5 * time.Minute
 	}
 
-	asset, err := s.client.Image(publicID)
-	if err != nil {
-		return "", fmt.Errorf("build Cloudinary image asset: %w", err)
+	query := url.Values{
+		"expires_at": {strconv.FormatInt(time.Now().Add(ttl).Unix(), 10)},
+		"format":     {"jpg"},
+		"public_id":  {publicID},
+		"type":       {string(api.Private)},
 	}
-
-	asset.DeliveryType = api.Private
-	asset.Config.URL.SignURL = true
-	asset.Config.AuthToken.Duration = int64(ttl.Seconds())
-
-	urlStr, err := asset.String()
+	signature, err := api.SignParametersUsingAlgoAndVersion(
+		query,
+		s.client.Config.Cloud.APISecret,
+		s.client.Config.Cloud.GetSignatureAlgorithm(),
+		s.client.Config.Cloud.GetSignatureVersion(),
+	)
 	if err != nil {
 		return "", fmt.Errorf("generate signed url: %w", err)
 	}
+	query.Set("api_key", s.client.Config.Cloud.APIKey)
+	query.Set("signature", signature)
+	urlStr := fmt.Sprintf(
+		"%s/v1_1/%s/image/download?%s",
+		strings.TrimRight(s.client.Config.API.UploadPrefix, "/"),
+		s.client.Config.Cloud.CloudName,
+		query.Encode(),
+	)
 
 	return urlStr, nil
 }

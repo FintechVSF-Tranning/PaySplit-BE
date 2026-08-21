@@ -130,6 +130,7 @@ type Debt struct {
 	SettledAt        pgtype.Timestamptz `json:"settled_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	VoidedAt         pgtype.Timestamptz `json:"voided_at"`
+	LastRemindedAt   pgtype.Timestamptz `json:"last_reminded_at"`
 }
 
 type Group struct {
@@ -148,6 +149,7 @@ type GroupActivity struct {
 	Description   string             `json:"description"`
 	Metadata      []byte             `json:"metadata"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ActorKind     interface{}        `json:"actor_kind"`
 }
 
 type GroupInvite struct {
@@ -211,21 +213,50 @@ type OcrJob struct {
 }
 
 type Payment struct {
-	ID               pgtype.UUID        `json:"id"`
+	ID                     pgtype.UUID        `json:"id"`
+	GroupID                pgtype.UUID        `json:"group_id"`
+	DebtorMemberID         pgtype.UUID        `json:"debtor_member_id"`
+	CreditorMemberID       pgtype.UUID        `json:"creditor_member_id"`
+	Amount                 int64              `json:"amount"`
+	ReferenceCode          string             `json:"reference_code"`
+	QrPayload              pgtype.Text        `json:"qr_payload"`
+	ImageObjectKey         pgtype.Text        `json:"image_object_key"`
+	Note                   pgtype.Text        `json:"note"`
+	RejectionReason        pgtype.Text        `json:"rejection_reason"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	SubmittedAt            pgtype.Timestamptz `json:"submitted_at"`
+	ConfirmedAt            pgtype.Timestamptz `json:"confirmed_at"`
+	RejectedAt             pgtype.Timestamptz `json:"rejected_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	Status                 interface{}        `json:"status"`
+	RecipientBankCode      pgtype.Text        `json:"recipient_bank_code"`
+	RecipientBankName      pgtype.Text        `json:"recipient_bank_name"`
+	RecipientAccountNumber pgtype.Text        `json:"recipient_account_number"`
+	RecipientAccountHolder pgtype.Text        `json:"recipient_account_holder"`
+	StalledAlertedAt       pgtype.Timestamptz `json:"stalled_alerted_at"`
+}
+
+type PaymentDebt struct {
+	PaymentID        pgtype.UUID        `json:"payment_id"`
+	DebtID           pgtype.UUID        `json:"debt_id"`
 	GroupID          pgtype.UUID        `json:"group_id"`
 	DebtorMemberID   pgtype.UUID        `json:"debtor_member_id"`
 	CreditorMemberID pgtype.UUID        `json:"creditor_member_id"`
-	Amount           int64              `json:"amount"`
-	ReferenceCode    string             `json:"reference_code"`
-	QrPayload        pgtype.Text        `json:"qr_payload"`
-	ImageObjectKey   pgtype.Text        `json:"image_object_key"`
-	Note             pgtype.Text        `json:"note"`
-	RejectionReason  pgtype.Text        `json:"rejection_reason"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	SubmittedAt      pgtype.Timestamptz `json:"submitted_at"`
-	ConfirmedAt      pgtype.Timestamptz `json:"confirmed_at"`
-	RejectedAt       pgtype.Timestamptz `json:"rejected_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type PaymentIdempotencyKey struct {
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	Operation            string             `json:"operation"`
+	KeyHash              string             `json:"key_hash"`
+	CanonicalRequestHash string             `json:"canonical_request_hash"`
+	OperationID          pgtype.UUID        `json:"operation_id"`
+	State                interface{}        `json:"state"`
+	ResponseCode         pgtype.Int4        `json:"response_code"`
+	ResponseBody         []byte             `json:"response_body"`
+	RetryAfter           pgtype.Timestamptz `json:"retry_after"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 }
 
 type Session struct {

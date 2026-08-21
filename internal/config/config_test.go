@@ -81,6 +81,31 @@ func TestValidateRejectsInvalidBillSSE(t *testing.T) {
 	}
 }
 
+func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "paysplit://join"}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+	for _, key := range []string{"PAYMENT_PROOF_MAX_BYTES", "PAYMENT_PROOF_SIGNED_URL_TTL", "PAYMENT_REMINDER_STALE_HOURS", "PAYMENT_REMINDER_MAX_COUNT", "STALLED_CONFIRMATION_HOURS"} {
+		t.Setenv(key, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Settlement.ProofMaxBytes != 10<<20 || cfg.Settlement.ProofSignedURLTTL != 5*time.Minute || cfg.Settlement.ReminderStaleAge != 72*time.Hour || cfg.Settlement.ReminderMaxCount != 3 || cfg.Settlement.StalledConfirmationAge != 48*time.Hour {
+		t.Fatalf("unexpected settlement defaults: %+v", cfg.Settlement)
+	}
+}
+
+func TestValidateRejectsInvalidSettlementConfiguration_AC6AndAC10(t *testing.T) {
+	cfg := validConfig()
+	cfg.Settlement = SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 2, StalledConfirmationAge: 48 * time.Hour}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid reminder maximum error")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 30},

@@ -44,7 +44,6 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 	defer tx.Rollback(ctx)
 
 	q := sqlc.New(tx)
-
 	// 1. Tạo bản ghi bills
 	var billDate pgtype.Date
 	if p.Bill.BillDate != nil {
@@ -807,6 +806,11 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	defer tx.Rollback(ctx)
 
 	q := sqlc.New(tx)
+	// Settlement v1 serializes every debt or payment mutation through the group
+	// row. This keeps bill void and proof submission on the same lock order.
+	if _, err := tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, p.GroupID); err != nil {
+		return nil, fmt.Errorf("lock group for void: %w", err)
+	}
 
 	// 1. Khóa bản ghi bills trước (bills FOR UPDATE) tuân thủ lock ordering hierarchy
 	// để ngăn ngừa deadlock với luồng finalize và module thanh toán (Spec 3 index.md:88, 0003:50, Invariant 12).
@@ -840,6 +844,19 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	for _, d := range debts {
 		if d.Status != "awaiting" || d.PaymentID.Valid {
 			return nil, domain.ErrPaymentAlreadyStarted
+		}
+	}
+
+	// A pending proof payment is only a QR intent and does not reserve a debt.
+	// Preserve its immutable payment_debts audit links, but make its QR inactive
+	// before the linked awaiting debts are voided.
+	debtIDs := make([]uuid.UUID, 0, len(debts))
+	for _, debt := range debts {
+		debtIDs = append(debtIDs, uuid.UUID(debt.ID.Bytes))
+	}
+	if len(debtIDs) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE payments p SET status='superseded',updated_at=now() FROM (SELECT DISTINCT payment_id FROM payment_debts WHERE debt_id=ANY($1::uuid[])) linked WHERE p.id=linked.payment_id AND p.status='pending_proof'`, debtIDs); err != nil {
+			return nil, fmt.Errorf("supersede pending payments for void: %w", err)
 		}
 	}
 

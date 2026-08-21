@@ -128,3 +128,21 @@ func TestRecordOCRProviderDuration_ObservesHistogramWithProviderAndOutcomeLabels
 		t.Errorf("provider duration histogram sample count = %d, want %d", got, want)
 	}
 }
+
+func TestRecordSettlementOperation_AC12IncrementsOnlyNamedLabels(t *testing.T) {
+	before := testutil.ToFloat64(metrics.SettlementOperationsTotal.WithLabelValues("submit_proof_test", "success"))
+	metrics.RecordSettlementOperation("submit_proof_test", "success")
+	got := testutil.ToFloat64(metrics.SettlementOperationsTotal.WithLabelValues("submit_proof_test", "success"))
+	if got != before+1 {
+		t.Fatalf("settlement operation counter=%v, want %v", got, before+1)
+	}
+}
+
+func TestRecordSettlementWorkerRun_AC10IncrementsWorkerOutcome(t *testing.T) {
+	before := testutil.ToFloat64(metrics.SettlementWorkerRunsTotal.WithLabelValues("stalled_test", "success"))
+	metrics.RecordSettlementWorkerRun("stalled_test", "success")
+	got := testutil.ToFloat64(metrics.SettlementWorkerRunsTotal.WithLabelValues("stalled_test", "success"))
+	if got != before+1 {
+		t.Fatalf("settlement worker counter=%v, want %v", got, before+1)
+	}
+}

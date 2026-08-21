@@ -11,6 +11,82 @@ This architectural decision introduces several key technical challenges:
 2. Generating a VietQR requires the creditor latest valid bank account. If an unpaid QR is generated and the creditor later changes their bank account, the unpaid QR must reflect the new bank account, while an already submitted payment must freeze the bank snapshot to keep audit history accurate.
 3. Concurrent group actions, such as a Captain voiding an unpaid bill while a debtor is submitting payment proof for that bill debt, can cause data inconsistencies or deadlocks if lock ordering is not strictly enforced.
 4. Without automated reminders and stalled payment alerts, pending debts and confirmations can stall indefinitely.
+5. A QR must remember its exact selected debts before proof submission, but the shipped `debts_check1` requires every `awaiting` debt to keep `payment_id = NULL`. Without a separate relation, the system cannot replay an exact debt set, expose `covered_debt_ids`, or audit a superseded QR without changing the meaning of the debt lifecycle.
+
+## Pending proof debt set decision
+
+### Option A: Add immutable `payment_debts` links (Chosen)
+
+Create one link row per selected debt when the QR is created. Keep `debts.status = 'awaiting'` and `debts.payment_id = NULL` until proof submission.
+
+**Pros**:
+
+1. Preserves the shipped debt constraint and the meaning of `awaiting`.
+2. Supports exact set replay, superseded payment audit, and covered debt reads directly.
+3. Lets bill void proceed before proof while giving it a precise set of pending payments to supersede.
+
+**Cons**:
+
+1. Adds a table, indexes, and a join to payment reads.
+2. Requires both the immutable link and active `debts.payment_id` pointer to be kept conceptually distinct.
+
+### Option B: Attach debts at QR creation and relax `debts_check1`
+
+Set `debts.payment_id` while the debt remains `awaiting`, then allow awaiting debts to carry a payment pointer.
+
+**Pros**:
+
+1. Reuses the existing foreign key without a new relation.
+2. Makes covered debt lookup a direct filter on `debts.payment_id`.
+
+**Cons**:
+
+1. Overloads `payment_id` with both a tentative QR selection and an active submitted settlement.
+2. Forces bill void, reminders, QR expiry, supersession, and abandoned QR cleanup to distinguish two meanings of the same pointer.
+3. Weakens a shipped database invariant that currently makes invalid debt state visible immediately.
+
+### Option C: Store debt IDs as an array or JSON on `payments`
+
+Store the selected UUID values in one denormalized column.
+
+**Pros**:
+
+1. Keeps payment reads simple.
+2. Avoids a join table.
+
+**Cons**:
+
+1. Cannot enforce composite foreign keys or same group ownership for every element.
+2. Makes reverse lookup from a debt to pending payments harder and less index friendly.
+3. Duplicates relational data in a format that is easier to drift.
+
+`payment_debts` is chosen because the selected set is a real many to many historical relation, not payment metadata. The added join is a small operational cost compared with weakening `debts_check1` or losing foreign key enforcement. The table uses composite group foreign keys and an index beginning with `debt_id`, which supports both cross group safety and the bill void lookup. The unique pending payment index plus the existing group lock serializes QR regeneration for one debtor and creditor pair.
+
+A `pending_proof` link is intentionally not a reservation. If bill void locks an awaiting debt first, it voids the debt and supersedes linked pending payments in the same transaction. If proof submission locks first, it moves the full linked set to `pending_confirmation`, after which bill void rejects the operation. This preserves short transactions and produces a deterministic result without adding another state to debts.
+
+## Cross check decisions
+
+The independent architecture cross check found several contracts that needed to be made executable rather than left to implementation judgment. The following decisions are part of the chosen design.
+
+**Reminder durability.** `debts.last_reminded_at` is the shared clock for manual and automated reminders, and `reminder_count` has a combined cap of three. `payments.stalled_alerted_at` makes a stalled confirmation alert exactly once. Conditional updates under row lock prevent duplicate workers.
+
+**System activity actor.** River work cannot impersonate a member. `group_activities.actor_member_id` becomes nullable and a constrained `actor_kind` distinguishes `member` from `system`.
+
+**Read model boundaries.** Personal expense totals have explicit status formulas. Bill level allocation amounts appear once per bill rather than being repeated on item rows. Debt list filters affect only the list; whole group unsettled totals and the net matrix remain independent of those filters.
+
+**Idempotency.** A canonical request hash distinguishes safe replay from key reuse. Path identifiers, normalized bodies, and sorted debt IDs participate in the hash. Proof upload also hashes raw image bytes and the note. Completed status and response bodies replay for 24 hours, an unfinished request returns a retry response, and River removes expired records.
+
+**Database enforcement.** The payment status matrix is a check constraint, not only usecase logic. `payment_debts` duplicates group, debtor, and creditor identifiers so composite foreign keys prove that both sides describe the same member pair. This duplication is accepted because it turns a critical financial invariant into a database guarantee.
+
+**Proof upload compensation.** Cloudinary upload happens after a preliminary check and before the locked database transition because network I/O must not extend the transaction. The deterministic key `payments/{paymentId}/proofs/{operationId}` uses the operation ID created with the idempotency record, making retries converge while different idempotency attempts remain isolated even when their files are identical. Only the winning key is stored. A failed or losing attempt deletes only its own key, with `media_cleanup_jobs` as the durable fallback if deletion also fails, so it cannot overwrite or delete another attempt's committed proof.
+
+**Bills without caller debt.** Personal expenses include every finalized bill with an allocation for the caller, including a bill where the caller is the Creditor and no self debt exists. The response represents this honestly with nullable `debt_id` and `debt_status` rather than inventing a synthetic debt state or silently omitting the allocation.
+
+**Bank profile drift.** A missing or invalid bank profile blocks pending proof reads and submission with `BANK_ACCOUNT_REQUIRED` but does not destroy the selected debt set. Once proof is submitted, the immutable snapshot is authoritative.
+
+**Debt selection edge cases.** Omission means all eligible debts to the Creditor. A supplied collection contains 1 through 100 unique UUIDs. Empty or duplicate input is validation failure; any selected debt that is no longer eligible produces one state conflict response.
+
+**VietQR interoperability.** The backend owns a local NAPAS account transfer encoder using AID `A000000727`, service `QRIBFTTA`, VND currency `704`, purpose subtag `62.08`, and CRC16 CCITT FALSE. The image URL follows the `img.vietqr.io/image/{bank}-{account}-{template}.png` contract with encoded query values. Golden payload and URL fixtures prevent silent changes in tag nesting, lengths, checksum, or escaping.
 
 ## Schema baseline and drift found during cross check
 
