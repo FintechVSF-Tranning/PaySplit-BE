@@ -743,6 +743,51 @@ func TestLeaveOrRemoveMember_BlockedByOpenDebtsAsDebtorAndCreditorThenSucceedsOn
 	}
 }
 
+// TestLeaveOrRemoveMember_VoidedDebtDoesNotBlockExit tái hiện bug: SumOpenDebtorTotal/
+// SumOpenCreditorTotal lọc `status <> 'settled'`, nên một khoản nợ đã `voided` (hóa đơn gốc bị
+// hủy, Spec 3) vẫn bị tính là "đang mở" và chặn thành viên rời nhóm, dù khoản nợ đó không còn
+// nghĩa vụ thật nào (Spec 0002 AC-6, đã sửa sau khi debt_status có thêm giá trị voided ở spec 0003).
+func TestLeaveOrRemoveMember_VoidedDebtDoesNotBlockExit(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := newCleanup(t, pool)
+	repo := New(pool)
+
+	captainID := createUser(t, ctx, pool, cleanup, "Captain")
+	memberID := createUser(t, ctx, pool, cleanup, "Member")
+	group, captainMembership := mustCreateGroup(t, ctx, repo, cleanup, "Voided Debt Trip", captainID)
+	code, err := domain.NewInviteCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{GroupID: group.ID, CallerUserID: captainID, Code: code, ExpiresIn: 24 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	join, err := repo.RedeemInvite(ctx, code, memberID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var billID string
+	if err = pool.QueryRow(ctx, `INSERT INTO bills (group_id, creditor_member_id, status, finalized_at, voided_at) VALUES ($1,$2,'voided',now(),now()) RETURNING id`, group.ID, captainMembership.ID).Scan(&billID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO debts (group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, voided_at) VALUES ($1,$2,$3,$4,75000,'voided',now())`, group.ID, billID, join.MembershipID, captainMembership.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = repo.LeaveOrRemoveMember(ctx, group.ID, join.MembershipID, memberID); err != nil {
+		t.Fatalf("leave with only a voided debt should succeed, got: %v", err)
+	}
+	var status string
+	if err = pool.QueryRow(ctx, `SELECT status FROM group_members WHERE id=$1`, join.MembershipID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != domain.MembershipInactive {
+		t.Fatalf("status after leaving = %q, want inactive", status)
+	}
+}
+
 func TestLeaveOrRemoveMember_CaptainRemovesAStandardMemberAndWritesTheActorCorrectly(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
