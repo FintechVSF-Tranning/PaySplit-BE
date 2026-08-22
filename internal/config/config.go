@@ -478,8 +478,9 @@ func (c *Config) Validate() error {
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
 	}
-	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
-		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
+	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
+	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
+		return errors.New("APP_INVITE_BASE_URL must be an absolute HTTPS URL without user info, query, or fragment")
 	}
 	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
 		return errors.New("OCR settings must be positive")

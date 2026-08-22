@@ -117,7 +117,7 @@ cp .env.example .env
 | `AUTH_REFRESH_TOKEN_TTL_HOURS` | `168` | Session tuyệt đối 7 ngày, rotation không kéo dài session |
 | `AUTH_EMAIL_VERIFICATION_TTL_MINUTES` / `AUTH_PASSWORD_RESET_TTL_MINUTES` | `10` | Thời hạn email token |
 | `AUTH_EMAIL_VERIFICATION_URL` / `AUTH_PASSWORD_RESET_URL` | — | Deep link hoặc HTTPS callback, backend thêm query `token` |
-| `APP_INVITE_BASE_URL` | `paysplit://join` | Base URL cho link mời nhóm |
+| `APP_INVITE_BASE_URL` | `https://paysplit.app/join` | HTTPS base URL cho link mời nhóm; mã Base62 là path segment cuối |
 | `SMTP_USERNAME` / `SMTP_APP_PASSWORD` | — | Gmail có bật xác minh hai bước và Google App Password 16 ký tự |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | — | Cloudinary lưu avatar WebP |
 | `FIREBASE_CREDENTIALS_FILE` / `FIREBASE_CREDENTIALS_JSON` | — | Google Firebase Service Account credentials cho push notification FCM |

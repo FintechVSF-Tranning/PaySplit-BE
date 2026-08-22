@@ -44,22 +44,24 @@ Spec [0001](../specs/0001-auth-account-v1/index.md) · code in `internal/modules
 
 ### 2. Group management v1 · in-progress
 
-Provide group creation, Captain controlled invites, idempotent invite redemption, group preview, membership management, Captain transfer, activity logging, safe member exit with no open debtor or creditor obligations, and safe group disbandment.
+Provide group creation, member shareable Base62 invites with Captain controlled policy, idempotent invite redemption, group preview, membership management, Captain transfer, rename, activity logging, safe member exit with no open debtor or creditor obligations, and safe group disbandment.
 
-**Done when:** all nine acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, concurrent invite and Captain operations preserve their limits and invariants, member exit and group disbandment reject every open debtor or creditor obligation (correctly excluding voided debts), and key group mutations write activities atomically.
+**Done when:** all twelve acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, concurrent invite and Captain operations preserve their limits and invariants, member exit and group disbandment reject every open debtor or creditor obligation (correctly excluding voided debts), archived groups reject later group, bill, and settlement writes, and key group mutations write activities atomically.
 
 - [x] Design it (spec): `/architect group management v1`
-- [ ] Build it: `/develop group management v1`
+- [x] Build it: `/develop group management v1`
   - [x] Create, list, and detail vertical slice with exact validation, DTOs, privacy preserving authorization, cursor reads, and PostgreSQL coverage (satisfies AC-1, AC-2)
   - [x] Captain invite vertical slice with one available invite, reuse, regeneration, revocation, redaction, and atomic activities (satisfies AC-3, AC-8)
   - [x] Preview and redemption vertical slice with idempotent join, capacity limits, membership reactivation, and concurrency coverage (satisfies AC-4, AC-5, AC-8)
   - [x] Member exit and Captain transfer vertical slice with open obligation checks, ordered locks, atomic role transfer, and stable conflicts (satisfies AC-6, AC-7, AC-8)
   - [x] Activity timeline, shared error mapping, OpenAPI, module documentation, and end to end verification (satisfies AC-1 through AC-8)
   - [x] Fix the voided debt exclusion bug in member exit's open obligation queries, plus their backing indexes (satisfies corrected AC-6)
-  - [ ] Disband group vertical slice: `groups.status` migration, disband transaction, archived group write gate, and integration coverage (satisfies AC-9)
-- [ ] Verify it: `/check verify group management v1`
-- [ ] Test it: `/test group management v1`
-- [ ] Review it (fresh model): `/check review group management v1`
+  - [x] Member invite sharing vertical slice: Base62 migration, path links, list endpoint, member create or reuse, unified unavailable errors, collision retries, and account plus IP limiter (satisfies AC-3, AC-4, AC-10, AC-12)
+  - [x] Rename group vertical slice: Captain transaction, validation, activity, route, and integration coverage (satisfies AC-8, AC-11)
+  - [x] Disband group vertical slice: `groups.status` migration, disband transaction, shared active group lock, archived group write gate, and integration coverage (satisfies AC-6, AC-9)
+- [x] Verify it: `/check verify group management v1`
+- [x] Test it: `/test group management v1`
+- [x] Review it (fresh model): `/check review group management v1`
 - [ ] Document it: `/document group management v1`
 
 Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/modules/group/` and `internal/bootstrap/`

@@ -22,10 +22,34 @@ func (q *Queries) CountActiveMembers(ctx context.Context, groupID pgtype.UUID) (
 	return count, err
 }
 
+const countOpenDebts = `-- name: CountOpenDebts :one
+SELECT count(*) FROM debts
+WHERE group_id = $1 AND status NOT IN ('settled', 'voided')
+`
+
+func (q *Queries) CountOpenDebts(ctx context.Context, groupID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countOpenDebts, groupID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countUnfinishedBills = `-- name: CountUnfinishedBills :one
+SELECT count(*) FROM bills
+WHERE group_id = $1 AND status NOT IN ('finalized', 'voided')
+`
+
+func (q *Queries) CountUnfinishedBills(ctx context.Context, groupID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countUnfinishedBills, groupID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createGroup = `-- name: CreateGroup :one
 INSERT INTO groups (name, currency, created_by)
 VALUES ($1, $2, $3)
-RETURNING id, name, currency, created_by, created_at
+RETURNING id, name, currency, created_by, created_at, status
 `
 
 type CreateGroupParams struct {
@@ -43,6 +67,7 @@ func (q *Queries) CreateGroup(ctx context.Context, arg CreateGroupParams) (Group
 		&i.Currency,
 		&i.CreatedBy,
 		&i.CreatedAt,
+		&i.Status,
 	)
 	return i, err
 }
@@ -191,7 +216,7 @@ func (q *Queries) GetActiveMembership(ctx context.Context, arg GetActiveMembersh
 }
 
 const getGroupByID = `-- name: GetGroupByID :one
-SELECT id, name, currency, created_by, created_at FROM groups WHERE id = $1
+SELECT id, name, currency, created_by, created_at, status FROM groups WHERE id = $1 AND status = 'active'
 `
 
 func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, error) {
@@ -203,6 +228,7 @@ func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, erro
 		&i.Currency,
 		&i.CreatedBy,
 		&i.CreatedAt,
+		&i.Status,
 	)
 	return i, err
 }
@@ -276,7 +302,10 @@ func (q *Queries) GetInviteByIDForGroup(ctx context.Context, arg GetInviteByIDFo
 }
 
 const getInviteGroupIDByCode = `-- name: GetInviteGroupIDByCode :one
-SELECT group_id FROM group_invites WHERE code = $1
+SELECT i.group_id
+FROM group_invites i
+JOIN groups g ON g.id = i.group_id AND g.status = 'active'
+WHERE i.code = $1
 `
 
 func (q *Queries) GetInviteGroupIDByCode(ctx context.Context, code string) (pgtype.UUID, error) {
@@ -364,6 +393,7 @@ FROM group_members m
 JOIN groups g ON g.id = m.group_id
 WHERE m.user_id = $1
   AND m.status = 'active'
+  AND g.status = 'active'
   AND ($3::timestamptz IS NULL
        OR (g.created_at, g.id) < ($3::timestamptz, $4::uuid))
 ORDER BY g.created_at DESC, g.id DESC
@@ -466,6 +496,50 @@ func (q *Queries) ListActiveMembers(ctx context.Context, groupID pgtype.UUID) ([
 	return items, nil
 }
 
+const listAvailableInvites = `-- name: ListAvailableInvites :many
+SELECT id, group_id, code, created_by, expires_at, max_uses, use_count, revoked_at, created_at FROM group_invites
+WHERE group_id = $1
+  AND revoked_at IS NULL
+  AND expires_at > $2
+  AND (max_uses IS NULL OR use_count < max_uses)
+ORDER BY created_at DESC, id DESC
+`
+
+type ListAvailableInvitesParams struct {
+	GroupID   pgtype.UUID        `json:"group_id"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) ListAvailableInvites(ctx context.Context, arg ListAvailableInvitesParams) ([]GroupInvite, error) {
+	rows, err := q.db.Query(ctx, listAvailableInvites, arg.GroupID, arg.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GroupInvite
+	for rows.Next() {
+		var i GroupInvite
+		if err := rows.Scan(
+			&i.ID,
+			&i.GroupID,
+			&i.Code,
+			&i.CreatedBy,
+			&i.ExpiresAt,
+			&i.MaxUses,
+			&i.UseCount,
+			&i.RevokedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGroupActivities = `-- name: ListGroupActivities :many
 SELECT a.id, a.action_type, a.description, a.metadata, a.created_at,
        m.id AS actor_membership_id, m.user_id, u.display_name, u.avatar_object_key
@@ -534,7 +608,11 @@ func (q *Queries) ListGroupActivities(ctx context.Context, arg ListGroupActiviti
 }
 
 const listGroupBalances = `-- name: ListGroupBalances :many
-SELECT member_id, net_balance::bigint AS net_balance FROM v_member_balances WHERE group_id = $1
+SELECT b.member_id, b.net_balance::bigint AS net_balance
+FROM v_member_balances b
+JOIN group_members m ON m.id = b.member_id AND m.group_id = b.group_id
+WHERE b.group_id = $1 AND m.status = 'active'
+ORDER BY m.joined_at ASC, m.id ASC
 `
 
 type ListGroupBalancesRow struct {
@@ -563,7 +641,7 @@ func (q *Queries) ListGroupBalances(ctx context.Context, groupID pgtype.UUID) ([
 }
 
 const lockGroup = `-- name: LockGroup :one
-SELECT id FROM groups WHERE id = $1 FOR UPDATE
+SELECT id FROM groups WHERE id = $1 AND status = 'active' FOR UPDATE
 `
 
 func (q *Queries) LockGroup(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
@@ -643,6 +721,32 @@ func (q *Queries) ReactivateMembership(ctx context.Context, arg ReactivateMember
 		&i.Status,
 		&i.JoinedAt,
 		&i.LeftAt,
+	)
+	return i, err
+}
+
+const renameGroup = `-- name: RenameGroup :one
+UPDATE groups
+SET name = $2
+WHERE id = $1 AND status = 'active'
+RETURNING id, name, currency, created_by, created_at, status
+`
+
+type RenameGroupParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Name string      `json:"name"`
+}
+
+func (q *Queries) RenameGroup(ctx context.Context, arg RenameGroupParams) (Group, error) {
+	row := q.db.QueryRow(ctx, renameGroup, arg.ID, arg.Name)
+	var i Group
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Currency,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.Status,
 	)
 	return i, err
 }

@@ -18,6 +18,7 @@ import (
 	"paysplit-backend/internal/modules/group/domain"
 	"paysplit-backend/internal/modules/group/repository"
 	dbgen "paysplit-backend/internal/modules/group/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/database"
 )
 
 // defaultListLimit and maxListLimit bound both the group list and, later,
@@ -131,6 +132,7 @@ func (r *postgresRepository) ListGroups(ctx context.Context, p repository.ListGr
 				Currency:  row.Currency,
 				CreatedBy: uuid.UUID(row.CreatedBy.Bytes).String(),
 				CreatedAt: row.CreatedAt.Time,
+				Status:    domain.GroupActive,
 			},
 			CallerMembershipID: uuid.UUID(row.MembershipID.Bytes).String(),
 			CallerRole:         fmt.Sprint(row.Role),
@@ -211,14 +213,40 @@ func (r *postgresRepository) GetGroupDetail(ctx context.Context, groupID, caller
 	}, nil
 }
 
+func (r *postgresRepository) GetActiveMembershipRole(ctx context.Context, groupID, callerUserID string) (string, error) {
+	gid, err := uuid.Parse(groupID)
+	if err != nil {
+		return "", domain.ErrGroupNotFound
+	}
+	uid, err := uuid.Parse(callerUserID)
+	if err != nil {
+		return "", domain.ErrGroupNotFound
+	}
+
+	q := dbgen.New(r.pool)
+	if _, err = q.GetGroupByID(ctx, pgUUID(gid)); errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrGroupNotFound
+	} else if err != nil {
+		return "", fmt.Errorf("get active group: %w", err)
+	}
+	membership, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrGroupNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get active membership: %w", err)
+	}
+	return fmt.Sprint(membership.Role), nil
+}
+
 func (r *postgresRepository) CreateOrReuseInvite(ctx context.Context, p repository.CreateInviteParams) (*repository.CreateInviteResult, error) {
 	gid, err := uuid.Parse(p.GroupID)
 	if err != nil {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 	uid, err := uuid.Parse(p.CallerUserID)
 	if err != nil {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -231,21 +259,21 @@ func (r *postgresRepository) CreateOrReuseInvite(ctx context.Context, p reposito
 	// group mutation, including a concurrent Captain transfer (spec 0002
 	// invariant 1).
 	q := dbgen.New(tx)
-	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrCaptainRequired
+	if err = database.LockActiveGroup(ctx, tx, gid); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return nil, domain.ErrGroupNotFound
 		}
 		return nil, fmt.Errorf("lock group: %w", err)
 	}
 
 	membership, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get caller membership: %w", err)
 	}
-	if fmt.Sprint(membership.Role) != domain.RoleCaptain {
+	if (p.HasConfiguration || p.Regenerate) && fmt.Sprint(membership.Role) != domain.RoleCaptain {
 		return nil, domain.ErrCaptainRequired
 	}
 
@@ -261,7 +289,7 @@ func (r *postgresRepository) CreateOrReuseInvite(ctx context.Context, p reposito
 			return nil, fmt.Errorf("revoke available invites: %w", revokeErr)
 		}
 		for _, old := range revoked {
-			if actErr := insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s revoked an invite while creating a new one", displayName), old.ID, nil); actErr != nil {
+			if actErr := insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s revoked an invite", displayName), old.ID, nil); actErr != nil {
 				return nil, actErr
 			}
 		}
@@ -309,6 +337,10 @@ func (r *postgresRepository) insertNewInvite(ctx context.Context, q *dbgen.Queri
 		MaxUses:   maxUses,
 	})
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "group_invites_code_key" {
+			return nil, domain.ErrInviteCodeCollision
+		}
 		return nil, fmt.Errorf("insert invite: %w", err)
 	}
 	if err = insertInviteActivity(ctx, tx, gid, captainMemberID, "invite_created", fmt.Sprintf("%s created an invite", displayName), row.ID, &row); err != nil {
@@ -346,10 +378,46 @@ func insertActivity(ctx context.Context, tx pgx.Tx, gid uuid.UUID, actorMemberID
 	return nil
 }
 
+func (r *postgresRepository) ListAvailableInvites(ctx context.Context, groupID, callerUserID string) ([]domain.Invite, error) {
+	gid, err := uuid.Parse(groupID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
+	uid, err := uuid.Parse(callerUserID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
+
+	q := dbgen.New(r.pool)
+	if _, err = q.GetGroupByID(ctx, pgUUID(gid)); errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrGroupNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("get active group: %w", err)
+	}
+	if _, err = q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)}); errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrGroupNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("get active membership: %w", err)
+	}
+
+	rows, err := q.ListAvailableInvites(ctx, dbgen.ListAvailableInvitesParams{
+		GroupID:   pgUUID(gid),
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list available invites: %w", err)
+	}
+	invites := make([]domain.Invite, 0, len(rows))
+	for _, row := range rows {
+		invites = append(invites, *mapInvite(row))
+	}
+	return invites, nil
+}
+
 func (r *postgresRepository) RevokeInvite(ctx context.Context, groupID, inviteID, callerUserID string) error {
 	gid, err := uuid.Parse(groupID)
 	if err != nil {
-		return domain.ErrCaptainRequired
+		return domain.ErrGroupNotFound
 	}
 	iid, err := uuid.Parse(inviteID)
 	if err != nil {
@@ -357,7 +425,7 @@ func (r *postgresRepository) RevokeInvite(ctx context.Context, groupID, inviteID
 	}
 	uid, err := uuid.Parse(callerUserID)
 	if err != nil {
-		return domain.ErrCaptainRequired
+		return domain.ErrGroupNotFound
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -367,16 +435,16 @@ func (r *postgresRepository) RevokeInvite(ctx context.Context, groupID, inviteID
 	defer tx.Rollback(ctx)
 
 	q := dbgen.New(tx)
-	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrCaptainRequired
+	if err = database.LockActiveGroup(ctx, tx, gid); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrGroupNotFound
 		}
 		return fmt.Errorf("lock group: %w", err)
 	}
 
 	membership, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrCaptainRequired
+		return domain.ErrGroupNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("get caller membership: %w", err)
@@ -424,7 +492,7 @@ func (r *postgresRepository) PreviewInvite(ctx context.Context, code string) (*d
 		return nil, fmt.Errorf("get invite by code: %w", err)
 	}
 	if !inviteAvailable(invite, time.Now()) {
-		return nil, domain.ErrInviteUnavailable
+		return nil, domain.ErrInviteNotFound
 	}
 
 	group, err := q.GetGroupByID(ctx, invite.GroupID)
@@ -471,8 +539,8 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 	// Locking the group row first serializes concurrent redemptions and
 	// every other group mutation (spec 0002 invariant 1).
 	q := dbgen.New(tx)
-	if _, err = q.LockGroup(ctx, groupID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	if err = database.LockActiveGroup(ctx, tx, groupID); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
 			return nil, domain.ErrInviteNotFound
 		}
 		return nil, fmt.Errorf("lock group: %w", err)
@@ -511,7 +579,7 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 	}
 	now := time.Now()
 	if !inviteAvailable(invite, now) {
-		return nil, domain.ErrInviteUnavailable
+		return nil, domain.ErrInviteNotFound
 	}
 
 	activeCount, err := q.CountActiveMembers(ctx, groupID)
@@ -586,9 +654,9 @@ func (r *postgresRepository) LeaveOrRemoveMember(ctx context.Context, groupID, t
 	// group mutation, including invite redemption and Captain transfer
 	// (spec 0002 invariant 1).
 	q := dbgen.New(tx)
-	if _, err = q.LockGroup(ctx, pgUUID(gid)); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrForbidden
+	if err = database.LockActiveGroup(ctx, tx, gid); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrGroupNotFound
 		}
 		return fmt.Errorf("lock group: %w", err)
 	}
@@ -681,7 +749,7 @@ func (r *postgresRepository) LeaveOrRemoveMember(ctx context.Context, groupID, t
 func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targetMembershipID, callerUserID string) (*domain.CaptainTransfer, error) {
 	gid, err := uuid.Parse(groupID)
 	if err != nil {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 	tid, err := uuid.Parse(targetMembershipID)
 	if err != nil {
@@ -689,7 +757,7 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 	}
 	uid, err := uuid.Parse(callerUserID)
 	if err != nil {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 
 	tx, err := r.pool.Begin(ctx)
@@ -700,13 +768,13 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 
 	// A blocked transfer must fail fast rather than queue behind another
 	// in-flight mutation (spec 0002 transaction contract).
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE NOWAIT`, gid); err != nil {
+	if err = database.LockActiveGroupNowait(ctx, tx, gid); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
 			return nil, domain.ErrCaptainTransferConflict
 		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrCaptainRequired
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return nil, domain.ErrGroupNotFound
 		}
 		return nil, fmt.Errorf("lock group: %w", err)
 	}
@@ -714,7 +782,7 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 	q := dbgen.New(tx)
 	caller, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get caller membership: %w", err)
@@ -774,6 +842,142 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 		return nil, fmt.Errorf("commit transfer captain: %w", err)
 	}
 	return &domain.CaptainTransfer{PreviousCaptainMembershipID: previousID, CurrentCaptainMembershipID: currentID}, nil
+}
+
+func (r *postgresRepository) RenameGroup(ctx context.Context, groupID, callerUserID, name string) (*domain.Group, error) {
+	gid, err := uuid.Parse(groupID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
+	uid, err := uuid.Parse(callerUserID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin rename group: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err = database.LockActiveGroup(ctx, tx, gid); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return nil, domain.ErrGroupNotFound
+		}
+		return nil, fmt.Errorf("lock group: %w", err)
+	}
+	q := dbgen.New(tx)
+	caller, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrGroupNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get caller membership: %w", err)
+	}
+	if fmt.Sprint(caller.Role) != domain.RoleCaptain {
+		return nil, domain.ErrCaptainRequired
+	}
+
+	current, err := q.GetGroupByID(ctx, pgUUID(gid))
+	if err != nil {
+		return nil, fmt.Errorf("get current group: %w", err)
+	}
+	actorName, err := q.GetUserDisplayName(ctx, pgUUID(uid))
+	if err != nil {
+		return nil, fmt.Errorf("load captain display name: %w", err)
+	}
+	updated, err := q.RenameGroup(ctx, dbgen.RenameGroupParams{ID: pgUUID(gid), Name: name})
+	if err != nil {
+		return nil, mapWriteError(err)
+	}
+	if err = insertActivity(ctx, tx, gid, caller.ID, "group_renamed", fmt.Sprintf("%s đã đổi tên nhóm thành %q", actorName, name), map[string]any{
+		"old_name": current.Name,
+		"new_name": name,
+	}); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit rename group: %w", err)
+	}
+	return mapGroup(updated), nil
+}
+
+func (r *postgresRepository) DisbandGroup(ctx context.Context, groupID, callerUserID string) error {
+	gid, err := uuid.Parse(groupID)
+	if err != nil {
+		return domain.ErrGroupNotFound
+	}
+	uid, err := uuid.Parse(callerUserID)
+	if err != nil {
+		return domain.ErrGroupNotFound
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin disband group: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err = database.LockActiveGroup(ctx, tx, gid); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrGroupNotFound
+		}
+		return fmt.Errorf("lock group: %w", err)
+	}
+	q := dbgen.New(tx)
+	caller, err := q.GetActiveMembership(ctx, dbgen.GetActiveMembershipParams{GroupID: pgUUID(gid), UserID: pgUUID(uid)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrGroupNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("get caller membership: %w", err)
+	}
+	if fmt.Sprint(caller.Role) != domain.RoleCaptain {
+		return domain.ErrCaptainRequired
+	}
+
+	unfinishedBills, err := q.CountUnfinishedBills(ctx, pgUUID(gid))
+	if err != nil {
+		return fmt.Errorf("count unfinished bills: %w", err)
+	}
+	openDebts, err := q.CountOpenDebts(ctx, pgUUID(gid))
+	if err != nil {
+		return fmt.Errorf("count open debts: %w", err)
+	}
+	if unfinishedBills > 0 || openDebts > 0 {
+		return &domain.UnsettledObligationsError{
+			DraftOrReviewedBillCount: unfinishedBills,
+			OpenDebtCount:            openDebts,
+		}
+	}
+
+	actorName, err := q.GetUserDisplayName(ctx, pgUUID(uid))
+	if err != nil {
+		return fmt.Errorf("load captain display name: %w", err)
+	}
+	now := time.Now().UTC()
+	memberTag, err := tx.Exec(ctx, `UPDATE group_members SET status='inactive',left_at=$2 WHERE group_id=$1 AND status='active'`, gid, now)
+	if err != nil {
+		return fmt.Errorf("deactivate group members: %w", err)
+	}
+	if _, err = q.RevokeAvailableInvites(ctx, dbgen.RevokeAvailableInvitesParams{
+		GroupID:   pgUUID(gid),
+		RevokedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("revoke group invites: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE groups SET status='archived' WHERE id=$1 AND status='active'`, gid); err != nil {
+		return fmt.Errorf("archive group: %w", err)
+	}
+	if err = insertActivity(ctx, tx, gid, caller.ID, "group_archived", fmt.Sprintf("%s archived the group", actorName), map[string]any{
+		"member_count_deactivated": memberTag.RowsAffected(),
+	}); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit disband group: %w", err)
+	}
+	return nil
 }
 
 func (r *postgresRepository) ListActivities(ctx context.Context, p repository.ListActivitiesParams) ([]domain.Activity, *string, error) {
@@ -909,6 +1113,7 @@ func mapGroup(g dbgen.Group) *domain.Group {
 		Currency:  g.Currency,
 		CreatedBy: uuid.UUID(g.CreatedBy.Bytes).String(),
 		CreatedAt: g.CreatedAt.Time,
+		Status:    fmt.Sprint(g.Status),
 	}
 }
 

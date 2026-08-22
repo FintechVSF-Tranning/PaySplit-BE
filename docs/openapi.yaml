@@ -334,7 +334,63 @@ paths:
               schema: {$ref: "#/components/schemas/GroupDetailResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      operationId: renameGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RenameGroupRequest"}
+      responses:
+        "200":
+          description: Group renamed and the activity committed atomically
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GroupResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      operationId: disbandGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: Group archived without deleting financial or audit history}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/GroupHasUnsettledObligations"}
   /api/v1/groups/{id}/invites:
+    get:
+      operationId: listGroupInvites
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Available invites ordered by created_at and id descending
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InviteListResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
     post:
       operationId: createGroupInvite
       tags: [Groups]
@@ -345,7 +401,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema: {$ref: "#/components/schemas/CreateInviteRequest"}
@@ -363,6 +419,7 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{id}/invites/{inviteId}:
     delete:
       operationId: revokeGroupInvite
@@ -391,7 +448,7 @@ paths:
         - name: code
           in: path
           required: true
-          schema: {type: string}
+          schema: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$'}
       responses:
         "200":
           description: Group name, active member count, and Captain display name
@@ -399,8 +456,8 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/InvitePreviewResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "410": {$ref: "#/components/responses/InviteUnavailable"}
+        "404": {$ref: "#/components/responses/InviteNotFound"}
+        "429": {$ref: "#/components/responses/RateLimited"}
   /api/v1/groups/join:
     post:
       operationId: joinGroup
@@ -418,9 +475,9 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/JoinGroupResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "404": {$ref: "#/components/responses/NotFound"}
+        "404": {$ref: "#/components/responses/InviteNotFound"}
         "409": {$ref: "#/components/responses/GroupMemberLimitReached"}
-        "410": {$ref: "#/components/responses/InviteUnavailable"}
+        "429": {$ref: "#/components/responses/RateLimited"}
   /api/v1/groups/{id}/members/{memberId}:
     delete:
       operationId: leaveOrRemoveMember
@@ -1347,9 +1404,12 @@ components:
     CaptainRequired:
       description: Caller is not the group's active Captain
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
-    InviteUnavailable:
-      description: Invite is expired, revoked, or exhausted (one public code for all three)
+    InviteNotFound:
+      description: Invite is malformed, unknown, expired, revoked, or exhausted; every unusable state returns INVITE_NOT_FOUND
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    GroupHasUnsettledObligations:
+      description: Group has bills outside finalized or voided, or debts outside settled or voided
+      content: {application/json: {schema: {$ref: "#/components/schemas/GroupUnsettledObligationsError"}}}
     GroupMemberLimitReached:
       description: Group already has 50 active members
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -1627,6 +1687,23 @@ components:
               properties:
                 payable_amount: {type: string, description: Decimal VND string the target still owes others}
                 receivable_amount: {type: string, description: Decimal VND string others still owe the target}
+    GroupUnsettledObligationsError:
+      description: Error variant for GROUP_HAS_UNSETTLED_OBLIGATIONS
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, fields]
+          properties:
+            code: {type: string, enum: [GROUP_HAS_UNSETTLED_OBLIGATIONS]}
+            message: {type: string}
+            fields:
+              type: object
+              required: [draft_or_reviewed_bill_count, open_debt_count]
+              properties:
+                draft_or_reviewed_bill_count: {type: string, pattern: '^[0-9]+$'}
+                open_debt_count: {type: string, pattern: '^[0-9]+$'}
     CreateGroupRequest:
       type: object
       required: [name]
@@ -1642,6 +1719,17 @@ components:
         name: {type: string}
         currency: {type: string, enum: [VND]}
         created_at: {type: string, format: date-time}
+    RenameGroupRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100, description: Trimmed to 1-100 Unicode code points}
+    GroupResponse:
+      type: object
+      required: [group]
+      properties:
+        group: {$ref: "#/components/schemas/Group"}
     Membership:
       type: object
       required: [id, group_id, user_id, role, status, joined_at, left_at]
@@ -1700,17 +1788,20 @@ components:
     CreateInviteRequest:
       type: object
       additionalProperties: false
+      description: >-
+        Any present field requires the active Captain. With an available invite and regenerate
+        absent or false, that invite is reused unchanged. Values apply when creating a new invite.
       properties:
-        expires_in_hours: {type: integer, minimum: 1, maximum: 168, default: 24}
-        max_uses: {type: integer, minimum: 1, maximum: 50, nullable: true, description: Optional; unlimited when omitted}
-        regenerate: {type: boolean, default: false, description: Revoke every available invite first and create one new one}
+        expires_in_hours: {type: integer, minimum: 1, maximum: 168, description: Defaults to 24 when a new invite is created}
+        max_uses: {type: integer, minimum: 1, maximum: 50, description: Unlimited when omitted for a new invite}
+        regenerate: {type: boolean, description: True revokes every available invite first; false behaves like omission}
     Invite:
       type: object
       required: [id, code, invite_url, expires_at, max_uses, use_count]
       properties:
         id: {type: string, format: uuid}
-        code: {type: string, description: Sensitive; only ever returned by create or reuse}
-        invite_url: {type: string, description: APP_INVITE_BASE_URL plus the encoded invite code}
+        code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$', description: Sensitive; only returned by active invite list or create/reuse}
+        invite_url: {type: string, format: uri, description: HTTPS APP_INVITE_BASE_URL plus code as the final path segment}
         expires_at: {type: string, format: date-time}
         max_uses: {type: integer, nullable: true}
         use_count: {type: integer}
@@ -1719,6 +1810,13 @@ components:
       required: [invite]
       properties:
         invite: {$ref: "#/components/schemas/Invite"}
+    InviteListResponse:
+      type: object
+      required: [invites]
+      properties:
+        invites:
+          type: array
+          items: {$ref: "#/components/schemas/Invite"}
     InvitePreview:
       type: object
       required: [group_name, active_member_count, captain_display_name]
@@ -1736,7 +1834,7 @@ components:
       required: [code]
       additionalProperties: false
       properties:
-        code: {type: string}
+        code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$', description: Malformed values still receive INVITE_NOT_FOUND}
     JoinResult:
       type: object
       required: [group_id, membership_id, role, status, result]
@@ -1783,7 +1881,7 @@ components:
         id: {type: string, format: uuid}
         action_type:
           type: string
-          enum: [group_created, invite_created, invite_revoked, member_joined, member_reactivated, member_left, member_removed, captain_transferred]
+          enum: [group_created, invite_created, invite_revoked, member_joined, member_reactivated, member_left, member_removed, captain_transferred, group_renamed, group_archived]
         description: {type: string}
         actor: {$ref: "#/components/schemas/ActivityActor"}
         metadata: {type: object, description: "Exact keys per action_type; never includes an invite code"}

@@ -12,12 +12,18 @@ const (
 	MembershipInactive = "inactive"
 )
 
+const (
+	GroupActive   = "active"
+	GroupArchived = "archived"
+)
+
 type Group struct {
 	ID        string
 	Name      string
 	Currency  string
 	CreatedBy string
 	CreatedAt time.Time
+	Status    string
 }
 
 type Membership struct {

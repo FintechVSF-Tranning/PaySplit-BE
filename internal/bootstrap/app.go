@@ -222,6 +222,7 @@ func New(ctx context.Context) (*App, error) {
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
+	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.RateLimitRequestsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
 	adminService := adminusecase.NewService(adminRepo)
@@ -239,7 +240,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) {
-			groupHandler.RegisterGroupRoutes(r, liveAuth)
+			groupHandler.RegisterGroupRoutes(r, liveAuth, inviteAttemptLimiter)
 			settlementHandler.RegisterRoutes(r, liveAuth)
 		})
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })

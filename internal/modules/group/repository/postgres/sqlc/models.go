@@ -139,6 +139,7 @@ type Group struct {
 	Currency  string             `json:"currency"`
 	CreatedBy pgtype.UUID        `json:"created_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Status    interface{}        `json:"status"`
 }
 
 type GroupActivity struct {

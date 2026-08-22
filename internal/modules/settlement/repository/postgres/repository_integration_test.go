@@ -37,6 +37,47 @@ func settlementTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+func TestCreatePaymentRejectsArchivedGroupBeforeIdempotency_AC9(t *testing.T) {
+	pool := settlementTestPool(t)
+	ctx := context.Background()
+	userID, groupID, memberID := uuid.New(), uuid.New(), uuid.New()
+	suffix := time.Now().UnixNano()
+	if _, err := pool.Exec(ctx, `INSERT INTO users(id,email,phone_number,display_name,password_hash,status,email_verified_at) VALUES($1,$2,$3,'Archived caller','x','active',now())`, userID, fmt.Sprintf("archived.%d@example.invalid", suffix), fmt.Sprintf("+847%08d", suffix%100000000)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM groups WHERE id=$1`, groupID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO groups(id,name,currency,created_by,status) VALUES($1,'Archived settlement','VND',$2,'archived')`, groupID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO group_members(id,group_id,user_id,role,status) VALUES($1,$2,$3,'captain','active')`, memberID, groupID, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := NewWithPayments(pool, func(string) (BankInfo, bool) {
+		return BankInfo{Code: "VCB", Name: "Vietcombank", BIN: "970436", Supported: true}, true
+	}, vietqr.New("", ""))
+	_, _, err := repo.CreatePayment(ctx, repository.CreatePaymentInput{
+		GroupID:          groupID.String(),
+		CallerUserID:     userID.String(),
+		CreditorMemberID: memberID.String(),
+		IdempotencyKey:   "archived-create",
+		RequestHash:      "archived-create-hash",
+	})
+	if !errors.Is(err, domain.ErrGroupNotFound) {
+		t.Fatalf("CreatePayment() error = %v, want ErrGroupNotFound", err)
+	}
+	var idempotencyRows int
+	if queryErr := pool.QueryRow(ctx, `SELECT count(*) FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation='create_payment'`, userID).Scan(&idempotencyRows); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if idempotencyRows != 0 {
+		t.Fatalf("archived payment attempt wrote %d idempotency rows, want 0", idempotencyRows)
+	}
+}
+
 func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	pool := settlementTestPool(t)
 	ctx := context.Background()

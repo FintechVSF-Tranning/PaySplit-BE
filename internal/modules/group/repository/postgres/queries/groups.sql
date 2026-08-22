@@ -19,13 +19,14 @@ FROM group_members m
 JOIN groups g ON g.id = m.group_id
 WHERE m.user_id = $1
   AND m.status = 'active'
+  AND g.status = 'active'
   AND (sqlc.narg('cursor_created_at')::timestamptz IS NULL
        OR (g.created_at, g.id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY g.created_at DESC, g.id DESC
 LIMIT $2;
 
 -- name: GetGroupByID :one
-SELECT * FROM groups WHERE id = $1;
+SELECT * FROM groups WHERE id = $1 AND status = 'active';
 
 -- name: GetActiveMembership :one
 SELECT * FROM group_members WHERE group_id = $1 AND user_id = $2 AND status = 'active';
@@ -38,10 +39,14 @@ WHERE m.group_id = $1 AND m.status = 'active'
 ORDER BY m.joined_at ASC, m.id ASC;
 
 -- name: ListGroupBalances :many
-SELECT member_id, net_balance::bigint AS net_balance FROM v_member_balances WHERE group_id = $1;
+SELECT b.member_id, b.net_balance::bigint AS net_balance
+FROM v_member_balances b
+JOIN group_members m ON m.id = b.member_id AND m.group_id = b.group_id
+WHERE b.group_id = $1 AND m.status = 'active'
+ORDER BY m.joined_at ASC, m.id ASC;
 
 -- name: LockGroup :one
-SELECT id FROM groups WHERE id = $1 FOR UPDATE;
+SELECT id FROM groups WHERE id = $1 AND status = 'active' FOR UPDATE;
 
 -- name: FindAvailableInvite :one
 SELECT * FROM group_invites
@@ -52,6 +57,14 @@ WHERE group_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT 1
 FOR UPDATE;
+
+-- name: ListAvailableInvites :many
+SELECT * FROM group_invites
+WHERE group_id = $1
+  AND revoked_at IS NULL
+  AND expires_at > $2
+  AND (max_uses IS NULL OR use_count < max_uses)
+ORDER BY created_at DESC, id DESC;
 
 -- name: RevokeAvailableInvites :many
 UPDATE group_invites
@@ -74,7 +87,10 @@ SELECT * FROM group_invites WHERE id = $1 AND group_id = $2 FOR UPDATE;
 UPDATE group_invites SET revoked_at = $2 WHERE id = $1;
 
 -- name: GetInviteGroupIDByCode :one
-SELECT group_id FROM group_invites WHERE code = $1;
+SELECT i.group_id
+FROM group_invites i
+JOIN groups g ON g.id = i.group_id AND g.status = 'active'
+WHERE i.code = $1;
 
 -- name: GetInviteByCode :one
 SELECT * FROM group_invites WHERE code = $1;
@@ -129,6 +145,20 @@ UPDATE group_members SET role = 'member' WHERE id = $1;
 
 -- name: PromoteToCaptain :exec
 UPDATE group_members SET role = 'captain' WHERE id = $1;
+
+-- name: RenameGroup :one
+UPDATE groups
+SET name = $2
+WHERE id = $1 AND status = 'active'
+RETURNING *;
+
+-- name: CountUnfinishedBills :one
+SELECT count(*) FROM bills
+WHERE group_id = $1 AND status NOT IN ('finalized', 'voided');
+
+-- name: CountOpenDebts :one
+SELECT count(*) FROM debts
+WHERE group_id = $1 AND status NOT IN ('settled', 'voided');
 
 -- name: ListGroupActivities :many
 SELECT a.id, a.action_type, a.description, a.metadata, a.created_at,

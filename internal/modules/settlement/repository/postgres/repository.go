@@ -21,6 +21,7 @@ import (
 	"paysplit-backend/internal/modules/settlement/domain"
 	"paysplit-backend/internal/modules/settlement/repository"
 	dbgen "paysplit-backend/internal/modules/settlement/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/database"
 )
 
 const (
@@ -87,6 +88,16 @@ func normalizedLimit(limit int) int {
 		return maxLimit
 	}
 	return limit
+}
+
+func lockActiveSettlementGroup(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) error {
+	if err := database.LockActiveGroup(ctx, tx, groupID); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrGroupNotFound
+		}
+		return fmt.Errorf("lock active group: %w", err)
+	}
+	return nil
 }
 
 func (r *postgresRepository) ListExpenses(ctx context.Context, in repository.ListInput) (*domain.ExpensePage, error) {
@@ -334,6 +345,9 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, fmt.Errorf("begin create payment: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err = lockActiveSettlementGroup(ctx, tx, gid); err != nil {
+		return nil, false, err
+	}
 	keyHash := hashString(in.IdempotencyKey)
 	replay, responseCode, done, err := beginIdempotency(ctx, tx, uid, "create_payment", keyHash, in.RequestHash)
 	if err != nil {
@@ -341,9 +355,6 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 	}
 	if done {
 		return replay, responseCode == httpStatusCreated, nil
-	}
-	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); err != nil {
-		return nil, false, fmt.Errorf("lock group: %w", err)
 	}
 	var debtorID uuid.UUID
 	if err = tx.QueryRow(ctx, `SELECT id FROM group_members WHERE group_id=$1 AND user_id=$2 AND status='active'`, gid, uid).Scan(&debtorID); errors.Is(err, pgx.ErrNoRows) {
@@ -571,6 +582,9 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 		return "", nil, e
 	}
 	defer tx.Rollback(ctx)
+	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
+		return "", nil, e
+	}
 	keyHash := hashString(idempotencyKey)
 	operationID := uuid.Must(uuid.NewV7())
 	tag, e := tx.Exec(ctx, `INSERT INTO payment_idempotency_keys(actor_user_id,operation,key_hash,canonical_request_hash,operation_id) VALUES($1,'submit_proof',$2,$3,$4) ON CONFLICT DO NOTHING`, uid, keyHash, requestHash, operationID)
@@ -872,7 +886,7 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); e != nil {
+	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
 		return nil, e
 	}
 	var memberID uuid.UUID
@@ -1010,7 +1024,7 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		return nil, nil, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); e != nil {
+	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
 		return nil, nil, e
 	}
 	var memberID uuid.UUID
@@ -1158,7 +1172,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); e != nil {
+	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
 		return nil, e
 	}
 	var memberID uuid.UUID
@@ -1255,7 +1269,7 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 		return e
 	}
 	defer tx.Rollback(ctx)
-	rows, e := tx.Query(ctx, `SELECT d.id,d.group_id,d.debtor_member_id,d.amount,d.reminder_count,gm.user_id FROM debts d JOIN group_members gm ON gm.id=d.debtor_member_id WHERE d.status='awaiting' AND d.created_at<=$1 AND d.reminder_count<$2 AND (d.last_reminded_at IS NULL OR d.last_reminded_at<=now()-interval '24 hours') ORDER BY d.id FOR UPDATE OF d SKIP LOCKED LIMIT 100`, staleBefore, maxCount)
+	rows, e := tx.Query(ctx, `SELECT d.id,d.group_id,d.debtor_member_id,d.amount,d.reminder_count,gm.user_id FROM debts d JOIN groups g ON g.id=d.group_id AND g.status='active' JOIN group_members gm ON gm.id=d.debtor_member_id WHERE d.status='awaiting' AND d.created_at<=$1 AND d.reminder_count<$2 AND (d.last_reminded_at IS NULL OR d.last_reminded_at<=now()-interval '24 hours') ORDER BY d.id FOR UPDATE OF d SKIP LOCKED LIMIT 100`, staleBefore, maxCount)
 	if e != nil {
 		return e
 	}
@@ -1301,7 +1315,7 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 		return e
 	}
 	defer tx.Rollback(ctx)
-	rows, e := tx.Query(ctx, `SELECT p.id,p.group_id,p.creditor_member_id,p.debtor_member_id,p.submitted_at,gm.user_id FROM payments p JOIN group_members gm ON gm.id=p.creditor_member_id WHERE p.status='pending_confirmation' AND p.submitted_at<=$1 AND p.stalled_alerted_at IS NULL ORDER BY p.id FOR UPDATE OF p SKIP LOCKED LIMIT 100`, submittedBefore)
+	rows, e := tx.Query(ctx, `SELECT p.id,p.group_id,p.creditor_member_id,p.debtor_member_id,p.submitted_at,gm.user_id FROM payments p JOIN groups g ON g.id=p.group_id AND g.status='active' JOIN group_members gm ON gm.id=p.creditor_member_id WHERE p.status='pending_confirmation' AND p.submitted_at<=$1 AND p.stalled_alerted_at IS NULL ORDER BY p.id FOR UPDATE OF p SKIP LOCKED LIMIT 100`, submittedBefore)
 	if e != nil {
 		return e
 	}

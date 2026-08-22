@@ -2,6 +2,7 @@
 SELECT gm.id, gm.user_id, gm.role, u.display_name
 FROM group_members gm
 JOIN users u ON u.id = gm.user_id
+JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
 WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status = 'active';
 
 -- name: ListExpenseRows :many

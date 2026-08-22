@@ -270,7 +270,12 @@ UPDATE ocr_jobs
 SET status = 'processing',
     attempts = attempts + 1,
     updated_at = now()
-WHERE id = $1 AND status IN ('queued', 'processing')
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status IN ('queued', 'processing')
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING *;
 
 -- name: UpdateOCRJobSuccess :one
@@ -280,7 +285,12 @@ SET status = 'succeeded',
     raw_response = $3,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND status = 'processing'
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status = 'processing'
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING *;
 
 -- name: UpdateOCRJobFailed :one
@@ -289,7 +299,12 @@ SET status = 'failed',
     error_message = $2,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND status = 'processing'
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status = 'processing'
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING *;
 
 -- name: CountManualOCRAttemptsInWindow :one
@@ -300,23 +315,31 @@ WHERE bill_id = $1 AND created_at >= $2;
 -- Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
 -- tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
 SELECT COUNT(*) FROM ocr_jobs
-WHERE status IN ('queued', 'processing');
+WHERE status IN ('queued', 'processing')
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  );
 
 -- name: GetGroupMember :one
 SELECT id, group_id, user_id, role, status, joined_at, left_at
-FROM group_members
-WHERE group_id = $1 AND user_id = $2;
+FROM group_members gm
+WHERE group_id = $1 AND user_id = $2
+  AND EXISTS (SELECT 1 FROM groups g WHERE g.id = gm.group_id AND g.status = 'active');
 
 -- name: GetGroupMemberUser :one
 SELECT gm.id, gm.group_id, gm.user_id, gm.role, gm.status, u.default_bank_code, u.default_bank_account_number, u.default_bank_account_holder
 FROM group_members gm
 JOIN users u ON gm.user_id = u.id
+JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
 WHERE gm.id = $1 AND gm.group_id = $2;
 
 -- name: ListActiveGroupMembers :many
 SELECT id, group_id, user_id, role, status, joined_at, left_at
-FROM group_members
-WHERE group_id = $1 AND status = 'active';
+FROM group_members gm
+WHERE group_id = $1 AND status = 'active'
+  AND EXISTS (SELECT 1 FROM groups g WHERE g.id = gm.group_id AND g.status = 'active');
 
 -- name: CreateDebt :one
 INSERT INTO debts (
@@ -378,4 +401,3 @@ INSERT INTO media_cleanup_jobs (
 ) VALUES (
     $1, 'cloudinary', $2, now(), now()
 ) ON CONFLICT (provider, object_key) WHERE completed_at IS NULL DO NOTHING;
-
