@@ -15,12 +15,8 @@ type Querier interface {
 	GetCallerDebtTotals(ctx context.Context, arg GetCallerDebtTotalsParams) (GetCallerDebtTotalsRow, error)
 	GetDebtMatrix(ctx context.Context, groupID pgtype.UUID) ([]GetDebtMatrixRow, error)
 	GetExpenseSummary(ctx context.Context, arg GetExpenseSummaryParams) (GetExpenseSummaryRow, error)
-	GetPaymentRow(ctx context.Context, arg GetPaymentRowParams) (GetPaymentRowRow, error)
-	ListAutomatedReminderCandidates(ctx context.Context, arg ListAutomatedReminderCandidatesParams) ([]ListAutomatedReminderCandidatesRow, error)
 	ListDebtRows(ctx context.Context, arg ListDebtRowsParams) ([]ListDebtRowsRow, error)
 	ListExpenseRows(ctx context.Context, arg ListExpenseRowsParams) ([]ListExpenseRowsRow, error)
-	ListPaymentDebtIDs(ctx context.Context, paymentID pgtype.UUID) ([]pgtype.UUID, error)
-	ListStalledPaymentCandidates(ctx context.Context, submittedAt pgtype.Timestamptz) ([]ListStalledPaymentCandidatesRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -107,7 +107,7 @@ Provide personal allocated expense breakdown, group debt matrix and cursor listi
 - [x] Verify it: `/check verify split and settlement v1`
 - [x] Test it: `/test split and settlement v1`
 - [x] Review it (fresh model): `/check review split and settlement v1`
-- [ ] Document it: `/document split and settlement v1`
+- [x] Document it: `/document split and settlement v1`
 
 Spec [0004](../specs/0004-split-settlement-v1/index.md) · code in `internal/modules/settlement/`, `internal/platform/vietqr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 

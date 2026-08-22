@@ -94,7 +94,10 @@ func (r *postgresRepository) ListExpenses(ctx context.Context, in repository.Lis
 	if err != nil {
 		return nil, err
 	}
-	gid := uuid.UUID(membership.ID.Bytes)
+	groupID, err := uuid.Parse(in.GroupID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
 	limit := normalizedLimit(in.Limit)
 	var cursorAt pgtype.Timestamptz
 	var cursorID pgtype.UUID
@@ -107,7 +110,7 @@ func (r *postgresRepository) ListExpenses(ctx context.Context, in repository.Lis
 	}
 	q := dbgen.New(r.pool)
 	rows, err := q.ListExpenseRows(ctx, dbgen.ListExpenseRowsParams{
-		GroupID: pgUUID(uuid.MustParse(in.GroupID)), MemberID: pgUUID(gid), Column3: cursorAt, ID: cursorID, Limit: int32(limit + 1),
+		GroupID: pgUUID(groupID), MemberID: membership.ID, Column3: cursorAt, ID: cursorID, Limit: int32(limit + 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list personal expenses: %w", err)
@@ -152,7 +155,7 @@ func (r *postgresRepository) ListExpenses(ctx context.Context, in repository.Lis
 		}
 		items = append(items, item)
 	}
-	summaryRow, err := q.GetExpenseSummary(ctx, dbgen.GetExpenseSummaryParams{GroupID: pgUUID(uuid.MustParse(in.GroupID)), DebtorMemberID: membership.ID})
+	summaryRow, err := q.GetExpenseSummary(ctx, dbgen.GetExpenseSummaryParams{GroupID: pgUUID(groupID), DebtorMemberID: membership.ID})
 	if err != nil {
 		return nil, fmt.Errorf("load expense summary: %w", err)
 	}
@@ -173,7 +176,10 @@ func (r *postgresRepository) ListDebts(ctx context.Context, in repository.ListDe
 	if err != nil {
 		return nil, err
 	}
-	gid := uuid.MustParse(in.GroupID)
+	gid, err := uuid.Parse(in.GroupID)
+	if err != nil {
+		return nil, domain.ErrGroupNotFound
+	}
 	limit := normalizedLimit(in.Limit)
 	params := dbgen.ListDebtRowsParams{GroupID: pgUUID(gid), Limit: int32(limit + 1)}
 	if in.DebtorID != nil {
@@ -278,6 +284,14 @@ func uuidFromValue(v any) (string, error) {
 
 func pgUUID(v uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: v, Valid: true} }
 
+func storedUUID(value, field string) (uuid.UUID, error) {
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid stored %s: %w", field, err)
+	}
+	return id, nil
+}
+
 func encodeCursor(t time.Time, id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(t.UTC().Format(time.RFC3339Nano) + "|" + id))
 }
@@ -320,6 +334,14 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, fmt.Errorf("begin create payment: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	keyHash := hashString(in.IdempotencyKey)
+	replay, responseCode, done, err := beginIdempotency(ctx, tx, uid, "create_payment", keyHash, in.RequestHash)
+	if err != nil {
+		return nil, false, err
+	}
+	if done {
+		return replay, responseCode == httpStatusCreated, nil
+	}
 	if _, err = tx.Exec(ctx, `SELECT id FROM groups WHERE id=$1 FOR UPDATE`, gid); err != nil {
 		return nil, false, fmt.Errorf("lock group: %w", err)
 	}
@@ -329,26 +351,18 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 	} else if err != nil {
 		return nil, false, fmt.Errorf("load debtor: %w", err)
 	}
-	var bankCode, account, holder string
+	var bankCodeValue, accountValue, holderValue pgtype.Text
 	var creditorUser uuid.UUID
-	if err = tx.QueryRow(ctx, `SELECT gm.user_id,u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, cid, gid).Scan(&creditorUser, &bankCode, &account, &holder); errors.Is(err, pgx.ErrNoRows) {
+	if err = tx.QueryRow(ctx, `SELECT gm.user_id,u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, cid, gid).Scan(&creditorUser, &bankCodeValue, &accountValue, &holderValue); errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, domain.ErrCreditorNotFound
 	} else if err != nil {
-		return nil, false, domain.ErrBankAccountRequired
+		return nil, false, fmt.Errorf("load creditor bank profile: %w", err)
 	}
+	bankCode, account, holder := bankCodeValue.String, accountValue.String, holderValue.String
 	bank, ok := r.banks(bankCode)
-	if !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
+	if !bankCodeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
 		return nil, false, domain.ErrBankAccountRequired
 	}
-	keyHash := hashString(in.IdempotencyKey)
-	replay, done, err := beginIdempotency(ctx, tx, uid, "create_payment", keyHash, in.RequestHash)
-	if err != nil {
-		return nil, false, err
-	}
-	if done {
-		return replay, false, nil
-	}
-
 	ids := make([]uuid.UUID, 0, len(in.DebtIDs))
 	for _, raw := range in.DebtIDs {
 		id, e := uuid.Parse(raw)
@@ -377,6 +391,10 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		}
 		selected = append(selected, id)
 		amount += value
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, false, fmt.Errorf("iterate payment debts: %w", err)
 	}
 	rows.Close()
 	if len(selected) == 0 || (len(ids) > 0 && len(selected) != len(ids)) {
@@ -439,7 +457,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, err
 	}
 	if in.BeforeCommit != nil {
-		if err = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}); err != nil {
+		if err = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); err != nil {
 			return nil, false, err
 		}
 	}
@@ -487,7 +505,15 @@ func (r *postgresRepository) GetPayment(ctx context.Context, groupID, callerUser
 		return nil, e
 	}
 	var debtorUser, creditorUser uuid.UUID
-	e = r.pool.QueryRow(ctx, `SELECT d.user_id,c.user_id FROM group_members d JOIN group_members c ON c.id=$2 WHERE d.id=$1`, uuid.MustParse(p.DebtorMemberID), uuid.MustParse(p.CreditorMemberID)).Scan(&debtorUser, &creditorUser)
+	debtorMemberID, e := storedUUID(p.DebtorMemberID, "debtor member ID")
+	if e != nil {
+		return nil, e
+	}
+	creditorMemberID, e := storedUUID(p.CreditorMemberID, "creditor member ID")
+	if e != nil {
+		return nil, e
+	}
+	e = r.pool.QueryRow(ctx, `SELECT d.user_id,c.user_id FROM group_members d JOIN group_members c ON c.id=$2 WHERE d.id=$1`, debtorMemberID, creditorMemberID).Scan(&debtorUser, &creditorUser)
 	if e != nil {
 		return nil, e
 	}
@@ -498,13 +524,14 @@ func (r *postgresRepository) GetPayment(ctx context.Context, groupID, callerUser
 		}
 	}
 	if p.Status == domain.PaymentPendingProof {
-		var code, account, holder string
-		e = r.pool.QueryRow(ctx, `SELECT default_bank_code,default_bank_account_number,default_bank_account_holder FROM users WHERE id=$1`, creditorUser).Scan(&code, &account, &holder)
+		var codeValue, accountValue, holderValue pgtype.Text
+		e = r.pool.QueryRow(ctx, `SELECT default_bank_code,default_bank_account_number,default_bank_account_holder FROM users WHERE id=$1`, creditorUser).Scan(&codeValue, &accountValue, &holderValue)
 		if e != nil {
-			return nil, domain.ErrBankAccountRequired
+			return nil, fmt.Errorf("load creditor bank profile: %w", e)
 		}
+		code, account, holder := codeValue.String, accountValue.String, holderValue.String
 		bank, ok := r.banks(code)
-		if !ok || !bank.Supported {
+		if !codeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
 			return nil, domain.ErrBankAccountRequired
 		}
 		payload, image, e := r.qr.Build(bank.BIN, account, holder, p.ReferenceCode, p.Amount)
@@ -554,7 +581,8 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 		var storedHash, state string
 		var storedOperation uuid.UUID
 		var body []byte
-		e = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,operation_id,response_body FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 FOR UPDATE`, uid, keyHash).Scan(&storedHash, &state, &storedOperation, &body)
+		var retryable bool
+		e = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,operation_id,response_body,retry_after IS NOT NULL AND retry_after<=now() FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 FOR UPDATE`, uid, keyHash).Scan(&storedHash, &state, &storedOperation, &body, &retryable)
 		if e != nil {
 			return "", nil, e
 		}
@@ -571,14 +599,30 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 			}
 			return storedOperation.String(), &replay, nil
 		}
-		operationID = storedOperation
+		if state == "in_progress" {
+			if retryable {
+				if _, e = tx.Exec(ctx, `UPDATE payment_idempotency_keys SET retry_after=NULL WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 AND operation_id=$3 AND state='in_progress'`, uid, keyHash, storedOperation); e != nil {
+					return "", nil, e
+				}
+				if e = tx.Commit(ctx); e != nil {
+					return "", nil, e
+				}
+				return storedOperation.String(), nil, nil
+			}
+			return "", nil, domain.ErrIdempotencyInProgress
+		}
+		return "", nil, domain.ErrIdempotencyConflict
 	}
 	payment, e := loadPaymentTx(ctx, tx, pid, gid)
 	if e != nil {
 		return "", nil, e
 	}
 	var debtorUser uuid.UUID
-	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1 AND group_id=$2`, uuid.MustParse(payment.DebtorMemberID), gid).Scan(&debtorUser); e != nil {
+	debtorMemberID, e := storedUUID(payment.DebtorMemberID, "debtor member ID")
+	if e != nil {
+		return "", nil, e
+	}
+	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1 AND group_id=$2`, debtorMemberID, gid).Scan(&debtorUser); e != nil {
 		return "", nil, e
 	}
 	if debtorUser != uid {
@@ -587,13 +631,20 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 	if payment.Status != domain.PaymentPendingProof {
 		return "", nil, domain.ErrPaymentNotPendingProof
 	}
-	var code, account, holder string
-	e = tx.QueryRow(ctx, `SELECT u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, uuid.MustParse(payment.CreditorMemberID), gid).Scan(&code, &account, &holder)
+	var codeValue, accountValue, holderValue pgtype.Text
+	creditorMemberID, e := storedUUID(payment.CreditorMemberID, "creditor member ID")
 	if e != nil {
-		return "", nil, domain.ErrBankAccountRequired
+		return "", nil, e
 	}
+	e = tx.QueryRow(ctx, `SELECT u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, creditorMemberID, gid).Scan(&codeValue, &accountValue, &holderValue)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return "", nil, domain.ErrBankAccountRequired
+	} else if e != nil {
+		return "", nil, fmt.Errorf("load creditor bank profile: %w", e)
+	}
+	code, account, holder := codeValue.String, accountValue.String, holderValue.String
 	bank, ok := r.banks(code)
-	if !ok || !bank.Supported {
+	if !codeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
 		return "", nil, domain.ErrBankAccountRequired
 	}
 	if _, _, e = r.qr.Build(bank.BIN, account, holder, payment.ReferenceCode, payment.Amount); e != nil {
@@ -603,6 +654,29 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 		return "", nil, e
 	}
 	return operationID.String(), nil, nil
+}
+
+func (r *postgresRepository) ResetProofAttempt(ctx context.Context, callerUserID, idempotencyKey, requestHash, operationID string, replaceOperation bool) error {
+	uid, err := uuid.Parse(callerUserID)
+	if err != nil {
+		return domain.ErrGroupNotFound
+	}
+	currentOperation, err := uuid.Parse(operationID)
+	if err != nil {
+		return domain.ErrIdempotencyConflict
+	}
+	nextOperation := currentOperation
+	if replaceOperation {
+		nextOperation = uuid.Must(uuid.NewV7())
+	}
+	tag, err := r.pool.Exec(ctx, `UPDATE payment_idempotency_keys SET operation_id=$5,retry_after=now() WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 AND canonical_request_hash=$3 AND operation_id=$4 AND state='in_progress' AND expires_at>now()`, uid, hashString(idempotencyKey), requestHash, currentOperation, nextOperation)
+	if err != nil {
+		return fmt.Errorf("reset proof idempotency attempt: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("proof idempotency attempt is no longer resettable")
+	}
+	return nil
 }
 
 func loadPaymentPool(ctx context.Context, q interface {
@@ -675,32 +749,36 @@ func loadPayment(ctx context.Context, q interface {
 	return &p, rows.Err()
 }
 
-func beginIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, op, keyHash, requestHash string) (*domain.Payment, bool, error) {
+func beginIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, op, keyHash, requestHash string) (*domain.Payment, int, bool, error) {
 	var storedHash, state string
 	var body []byte
+	var responseCode pgtype.Int4
 	existing := false
-	err := tx.QueryRow(ctx, `INSERT INTO payment_idempotency_keys(actor_user_id,operation,key_hash,canonical_request_hash,operation_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING canonical_request_hash,state::text,response_body`, actor, op, keyHash, requestHash, uuid.Must(uuid.NewV7())).Scan(&storedHash, &state, &body)
+	err := tx.QueryRow(ctx, `INSERT INTO payment_idempotency_keys(actor_user_id,operation,key_hash,canonical_request_hash,operation_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING canonical_request_hash,state::text,response_body,response_code`, actor, op, keyHash, requestHash, uuid.Must(uuid.NewV7())).Scan(&storedHash, &state, &body, &responseCode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing = true
-		err = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,response_body FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation=$2 AND key_hash=$3 FOR UPDATE`, actor, op, keyHash).Scan(&storedHash, &state, &body)
+		err = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,response_body,response_code FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation=$2 AND key_hash=$3 FOR UPDATE`, actor, op, keyHash).Scan(&storedHash, &state, &body, &responseCode)
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	if storedHash != requestHash {
-		return nil, false, domain.ErrIdempotencyConflict
+		return nil, 0, false, domain.ErrIdempotencyConflict
 	}
 	if existing && state == "in_progress" {
-		return nil, false, domain.ErrIdempotencyInProgress
+		return nil, 0, false, domain.ErrIdempotencyInProgress
 	}
 	if state == "completed" {
 		var p domain.Payment
 		if e := json.Unmarshal(body, &p); e != nil {
-			return nil, false, e
+			return nil, 0, false, e
 		}
-		return &p, true, nil
+		if !responseCode.Valid {
+			return nil, 0, false, errors.New("completed idempotency record has no response code")
+		}
+		return &p, int(responseCode.Int32), true, nil
 	}
-	return nil, false, nil
+	return nil, 0, false, nil
 }
 
 func resumeProofIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, keyHash, requestHash, operationID string) (*domain.Payment, bool, error) {
@@ -830,6 +908,10 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		debtIDs = append(debtIDs, id)
 		valid = valid && status == "awaiting"
 	}
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate proof debts: %w", e)
+	}
 	rows.Close()
 	if len(debtIDs) == 0 || !valid {
 		return nil, domain.ErrDebtsNotAwaiting
@@ -848,13 +930,20 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		return nil, domain.ErrPaymentNotPendingProof
 	}
 	var creditorUser uuid.UUID
-	var code, account, holder string
-	e = tx.QueryRow(ctx, `SELECT gm.user_id,u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, uuid.MustParse(payment.CreditorMemberID), gid).Scan(&creditorUser, &code, &account, &holder)
+	var codeValue, accountValue, holderValue pgtype.Text
+	creditorMemberID, e := storedUUID(payment.CreditorMemberID, "creditor member ID")
 	if e != nil {
-		return nil, domain.ErrBankAccountRequired
+		return nil, e
 	}
+	e = tx.QueryRow(ctx, `SELECT gm.user_id,u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, creditorMemberID, gid).Scan(&creditorUser, &codeValue, &accountValue, &holderValue)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return nil, domain.ErrBankAccountRequired
+	} else if e != nil {
+		return nil, fmt.Errorf("load creditor bank profile: %w", e)
+	}
+	code, account, holder := codeValue.String, accountValue.String, holderValue.String
 	bank, ok := r.banks(code)
-	if !ok || !bank.Supported {
+	if !codeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
 		return nil, domain.ErrBankAccountRequired
 	}
 	payload, imageURL, e := r.qr.Build(bank.BIN, account, holder, payment.ReferenceCode, payment.Amount)
@@ -875,7 +964,7 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		return nil, e
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}); e != nil {
+		if e = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
 			return nil, e
 		}
 	}
@@ -893,8 +982,8 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 	return payment, nil
 }
 
-func (r *postgresRepository) QueueMediaCleanup(ctx context.Context, objectKey, _ string) error {
-	_, e := r.pool.Exec(ctx, `INSERT INTO media_cleanup_jobs(provider,object_key) VALUES('cloudinary',$1) ON CONFLICT (provider,object_key) WHERE completed_at IS NULL DO NOTHING`, objectKey)
+func (r *postgresRepository) QueueMediaCleanup(ctx context.Context, objectKey, reason string) error {
+	_, e := r.pool.Exec(ctx, `INSERT INTO media_cleanup_jobs(provider,object_key,reason) VALUES('cloudinary',$1,$2) ON CONFLICT (provider,object_key) WHERE completed_at IS NULL DO NOTHING`, objectKey, reason)
 	return e
 }
 func (r *postgresRepository) ConfirmPayment(ctx context.Context, in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
@@ -935,7 +1024,7 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		op = "confirm_payment"
 	}
 	keyHash := hashString(in.IdempotencyKey)
-	replay, done, e := beginIdempotency(ctx, tx, uid, op, keyHash, in.RequestHash)
+	replay, _, done, e := beginIdempotency(ctx, tx, uid, op, keyHash, in.RequestHash)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -962,6 +1051,10 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		ids = append(ids, id)
 		valid = valid && status == "pending_confirmation" && active.Valid && uuid.UUID(active.Bytes) == pid
 	}
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return nil, nil, fmt.Errorf("iterate payment debts: %w", e)
+	}
 	rows.Close()
 	if len(ids) == 0 || !valid {
 		return nil, nil, domain.ErrPaymentNotPendingConfirmation
@@ -980,7 +1073,11 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		return nil, nil, domain.ErrPaymentNotPendingConfirmation
 	}
 	var debtorUser uuid.UUID
-	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1`, uuid.MustParse(payment.DebtorMemberID)).Scan(&debtorUser); e != nil {
+	debtorMemberID, e := storedUUID(payment.DebtorMemberID, "debtor member ID")
+	if e != nil {
+		return nil, nil, e
+	}
+	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1`, debtorMemberID).Scan(&debtorUser); e != nil {
 		return nil, nil, e
 	}
 	var activity string
@@ -1020,7 +1117,7 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		return nil, nil, e
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}); e != nil {
+		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
 			return nil, nil, e
 		}
 	}
@@ -1037,6 +1134,13 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 	return payment, uuidStrings(ids), nil
 }
 func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.RemindInput) (*domain.ReminderResult, error) {
+	maxCount := in.MaxCount
+	if maxCount == 0 {
+		maxCount = 3
+	}
+	if maxCount < 1 || maxCount > 3 {
+		return nil, domain.ErrInvalidInput
+	}
 	gid, e := uuid.Parse(in.GroupID)
 	if e != nil {
 		return nil, domain.ErrGroupNotFound
@@ -1108,7 +1212,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 	if status != "awaiting" {
 		return nil, domain.ErrDebtNotAwaiting
 	}
-	if count >= 3 || last.Valid && last.Time.After(time.Now().Add(-24*time.Hour)) {
+	if count >= maxCount || last.Valid && last.Time.After(time.Now().Add(-24*time.Hour)) {
 		return nil, domain.ErrReminderRateLimited
 	}
 	var remindedAt time.Time
@@ -1126,7 +1230,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 		return nil, e
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}); e != nil {
+		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "debt_id": did.String()}); e != nil {
 			return nil, e
 		}
 	}
@@ -1145,7 +1249,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 	return result, nil
 }
 
-func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, staleBefore time.Time, maxCount int, before func(context.Context, repository.Executor, []string) error) error {
+func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, staleBefore time.Time, maxCount int, before repository.BeforeCommit) error {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return e
@@ -1169,8 +1273,11 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 		}
 		items = append(items, c)
 	}
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return e
+	}
 	rows.Close()
-	targets := make([]string, 0, len(items))
 	for _, c := range items {
 		c.count++
 		if _, e = tx.Exec(ctx, `UPDATE debts SET reminder_count=$2,last_reminded_at=now(),updated_at=now() WHERE id=$1`, c.id, c.count); e != nil {
@@ -1180,16 +1287,15 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','debt_reminded','Automated debt reminder sent',$2)`, c.group, metadata); e != nil {
 			return e
 		}
-		targets = append(targets, c.user.String())
-	}
-	if before != nil && len(targets) > 0 {
-		if e = before(ctx, tx, targets); e != nil {
-			return e
+		if before != nil {
+			if e = before(ctx, tx, []string{c.user.String()}, map[string]string{"group_id": c.group.String(), "debt_id": c.id.String()}); e != nil {
+				return e
+			}
 		}
 	}
 	return tx.Commit(ctx)
 }
-func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submittedBefore time.Time, before func(context.Context, repository.Executor, []string) error) error {
+func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submittedBefore time.Time, before repository.BeforeCommit) error {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return e
@@ -1212,8 +1318,11 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 		}
 		items = append(items, c)
 	}
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return e
+	}
 	rows.Close()
-	targets := make([]string, 0, len(items))
 	for _, c := range items {
 		tag, e := tx.Exec(ctx, `UPDATE payments SET stalled_alerted_at=now(),updated_at=now() WHERE id=$1 AND stalled_alerted_at IS NULL`, c.id)
 		if e != nil {
@@ -1227,11 +1336,10 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','payment_stalled_confirmation','Payment confirmation is stalled',$2)`, c.group, metadata); e != nil {
 			return e
 		}
-		targets = append(targets, c.user.String())
-	}
-	if before != nil && len(targets) > 0 {
-		if e = before(ctx, tx, targets); e != nil {
-			return e
+		if before != nil {
+			if e = before(ctx, tx, []string{c.user.String()}, map[string]string{"group_id": c.group.String(), "payment_id": c.id.String()}); e != nil {
+				return e
+			}
 		}
 	}
 	return tx.Commit(ctx)
@@ -1242,7 +1350,7 @@ func (r *postgresRepository) DeleteExpiredIdempotency(ctx context.Context) error
 	return err
 }
 
-func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObject func(context.Context, string) error) error {
+func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObject func(context.Context, string) error, recordFailure func(string)) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -1250,13 +1358,14 @@ func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObje
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `WITH due AS (
 		SELECT id FROM media_cleanup_jobs
-		WHERE completed_at IS NULL AND attempt_count < 10 AND next_attempt_at <= now()
+		WHERE completed_at IS NULL AND next_attempt_at <= now()
 		ORDER BY next_attempt_at, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 100
 	)
 	UPDATE media_cleanup_jobs j
-	SET attempt_count=j.attempt_count+1, next_attempt_at=now()+interval '5 minutes'
+	SET attempt_count=LEAST(j.attempt_count+1, 10),
+		next_attempt_at=now()+(interval '5 minutes' * power(2, LEAST(j.attempt_count, 8)))
 	FROM due
 	WHERE j.id=due.id
 	RETURNING j.id,j.object_key`)
@@ -1286,7 +1395,12 @@ func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObje
 	}
 	for _, job := range jobs {
 		if err = deleteObject(ctx, job.key); err != nil {
-			_, _ = r.pool.Exec(ctx, `UPDATE media_cleanup_jobs SET last_error_code=$2,updated_at=now() WHERE id=$1 AND completed_at IS NULL`, job.id, err.Error())
+			if recordFailure != nil {
+				recordFailure("delete_failed")
+			}
+			if _, updateErr := r.pool.Exec(ctx, `UPDATE media_cleanup_jobs SET last_error_code=$2,updated_at=now() WHERE id=$1 AND completed_at IS NULL`, job.id, err.Error()); updateErr != nil {
+				return fmt.Errorf("record media cleanup failure: %w", updateErr)
+			}
 			continue
 		}
 		if _, err = r.pool.Exec(ctx, `UPDATE media_cleanup_jobs SET completed_at=now(),last_error_code=NULL,updated_at=now() WHERE id=$1`, job.id); err != nil {

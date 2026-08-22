@@ -23,10 +23,7 @@ func settlementTestPool(t *testing.T) *pgxpool.Pool {
 	_ = godotenv.Load("../../../../../.env")
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
-		url = os.Getenv("DATABASE_URL")
-	}
-	if url == "" {
-		t.Skip("database URL is not configured")
+		t.Skip("TEST_DATABASE_URL is not configured")
 	}
 	pool, err := pgxpool.New(context.Background(), url)
 	if err != nil {
@@ -74,23 +71,69 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	repo := NewWithPayments(pool, func(string) (BankInfo, bool) {
 		return BankInfo{Code: "VCB", Name: "Vietcombank", BIN: "970436", Supported: true}, true
 	}, vietqr.New("", ""))
-	payment, created, err := repo.CreatePayment(ctx, repository.CreatePaymentInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), CreditorMemberID: creditorMember.String(), DebtIDs: []string{debtID.String()}, IdempotencyKey: "create-1", RequestHash: "create-hash"})
+	var createPayload map[string]string
+	payment, created, err := repo.CreatePayment(ctx, repository.CreatePaymentInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), CreditorMemberID: creditorMember.String(), DebtIDs: []string{debtID.String()}, IdempotencyKey: "create-1", RequestHash: "create-hash", BeforeCommit: func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		createPayload = data
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !created || payment.Status != domain.PaymentPendingProof || len(payment.CoveredDebtIDs) != 1 {
 		t.Fatalf("unexpected payment: %+v", payment)
 	}
+	if createPayload["group_id"] != groupID.String() || createPayload["payment_id"] != payment.ID {
+		t.Fatalf("unexpected create notification payload: %v", createPayload)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE users SET default_bank_code=NULL,default_bank_account_number=NULL,default_bank_account_holder=NULL WHERE id=$1`, creditorUser); err != nil {
+		t.Fatal(err)
+	}
+	replayedCreate, replayedCreated, err := repo.CreatePayment(ctx, repository.CreatePaymentInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), CreditorMemberID: creditorMember.String(), DebtIDs: []string{debtID.String()}, IdempotencyKey: "create-1", RequestHash: "create-hash"})
+	if err != nil {
+		t.Fatalf("CreatePayment() replay error = %v", err)
+	}
+	if !replayedCreated || replayedCreate.ID != payment.ID {
+		t.Fatalf("CreatePayment() replay created=%v payment=%+v", replayedCreated, replayedCreate)
+	}
+	if _, _, err = repo.CreatePayment(ctx, repository.CreatePaymentInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), CreditorMemberID: creditorMember.String(), DebtIDs: []string{debtID.String()}, IdempotencyKey: "create-1", RequestHash: "different-hash"}); !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("CreatePayment() conflict error = %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE users SET default_bank_code='VCB',default_bank_account_number='0123456789',default_bank_account_holder='CREDITOR' WHERE id=$1`, creditorUser); err != nil {
+		t.Fatal(err)
+	}
 	proofOperation, _, err := repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment.ID, "proof-1", "proof-hash")
 	if err != nil {
 		t.Fatal(err)
 	}
-	payment, err = repo.SubmitProof(ctx, repository.SubmitProofInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), PaymentID: payment.ID, ObjectKey: "payments/" + payment.ID + "/proofs/" + proofOperation, IdempotencyKey: "proof-1", RequestHash: "proof-hash", OperationID: proofOperation})
+	if _, _, err = repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment.ID, "proof-1", "proof-hash"); !errors.Is(err, domain.ErrIdempotencyInProgress) {
+		t.Fatalf("PrepareProof() concurrent replay error = %v, want idempotency in progress", err)
+	}
+	if err = repo.ResetProofAttempt(ctx, payerUser.String(), "proof-1", "proof-hash", proofOperation, false); err != nil {
+		t.Fatalf("ResetProofAttempt() error = %v", err)
+	}
+	retriedOperation, retriedPayment, err := repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment.ID, "proof-1", "proof-hash")
+	if err != nil {
+		t.Fatalf("PrepareProof() after reset error = %v", err)
+	}
+	if retriedOperation != proofOperation || retriedPayment != nil {
+		t.Fatalf("retry operation=%q payment=%+v, want operation %q", retriedOperation, retriedPayment, proofOperation)
+	}
+	if _, _, err = repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment.ID, "proof-1", "proof-hash"); !errors.Is(err, domain.ErrIdempotencyInProgress) {
+		t.Fatalf("PrepareProof() after retry claim error = %v, want idempotency in progress", err)
+	}
+	var submitPayload map[string]string
+	payment, err = repo.SubmitProof(ctx, repository.SubmitProofInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), PaymentID: payment.ID, ObjectKey: "payments/" + payment.ID + "/proofs/" + proofOperation, IdempotencyKey: "proof-1", RequestHash: "proof-hash", OperationID: proofOperation, BeforeCommit: func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		submitPayload = data
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if payment.Status != domain.PaymentPendingConfirmation {
 		t.Fatalf("status=%s", payment.Status)
+	}
+	if submitPayload["group_id"] != groupID.String() || submitPayload["payment_id"] != payment.ID {
+		t.Fatalf("unexpected submit notification payload: %v", submitPayload)
 	}
 	replayedOperation, replayedPayment, err := repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment.ID, "proof-1", "proof-hash")
 	if err != nil {
@@ -99,12 +142,19 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	if replayedOperation != proofOperation || replayedPayment == nil || replayedPayment.Status != domain.PaymentPendingConfirmation {
 		t.Fatalf("unexpected proof replay: operation=%s payment=%+v", replayedOperation, replayedPayment)
 	}
-	payment, settled, err := repo.ConfirmPayment(ctx, repository.PaymentMutationInput{GroupID: groupID.String(), CallerUserID: creditorUser.String(), PaymentID: payment.ID, IdempotencyKey: "confirm-1", RequestHash: "confirm-hash"})
+	var confirmPayload map[string]string
+	payment, settled, err := repo.ConfirmPayment(ctx, repository.PaymentMutationInput{GroupID: groupID.String(), CallerUserID: creditorUser.String(), PaymentID: payment.ID, IdempotencyKey: "confirm-1", RequestHash: "confirm-hash", BeforeCommit: func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		confirmPayload = data
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if payment.Status != domain.PaymentConfirmed || len(settled) != 1 || settled[0] != debtID.String() {
 		t.Fatalf("unexpected confirmation: %+v %v", payment, settled)
+	}
+	if confirmPayload["group_id"] != groupID.String() || confirmPayload["payment_id"] != payment.ID {
+		t.Fatalf("unexpected confirm notification payload: %v", confirmPayload)
 	}
 	var debtStatus string
 	var settledAt *time.Time
@@ -130,6 +180,17 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = repo.ResetProofAttempt(ctx, payerUser.String(), "proof-2", "proof-hash-2", proofOperation2, true); err != nil {
+		t.Fatalf("ResetProofAttempt() with rotation error = %v", err)
+	}
+	replacedOperation2, replayedPayment2, err := repo.PrepareProof(ctx, groupID.String(), payerUser.String(), payment2.ID, "proof-2", "proof-hash-2")
+	if err != nil {
+		t.Fatalf("PrepareProof() after rotation error = %v", err)
+	}
+	if replacedOperation2 == proofOperation2 || replayedPayment2 != nil {
+		t.Fatalf("rotated operation=%q old=%q payment=%+v", replacedOperation2, proofOperation2, replayedPayment2)
+	}
+	proofOperation2 = replacedOperation2
 	payment2, err = repo.SubmitProof(ctx, repository.SubmitProofInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), PaymentID: payment2.ID, ObjectKey: "payments/" + payment2.ID + "/proofs/" + proofOperation2, IdempotencyKey: "proof-2", RequestHash: "proof-hash-2", OperationID: proofOperation2})
 	if err != nil {
 		t.Fatal(err)
@@ -142,12 +203,19 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	if payment2.Status != domain.PaymentRejected || len(reset) != 1 {
 		t.Fatalf("unexpected rejection: %+v %v", payment2, reset)
 	}
-	reminder, err := repo.RemindDebt(ctx, repository.RemindInput{GroupID: groupID.String(), CallerUserID: creditorUser.String(), DebtID: debt2.String(), IdempotencyKey: "remind-2", RequestHash: "remind-hash-2"})
+	var reminderPayload map[string]string
+	reminder, err := repo.RemindDebt(ctx, repository.RemindInput{GroupID: groupID.String(), CallerUserID: creditorUser.String(), DebtID: debt2.String(), IdempotencyKey: "remind-2", RequestHash: "remind-hash-2", BeforeCommit: func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		reminderPayload = data
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reminder.ReminderCount != 1 {
 		t.Fatalf("reminder count=%d", reminder.ReminderCount)
+	}
+	if reminderPayload["group_id"] != groupID.String() || reminderPayload["debt_id"] != debt2.String() {
+		t.Fatalf("unexpected reminder notification payload: %v", reminderPayload)
 	}
 	var paymentPointer *uuid.UUID
 	if err = pool.QueryRow(ctx, `SELECT status::text,payment_id FROM debts WHERE id=$1`, debt2).Scan(&debtStatus, &paymentPointer); err != nil {
@@ -201,7 +269,12 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	automatedNotifications := 0
-	automatedNotify := func(context.Context, repository.Executor, []string) error { automatedNotifications++; return nil }
+	var automatedPayload map[string]string
+	automatedNotify := func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		automatedNotifications++
+		automatedPayload = data
+		return nil
+	}
 	if err = repo.ProcessAutomatedReminders(ctx, time.Now().Add(-72*time.Hour), 3, automatedNotify); err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +286,9 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	}
 	if finalCount != 2 || automatedNotifications != 1 {
 		t.Fatalf("automated reminder count=%d notifications=%d", finalCount, automatedNotifications)
+	}
+	if automatedPayload["group_id"] != groupID.String() || automatedPayload["debt_id"] != debt2.String() {
+		t.Fatalf("unexpected automated reminder payload: %v", automatedPayload)
 	}
 
 	payment3, _, err := repo.CreatePayment(ctx, repository.CreatePaymentInput{GroupID: groupID.String(), CallerUserID: payerUser.String(), CreditorMemberID: creditorMember.String(), DebtIDs: []string{debt2.String()}, IdempotencyKey: "create-3", RequestHash: "create-hash-3"})
@@ -231,7 +307,12 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	stalledNotifications := 0
-	stalledNotify := func(context.Context, repository.Executor, []string) error { stalledNotifications++; return nil }
+	var stalledPayload map[string]string
+	stalledNotify := func(_ context.Context, _ repository.Executor, _ []string, data map[string]string) error {
+		stalledNotifications++
+		stalledPayload = data
+		return nil
+	}
 	if err = repo.ProcessStalledPayments(ctx, time.Now().Add(-48*time.Hour), stalledNotify); err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +325,9 @@ func TestSettlementPaymentLifecyclePostgres(t *testing.T) {
 	}
 	if stalledAt == nil || stalledNotifications != 1 {
 		t.Fatalf("stalled_at=%v notifications=%d", stalledAt, stalledNotifications)
+	}
+	if stalledPayload["group_id"] != groupID.String() || stalledPayload["payment_id"] != payment3.ID {
+		t.Fatalf("unexpected stalled payment payload: %v", stalledPayload)
 	}
 
 	// covers: AC-11, expired idempotency records are removed by the cleanup operation.
@@ -376,12 +460,59 @@ func TestSettlementQueuesMediaCleanupUsingSharedSchema(t *testing.T) {
 	if err := New(pool).QueueMediaCleanup(ctx, objectKey, "proof submission compensation"); err != nil {
 		t.Fatal(err)
 	}
-	var provider, storedKey string
+	var provider, storedKey, reason string
 	var completedAt *time.Time
-	if err := pool.QueryRow(ctx, `SELECT provider,object_key,completed_at FROM media_cleanup_jobs WHERE provider='cloudinary' AND object_key=$1`, objectKey).Scan(&provider, &storedKey, &completedAt); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT provider,object_key,reason,completed_at FROM media_cleanup_jobs WHERE provider='cloudinary' AND object_key=$1`, objectKey).Scan(&provider, &storedKey, &reason, &completedAt); err != nil {
 		t.Fatal(err)
 	}
-	if provider != "cloudinary" || storedKey != objectKey || completedAt != nil {
-		t.Fatalf("unexpected cleanup job: provider=%s key=%s completed_at=%v", provider, storedKey, completedAt)
+	if provider != "cloudinary" || storedKey != objectKey || reason != "proof submission compensation" || completedAt != nil {
+		t.Fatalf("unexpected cleanup job: provider=%s key=%s reason=%s completed_at=%v", provider, storedKey, reason, completedAt)
+	}
+	var deleted string
+	if err := New(pool).ProcessMediaCleanup(ctx, func(_ context.Context, key string) error {
+		deleted = key
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT completed_at FROM media_cleanup_jobs WHERE provider='cloudinary' AND object_key=$1`, objectKey).Scan(&completedAt); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != objectKey || completedAt == nil {
+		t.Fatalf("cleanup deleted=%q completed_at=%v", deleted, completedAt)
+	}
+}
+
+func TestSettlementMediaCleanupRetriesPastAttemptLimitAndRecordsFailure(t *testing.T) {
+	pool := settlementTestPool(t)
+	ctx := context.Background()
+	objectKey := fmt.Sprintf("payments/debug/proofs/retry-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM media_cleanup_jobs WHERE provider='cloudinary' AND object_key=$1`, objectKey)
+	})
+	if _, err := pool.Exec(ctx, `INSERT INTO media_cleanup_jobs(provider,object_key,reason,attempt_count,next_attempt_at) VALUES('cloudinary',$1,'retry test',10,now())`, objectKey); err != nil {
+		t.Fatal(err)
+	}
+	deleteCalls, failureCalls := 0, 0
+	err := New(pool).ProcessMediaCleanup(ctx, func(context.Context, string) error {
+		deleteCalls++
+		return errors.New("cloudinary unavailable")
+	}, func(reason string) {
+		if reason != "delete_failed" {
+			t.Fatalf("failure reason=%q", reason)
+		}
+		failureCalls++
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts int
+	var lastError string
+	var nextAttempt time.Time
+	if err = pool.QueryRow(ctx, `SELECT attempt_count,last_error_code,next_attempt_at FROM media_cleanup_jobs WHERE provider='cloudinary' AND object_key=$1`, objectKey).Scan(&attempts, &lastError, &nextAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if deleteCalls != 1 || failureCalls != 1 || attempts != 10 || lastError == "" || !nextAttempt.After(time.Now()) {
+		t.Fatalf("delete=%d metric=%d attempts=%d last_error=%q next=%s", deleteCalls, failureCalls, attempts, lastError, nextAttempt)
 	}
 }

@@ -44,8 +44,8 @@ func (q *Queries) GetActiveSettlementMembership(ctx context.Context, arg GetActi
 
 const getCallerDebtTotals = `-- name: GetCallerDebtTotals :one
 SELECT
-    COALESCE(SUM(amount) FILTER (WHERE debtor_member_id = $2 AND status NOT IN ('settled', 'voided')), 0)::bigint AS payable,
-    COALESCE(SUM(amount) FILTER (WHERE creditor_member_id = $2 AND status NOT IN ('settled', 'voided')), 0)::bigint AS receivable
+    COALESCE(SUM(amount) FILTER (WHERE debtor_member_id = $2 AND status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS payable,
+    COALESCE(SUM(amount) FILTER (WHERE creditor_member_id = $2 AND status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS receivable
 FROM debts WHERE group_id = $1
 `
 
@@ -70,7 +70,7 @@ const getDebtMatrix = `-- name: GetDebtMatrix :many
 WITH directional AS (
     SELECT debtor_member_id, creditor_member_id, SUM(amount)::bigint AS amount, COUNT(*)::bigint AS debt_count
     FROM debts
-    WHERE group_id = $1 AND status NOT IN ('settled', 'voided')
+    WHERE group_id = $1 AND status IN ('awaiting', 'pending_confirmation')
     GROUP BY debtor_member_id, creditor_member_id
 ), pairs AS (
     SELECT LEAST(debtor_member_id, creditor_member_id) AS left_id,
@@ -121,9 +121,9 @@ func (q *Queries) GetDebtMatrix(ctx context.Context, groupID pgtype.UUID) ([]Get
 
 const getExpenseSummary = `-- name: GetExpenseSummary :one
 SELECT
-    COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status NOT IN ('settled', 'voided')), 0)::bigint AS total_owed,
+    COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS total_owed,
     COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status = 'settled'), 0)::bigint AS total_settled,
-    COALESCE(SUM(d.amount) FILTER (WHERE d.creditor_member_id = $2 AND d.status NOT IN ('settled', 'voided')), 0)::bigint AS total_receivable,
+    COALESCE(SUM(d.amount) FILTER (WHERE d.creditor_member_id = $2 AND d.status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS total_receivable,
     COALESCE((SELECT v.net_balance FROM v_member_balances v WHERE v.group_id = $1 AND v.member_id = $2), 0)::bigint AS net_balance
 FROM debts d WHERE d.group_id = $1
 `
@@ -150,121 +150,6 @@ func (q *Queries) GetExpenseSummary(ctx context.Context, arg GetExpenseSummaryPa
 		&i.NetBalance,
 	)
 	return i, err
-}
-
-const getPaymentRow = `-- name: GetPaymentRow :one
-SELECT p.id, p.group_id, p.debtor_member_id, p.creditor_member_id, p.amount, p.reference_code, p.qr_payload, p.image_object_key, p.note, p.rejection_reason, p.created_at, p.submitted_at, p.confirmed_at, p.rejected_at, p.updated_at, p.status, p.recipient_bank_code, p.recipient_bank_name, p.recipient_account_number, p.recipient_account_holder, p.stalled_alerted_at, debtor.user_id AS debtor_user_id, creditor.user_id AS creditor_user_id,
-       creditor_user.default_bank_code, creditor_user.default_bank_account_number,
-       creditor_user.default_bank_account_holder
-FROM payments p
-JOIN group_members debtor ON debtor.id = p.debtor_member_id AND debtor.group_id = p.group_id
-JOIN group_members creditor ON creditor.id = p.creditor_member_id AND creditor.group_id = p.group_id
-JOIN users creditor_user ON creditor_user.id = creditor.user_id
-WHERE p.id = $1 AND p.group_id = $2
-`
-
-type GetPaymentRowParams struct {
-	ID      pgtype.UUID `json:"id"`
-	GroupID pgtype.UUID `json:"group_id"`
-}
-
-type GetPaymentRowRow struct {
-	ID                       pgtype.UUID        `json:"id"`
-	GroupID                  pgtype.UUID        `json:"group_id"`
-	DebtorMemberID           pgtype.UUID        `json:"debtor_member_id"`
-	CreditorMemberID         pgtype.UUID        `json:"creditor_member_id"`
-	Amount                   int64              `json:"amount"`
-	ReferenceCode            string             `json:"reference_code"`
-	QrPayload                pgtype.Text        `json:"qr_payload"`
-	ImageObjectKey           pgtype.Text        `json:"image_object_key"`
-	Note                     pgtype.Text        `json:"note"`
-	RejectionReason          pgtype.Text        `json:"rejection_reason"`
-	CreatedAt                pgtype.Timestamptz `json:"created_at"`
-	SubmittedAt              pgtype.Timestamptz `json:"submitted_at"`
-	ConfirmedAt              pgtype.Timestamptz `json:"confirmed_at"`
-	RejectedAt               pgtype.Timestamptz `json:"rejected_at"`
-	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
-	Status                   interface{}        `json:"status"`
-	RecipientBankCode        pgtype.Text        `json:"recipient_bank_code"`
-	RecipientBankName        pgtype.Text        `json:"recipient_bank_name"`
-	RecipientAccountNumber   pgtype.Text        `json:"recipient_account_number"`
-	RecipientAccountHolder   pgtype.Text        `json:"recipient_account_holder"`
-	StalledAlertedAt         pgtype.Timestamptz `json:"stalled_alerted_at"`
-	DebtorUserID             pgtype.UUID        `json:"debtor_user_id"`
-	CreditorUserID           pgtype.UUID        `json:"creditor_user_id"`
-	DefaultBankCode          pgtype.Text        `json:"default_bank_code"`
-	DefaultBankAccountNumber pgtype.Text        `json:"default_bank_account_number"`
-	DefaultBankAccountHolder pgtype.Text        `json:"default_bank_account_holder"`
-}
-
-func (q *Queries) GetPaymentRow(ctx context.Context, arg GetPaymentRowParams) (GetPaymentRowRow, error) {
-	row := q.db.QueryRow(ctx, getPaymentRow, arg.ID, arg.GroupID)
-	var i GetPaymentRowRow
-	err := row.Scan(
-		&i.ID,
-		&i.GroupID,
-		&i.DebtorMemberID,
-		&i.CreditorMemberID,
-		&i.Amount,
-		&i.ReferenceCode,
-		&i.QrPayload,
-		&i.ImageObjectKey,
-		&i.Note,
-		&i.RejectionReason,
-		&i.CreatedAt,
-		&i.SubmittedAt,
-		&i.ConfirmedAt,
-		&i.RejectedAt,
-		&i.UpdatedAt,
-		&i.Status,
-		&i.RecipientBankCode,
-		&i.RecipientBankName,
-		&i.RecipientAccountNumber,
-		&i.RecipientAccountHolder,
-		&i.StalledAlertedAt,
-		&i.DebtorUserID,
-		&i.CreditorUserID,
-		&i.DefaultBankCode,
-		&i.DefaultBankAccountNumber,
-		&i.DefaultBankAccountHolder,
-	)
-	return i, err
-}
-
-const listAutomatedReminderCandidates = `-- name: ListAutomatedReminderCandidates :many
-SELECT id, group_id FROM debts
-WHERE status = 'awaiting' AND created_at <= $1 AND reminder_count < $2
-ORDER BY id LIMIT 100
-`
-
-type ListAutomatedReminderCandidatesParams struct {
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ReminderCount int32              `json:"reminder_count"`
-}
-
-type ListAutomatedReminderCandidatesRow struct {
-	ID      pgtype.UUID `json:"id"`
-	GroupID pgtype.UUID `json:"group_id"`
-}
-
-func (q *Queries) ListAutomatedReminderCandidates(ctx context.Context, arg ListAutomatedReminderCandidatesParams) ([]ListAutomatedReminderCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listAutomatedReminderCandidates, arg.CreatedAt, arg.ReminderCount)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAutomatedReminderCandidatesRow
-	for rows.Next() {
-		var i ListAutomatedReminderCandidatesRow
-		if err := rows.Scan(&i.ID, &i.GroupID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listDebtRows = `-- name: ListDebtRows :many
@@ -479,61 +364,6 @@ func (q *Queries) ListExpenseRows(ctx context.Context, arg ListExpenseRowsParams
 			&i.DebtStatus,
 			&i.CreatedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPaymentDebtIDs = `-- name: ListPaymentDebtIDs :many
-SELECT debt_id FROM payment_debts WHERE payment_id = $1 ORDER BY debt_id
-`
-
-func (q *Queries) ListPaymentDebtIDs(ctx context.Context, paymentID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listPaymentDebtIDs, paymentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []pgtype.UUID
-	for rows.Next() {
-		var debt_id pgtype.UUID
-		if err := rows.Scan(&debt_id); err != nil {
-			return nil, err
-		}
-		items = append(items, debt_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listStalledPaymentCandidates = `-- name: ListStalledPaymentCandidates :many
-SELECT id, group_id FROM payments
-WHERE status = 'pending_confirmation' AND submitted_at <= $1
-ORDER BY id LIMIT 100
-`
-
-type ListStalledPaymentCandidatesRow struct {
-	ID      pgtype.UUID `json:"id"`
-	GroupID pgtype.UUID `json:"group_id"`
-}
-
-func (q *Queries) ListStalledPaymentCandidates(ctx context.Context, submittedAt pgtype.Timestamptz) ([]ListStalledPaymentCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listStalledPaymentCandidates, submittedAt)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListStalledPaymentCandidatesRow
-	for rows.Next() {
-		var i ListStalledPaymentCandidatesRow
-		if err := rows.Scan(&i.ID, &i.GroupID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

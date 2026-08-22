@@ -64,3 +64,26 @@ func TestBillStorage_SignedURL_EmptyPublicID(t *testing.T) {
 		t.Fatal("expected error for empty publicID")
 	}
 }
+
+func TestProofStorage_SignedURLUsesWebP(t *testing.T) {
+	storage, err := NewProofStorage(config.CloudinaryConfig{
+		CloudName: "test-cloud",
+		APIKey:    "test-key",
+		APISecret: "test-secret",
+	}, time.Second)
+	if err != nil {
+		t.Fatalf("NewProofStorage() error = %v", err)
+	}
+
+	signedURL, err := storage.SignedURL("payments/payment/proofs/operation", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("SignedURL() error = %v", err)
+	}
+	parsed, err := url.Parse(signedURL)
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	if got := parsed.Query().Get("format"); got != "webp" {
+		t.Fatalf("format=%q, want webp", got)
+	}
+}

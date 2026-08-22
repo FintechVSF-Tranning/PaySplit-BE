@@ -184,6 +184,7 @@ type MediaCleanupJob struct {
 	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Reason        string             `json:"reason"`
 }
 
 type Notification struct {

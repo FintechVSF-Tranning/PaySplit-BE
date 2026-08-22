@@ -25,3 +25,9 @@ func TestGeneratorRejectsInvalidInput(t *testing.T) {
 		t.Fatal("expected invalid input error")
 	}
 }
+
+func TestGeneratorRejectsTLVValuesOver99Bytes(t *testing.T) {
+	if _, _, err := New("", "").Build("970436", strings.Repeat("1", 100), "A", "PAYABCDEFGH", 1); err == nil {
+		t.Fatal("expected oversized TLV error")
+	}
+}

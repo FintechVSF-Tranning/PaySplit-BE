@@ -9,6 +9,8 @@ import (
 
 type Executor interface{}
 
+type BeforeCommit func(context.Context, Executor, []string, map[string]string) error
+
 type ListInput struct {
 	GroupID      string
 	CallerUserID string
@@ -32,7 +34,7 @@ type CreatePaymentInput struct {
 	RequestHash      string
 	ReferenceCode    string
 	QRPayload        string
-	BeforeCommit     func(context.Context, Executor, []string) error
+	BeforeCommit     BeforeCommit
 }
 
 type SubmitProofInput struct {
@@ -44,7 +46,7 @@ type SubmitProofInput struct {
 	IdempotencyKey string
 	RequestHash    string
 	OperationID    string
-	BeforeCommit   func(context.Context, Executor, []string) error
+	BeforeCommit   BeforeCommit
 }
 
 type PaymentMutationInput struct {
@@ -54,7 +56,7 @@ type PaymentMutationInput struct {
 	Reason         *string
 	IdempotencyKey string
 	RequestHash    string
-	BeforeCommit   func(context.Context, Executor, []string) error
+	BeforeCommit   BeforeCommit
 }
 
 type RemindInput struct {
@@ -63,7 +65,8 @@ type RemindInput struct {
 	DebtID         string
 	IdempotencyKey string
 	RequestHash    string
-	BeforeCommit   func(context.Context, Executor, []string) error
+	MaxCount       int32
+	BeforeCommit   BeforeCommit
 }
 
 type Repository interface {
@@ -72,13 +75,14 @@ type Repository interface {
 	CreatePayment(context.Context, CreatePaymentInput) (*domain.Payment, bool, error)
 	GetPayment(context.Context, string, string, string) (*domain.Payment, error)
 	PrepareProof(context.Context, string, string, string, string, string) (string, *domain.Payment, error)
+	ResetProofAttempt(context.Context, string, string, string, string, bool) error
 	SubmitProof(context.Context, SubmitProofInput) (*domain.Payment, error)
 	QueueMediaCleanup(context.Context, string, string) error
 	ConfirmPayment(context.Context, PaymentMutationInput) (*domain.Payment, []string, error)
 	RejectPayment(context.Context, PaymentMutationInput) (*domain.Payment, []string, error)
 	RemindDebt(context.Context, RemindInput) (*domain.ReminderResult, error)
-	ProcessAutomatedReminders(context.Context, time.Time, int, func(context.Context, Executor, []string) error) error
-	ProcessStalledPayments(context.Context, time.Time, func(context.Context, Executor, []string) error) error
+	ProcessAutomatedReminders(context.Context, time.Time, int, BeforeCommit) error
+	ProcessStalledPayments(context.Context, time.Time, BeforeCommit) error
 	DeleteExpiredIdempotency(context.Context) error
-	ProcessMediaCleanup(context.Context, func(context.Context, string) error) error
+	ProcessMediaCleanup(context.Context, func(context.Context, string) error, func(string)) error
 }

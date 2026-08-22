@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS payment_debts (
         REFERENCES debts(id, group_id, debtor_member_id, creditor_member_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_payment_debts_debt ON payment_debts(debt_id, payment_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_payments_pending_proof_pair
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_payments_pending_proof_pair
     ON payments(group_id, debtor_member_id, creditor_member_id)
     WHERE status = 'pending_proof';
 
@@ -120,20 +120,6 @@ CREATE TABLE IF NOT EXISTS payment_idempotency_keys (
 
 CREATE INDEX IF NOT EXISTS idx_payment_idempotency_keys_expiry ON payment_idempotency_keys(expires_at);
 
-CREATE TABLE IF NOT EXISTS media_cleanup_jobs (
-    id UUID PRIMARY KEY DEFAULT uuidv7(),
-    provider TEXT NOT NULL,
-    object_key TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    attempt_count INT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    last_error TEXT,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_media_cleanup_jobs_active_object
-    ON media_cleanup_jobs(provider, object_key) WHERE completed_at IS NULL;
-
 CREATE OR REPLACE VIEW v_member_balances AS
 SELECT m.group_id,
        m.id AS member_id,
@@ -141,29 +127,28 @@ SELECT m.group_id,
 FROM group_members m
 LEFT JOIN (
     SELECT creditor_member_id AS mid, SUM(amount) AS total
-    FROM debts WHERE status NOT IN ('settled', 'voided') GROUP BY 1
+    FROM debts WHERE status IN ('awaiting', 'pending_confirmation') GROUP BY 1
 ) cr ON cr.mid = m.id
 LEFT JOIN (
     SELECT debtor_member_id AS mid, SUM(amount) AS total
-    FROM debts WHERE status NOT IN ('settled', 'voided') GROUP BY 1
+    FROM debts WHERE status IN ('awaiting', 'pending_confirmation') GROUP BY 1
 ) dr ON dr.mid = m.id;
 
-CREATE INDEX IF NOT EXISTS idx_debts_group_status
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_debts_group_status
     ON debts(group_id, status, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_debts_debtor_status
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_debts_debtor_status
     ON debts(group_id, debtor_member_id, status, created_at DESC, id DESC) INCLUDE (amount, creditor_member_id);
-CREATE INDEX IF NOT EXISTS idx_debts_creditor_status
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_debts_creditor_status
     ON debts(group_id, creditor_member_id, status, created_at DESC, id DESC) INCLUDE (amount, debtor_member_id);
-CREATE INDEX IF NOT EXISTS idx_debts_reminders
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_debts_reminders
     ON debts(status, created_at, last_reminded_at) WHERE status = 'awaiting' AND reminder_count < 3;
-CREATE INDEX IF NOT EXISTS idx_payments_group_status
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_payments_group_status
     ON payments(group_id, status, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_payments_stalled_confirmation
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_payments_stalled_confirmation
     ON payments(status, submitted_at) WHERE status = 'pending_confirmation' AND stalled_alerted_at IS NULL;
 
 -- +goose Down
 
-DROP TABLE IF EXISTS media_cleanup_jobs;
 DROP TABLE IF EXISTS payment_idempotency_keys;
 DROP TABLE IF EXISTS payment_debts;
 DROP INDEX IF EXISTS uq_payments_pending_proof_pair;

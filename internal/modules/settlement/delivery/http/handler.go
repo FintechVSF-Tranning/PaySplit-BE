@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -20,16 +21,20 @@ import (
 type Handler struct {
 	service   *usecase.Service
 	avatarURL func(string) string
+	proofMax  int64
 }
 
-func NewHandler(service *usecase.Service, avatarURL func(string) string) *Handler {
+func NewHandler(service *usecase.Service, avatarURL func(string) string, proofMax int64) *Handler {
 	if service == nil {
 		panic("settlement handler service must not be nil")
 	}
 	if avatarURL == nil {
 		avatarURL = func(string) string { return "" }
 	}
-	return &Handler{service: service, avatarURL: avatarURL}
+	if proofMax <= 0 {
+		panic("settlement proof maximum must be positive")
+	}
+	return &Handler{service: service, avatarURL: avatarURL, proofMax: proofMax}
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router, auth func(http.Handler) http.Handler) {
@@ -123,7 +128,7 @@ func (h *Handler) GetPayment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SubmitProof(w http.ResponseWriter, r *http.Request) {
-	const max = 10 << 20
+	max := h.proofMax
 	r.Body = http.MaxBytesReader(w, r.Body, max+(1<<20))
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -159,14 +164,21 @@ func (h *Handler) SubmitProof(w http.ResponseWriter, r *http.Request) {
 			}
 			raw, e := io.ReadAll(io.LimitReader(part, 2001))
 			err = e
+			if len(raw) > 2000 || !utf8.Valid(raw) {
+				err = errors.New("proof note exceeds 500 UTF-8 characters")
+			}
 			value := string(raw)
 			note = &value
 		default:
 			err = errors.New("unexpected multipart field")
 		}
 		part.Close()
-		if err != nil || len(image) > max {
+		if err != nil {
 			writeError(w, domain.ErrInvalidInput)
+			return
+		}
+		if int64(len(image)) > max {
+			writeError(w, domain.ErrInvalidImage)
 			return
 		}
 	}
@@ -174,6 +186,7 @@ func (h *Handler) SubmitProof(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+	contentType = usecase.DetectProofContentType(image)
 	userID, _ := authmw.UserID(r.Context())
 	payment, err := h.service.SubmitProof(r.Context(), usecase.SubmitProofInput{GroupID: chi.URLParam(r, "groupId"), CallerUserID: userID, PaymentID: chi.URLParam(r, "paymentId"), IdempotencyKey: r.Header.Get("Idempotency-Key"), ContentType: contentType, Image: image, Note: note})
 	recordOperation("submit_proof", err)

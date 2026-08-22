@@ -54,9 +54,9 @@ ORDER BY b.created_at DESC, b.id DESC, bi.position, bi.id
 
 -- name: GetExpenseSummary :one
 SELECT
-    COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status NOT IN ('settled', 'voided')), 0)::bigint AS total_owed,
+    COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS total_owed,
     COALESCE(SUM(d.amount) FILTER (WHERE d.debtor_member_id = $2 AND d.status = 'settled'), 0)::bigint AS total_settled,
-    COALESCE(SUM(d.amount) FILTER (WHERE d.creditor_member_id = $2 AND d.status NOT IN ('settled', 'voided')), 0)::bigint AS total_receivable,
+    COALESCE(SUM(d.amount) FILTER (WHERE d.creditor_member_id = $2 AND d.status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS total_receivable,
     COALESCE((SELECT v.net_balance FROM v_member_balances v WHERE v.group_id = $1 AND v.member_id = $2), 0)::bigint AS net_balance
 FROM debts d WHERE d.group_id = $1;
 
@@ -81,15 +81,15 @@ LIMIT $2;
 
 -- name: GetCallerDebtTotals :one
 SELECT
-    COALESCE(SUM(amount) FILTER (WHERE debtor_member_id = $2 AND status NOT IN ('settled', 'voided')), 0)::bigint AS payable,
-    COALESCE(SUM(amount) FILTER (WHERE creditor_member_id = $2 AND status NOT IN ('settled', 'voided')), 0)::bigint AS receivable
+    COALESCE(SUM(amount) FILTER (WHERE debtor_member_id = $2 AND status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS payable,
+    COALESCE(SUM(amount) FILTER (WHERE creditor_member_id = $2 AND status IN ('awaiting', 'pending_confirmation')), 0)::bigint AS receivable
 FROM debts WHERE group_id = $1;
 
 -- name: GetDebtMatrix :many
 WITH directional AS (
     SELECT debtor_member_id, creditor_member_id, SUM(amount)::bigint AS amount, COUNT(*)::bigint AS debt_count
     FROM debts
-    WHERE group_id = $1 AND status NOT IN ('settled', 'voided')
+    WHERE group_id = $1 AND status IN ('awaiting', 'pending_confirmation')
     GROUP BY debtor_member_id, creditor_member_id
 ), pairs AS (
     SELECT LEAST(debtor_member_id, creditor_member_id) AS left_id,
@@ -104,26 +104,3 @@ SELECT (CASE WHEN net > 0 THEN left_id ELSE right_id END)::uuid AS debtor_member
        debt_count
 FROM pairs WHERE net <> 0
 ORDER BY debtor_member_id, creditor_member_id;
-
--- name: GetPaymentRow :one
-SELECT p.*, debtor.user_id AS debtor_user_id, creditor.user_id AS creditor_user_id,
-       creditor_user.default_bank_code, creditor_user.default_bank_account_number,
-       creditor_user.default_bank_account_holder
-FROM payments p
-JOIN group_members debtor ON debtor.id = p.debtor_member_id AND debtor.group_id = p.group_id
-JOIN group_members creditor ON creditor.id = p.creditor_member_id AND creditor.group_id = p.group_id
-JOIN users creditor_user ON creditor_user.id = creditor.user_id
-WHERE p.id = $1 AND p.group_id = $2;
-
--- name: ListPaymentDebtIDs :many
-SELECT debt_id FROM payment_debts WHERE payment_id = $1 ORDER BY debt_id;
-
--- name: ListAutomatedReminderCandidates :many
-SELECT id, group_id FROM debts
-WHERE status = 'awaiting' AND created_at <= $1 AND reminder_count < $2
-ORDER BY id LIMIT 100;
-
--- name: ListStalledPaymentCandidates :many
-SELECT id, group_id FROM payments
-WHERE status = 'pending_confirmation' AND submitted_at <= $1
-ORDER BY id LIMIT 100;

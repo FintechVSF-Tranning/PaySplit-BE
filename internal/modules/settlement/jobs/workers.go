@@ -55,7 +55,7 @@ func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) err
 		platformmetrics.RecordSettlementWorkerRun("cleanup", "error")
 		return err
 	}
-	err := w.repo.ProcessMediaCleanup(ctx, w.storage.Delete)
+	err := w.repo.ProcessMediaCleanup(ctx, w.storage.Delete, platformmetrics.RecordMediaCleanupFailure)
 	if err != nil {
 		platformmetrics.RecordSettlementWorkerRun("cleanup", "error")
 	} else {

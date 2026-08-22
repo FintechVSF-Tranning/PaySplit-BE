@@ -1063,6 +1063,7 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
   /api/v1/groups/{groupId}/payments/{paymentId}:
     get:
       operationId: getPayment
@@ -1074,6 +1075,7 @@ paths:
         "200": {description: Payment detail, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
   /api/v1/groups/{groupId}/payments/{paymentId}/proof:
     post:
       operationId: submitPaymentProof
@@ -1094,7 +1096,9 @@ paths:
         "200": {description: Proof accepted, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
         "503": {description: Private storage unavailable}
   /api/v1/groups/{groupId}/payments/{paymentId}/confirm:
     post:
@@ -1171,6 +1175,9 @@ components:
     NotFound:
       description: Resource missing, or the caller is not authorized to see it
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    UnprocessableEntity:
+      description: The request is valid but required business data is incomplete
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     CaptainRequired:
       description: Caller is not the group's active Captain
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -1245,6 +1252,41 @@ components:
       type: object
       required: [debt_id, reminder_count, reminded_at]
       properties: {debt_id: {type: string, format: uuid}, reminder_count: {type: integer, minimum: 1, maximum: 3}, reminded_at: {type: string, format: date-time}}
+    ExpenseItem:
+      type: object
+      required: [item_name, quantity, unit_price, line_total, item_discount_amount, item_final_price, share_ratio, item_share]
+      properties:
+        item_name: {type: string}
+        quantity: {type: string}
+        unit_price: {type: string}
+        line_total: {type: string}
+        item_discount_amount: {type: string}
+        item_final_price: {type: string}
+        share_ratio: {type: string}
+        item_share: {type: string}
+    ExpenseAllocation:
+      type: object
+      required: [item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount]
+      properties:
+        item_subtotal: {type: string}
+        service_charge_share: {type: string}
+        vat_share: {type: string}
+        discount_share: {type: string}
+        rounding_adjustment: {type: string}
+        final_amount: {type: string}
+    ExpenseBill:
+      type: object
+      required: [bill_id, bill_date, merchant_name, creditor_member_id, creditor_display_name, debt_id, debt_status, allocation, items]
+      properties:
+        bill_id: {type: string, format: uuid}
+        bill_date: {type: string, format: date}
+        merchant_name: {type: string}
+        creditor_member_id: {type: string, format: uuid}
+        creditor_display_name: {type: string}
+        debt_id: {type: string, format: uuid, nullable: true}
+        debt_status: {type: string, enum: [awaiting, pending_confirmation, settled, voided], nullable: true}
+        allocation: {$ref: "#/components/schemas/ExpenseAllocation"}
+        items: {type: array, items: {$ref: "#/components/schemas/ExpenseItem"}}
     ExpensePage:
       type: object
       required: [summary, bills, next_cursor]
@@ -1253,14 +1295,42 @@ components:
           type: object
           required: [total_owed, total_settled, total_receivable, net_balance]
           properties: {total_owed: {type: string}, total_settled: {type: string}, total_receivable: {type: string}, net_balance: {type: string}}
-        bills: {type: array, items: {type: object}}
+        bills: {type: array, items: {$ref: "#/components/schemas/ExpenseBill"}}
         next_cursor: {type: string, nullable: true}
+    Debt:
+      type: object
+      required: [id, bill_id, bill_date, merchant_name, debtor_member_id, debtor_display_name, debtor_avatar_url, creditor_member_id, creditor_display_name, creditor_avatar_url, amount, status, reminder_count, payment_id, created_at, settled_at]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        bill_date: {type: string, format: date}
+        merchant_name: {type: string}
+        debtor_member_id: {type: string, format: uuid}
+        debtor_display_name: {type: string}
+        debtor_avatar_url: {type: string, format: uri, nullable: true}
+        creditor_member_id: {type: string, format: uuid}
+        creditor_display_name: {type: string}
+        creditor_avatar_url: {type: string, format: uri, nullable: true}
+        amount: {type: string}
+        status: {type: string, enum: [awaiting, pending_confirmation, settled, voided]}
+        reminder_count: {type: integer, minimum: 0, maximum: 3}
+        payment_id: {type: string, format: uuid, nullable: true}
+        created_at: {type: string, format: date-time}
+        settled_at: {type: string, format: date-time, nullable: true}
+    DebtMatrixEntry:
+      type: object
+      required: [debtor_member_id, creditor_member_id, total_amount, debt_count]
+      properties:
+        debtor_member_id: {type: string, format: uuid}
+        creditor_member_id: {type: string, format: uuid}
+        total_amount: {type: string}
+        debt_count: {type: integer, format: int64, minimum: 1}
     DebtPage:
       type: object
       required: [debts, net_matrix, caller_payable, caller_receivable, next_cursor]
       properties:
-        debts: {type: array, items: {type: object}}
-        net_matrix: {type: array, items: {type: object}}
+        debts: {type: array, items: {$ref: "#/components/schemas/Debt"}}
+        net_matrix: {type: array, items: {$ref: "#/components/schemas/DebtMatrixEntry"}}
         caller_payable: {type: string}
         caller_receivable: {type: string}
         next_cursor: {type: string, nullable: true}

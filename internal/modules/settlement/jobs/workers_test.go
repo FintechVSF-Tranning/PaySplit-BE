@@ -15,18 +15,18 @@ type workerRepository struct {
 	reminderFn func(time.Time, int) error
 	stalledFn  func(time.Time) error
 	cleanupErr error
-	mediaFn    func(func(context.Context, string) error) error
+	mediaFn    func(func(context.Context, string) error, func(string)) error
 }
 
-func (r *workerRepository) ProcessAutomatedReminders(_ context.Context, before time.Time, max int, _ func(context.Context, repository.Executor, []string) error) error {
+func (r *workerRepository) ProcessAutomatedReminders(_ context.Context, before time.Time, max int, _ repository.BeforeCommit) error {
 	return r.reminderFn(before, max)
 }
-func (r *workerRepository) ProcessStalledPayments(_ context.Context, before time.Time, _ func(context.Context, repository.Executor, []string) error) error {
+func (r *workerRepository) ProcessStalledPayments(_ context.Context, before time.Time, _ repository.BeforeCommit) error {
 	return r.stalledFn(before)
 }
 func (r *workerRepository) DeleteExpiredIdempotency(context.Context) error { return r.cleanupErr }
-func (r *workerRepository) ProcessMediaCleanup(_ context.Context, deleteFn func(context.Context, string) error) error {
-	return r.mediaFn(deleteFn)
+func (r *workerRepository) ProcessMediaCleanup(_ context.Context, deleteFn func(context.Context, string) error, recordFailure func(string)) error {
+	return r.mediaFn(deleteFn, recordFailure)
 }
 
 type cleanupStorageStub struct{ deleted string }
@@ -73,7 +73,7 @@ func TestScanWorker_AC10StopsWhenReminderClaimFails(t *testing.T) {
 
 func TestCleanupWorker_AC6AndAC11RunsExpiryBeforeExactMediaDelete(t *testing.T) {
 	storage := &cleanupStorageStub{}
-	repo := &workerRepository{mediaFn: func(deleteFn func(context.Context, string) error) error {
+	repo := &workerRepository{mediaFn: func(deleteFn func(context.Context, string) error, _ func(string)) error {
 		return deleteFn(context.Background(), "payments/payment/proofs/operation")
 	}}
 	if err := (&CleanupWorker{repo: repo, storage: storage}).Work(context.Background(), nil); err != nil {
@@ -87,7 +87,7 @@ func TestCleanupWorker_AC6AndAC11RunsExpiryBeforeExactMediaDelete(t *testing.T) 
 func TestCleanupWorker_AC11DoesNotProcessMediaWhenExpiryCleanupFails(t *testing.T) {
 	want := errors.New("cleanup failure")
 	mediaCalled := false
-	repo := &workerRepository{cleanupErr: want, mediaFn: func(func(context.Context, string) error) error { mediaCalled = true; return nil }}
+	repo := &workerRepository{cleanupErr: want, mediaFn: func(func(context.Context, string) error, func(string)) error { mediaCalled = true; return nil }}
 	err := (&CleanupWorker{repo: repo, storage: &cleanupStorageStub{}}).Work(context.Background(), nil)
 	if !errors.Is(err, want) || mediaCalled {
 		t.Fatalf("err=%v mediaCalled=%v", err, mediaCalled)

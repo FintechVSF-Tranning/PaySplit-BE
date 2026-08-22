@@ -493,8 +493,27 @@ func (c *Config) Validate() error {
 	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
 		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
 	}
-	if c.Settlement.VietQRServiceBaseURL != "" && (strings.TrimSpace(c.Settlement.VietQRTemplate) == "" || c.Settlement.ProofMaxBytes <= 0 || c.Settlement.ProofSignedURLTTL <= 0 || c.Settlement.ReminderStaleAge <= 0 || c.Settlement.ReminderMaxCount != 3 || c.Settlement.StalledConfirmationAge <= 0) {
-		return errors.New("settlement settings are invalid")
+	vietQRURL, err := url.ParseRequestURI(c.Settlement.VietQRServiceBaseURL)
+	if err != nil || (vietQRURL.Scheme != "http" && vietQRURL.Scheme != "https") || vietQRURL.Host == "" {
+		return errors.New("VIETQR_SERVICE_BASE_URL must be a valid HTTP(S) URL")
+	}
+	if strings.TrimSpace(c.Settlement.VietQRTemplate) == "" {
+		return errors.New("VIETQR_TEMPLATE must not be empty")
+	}
+	if c.Settlement.ProofMaxBytes <= 0 {
+		return errors.New("PAYMENT_PROOF_MAX_BYTES must be positive")
+	}
+	if c.Settlement.ProofSignedURLTTL <= 0 {
+		return errors.New("PAYMENT_PROOF_SIGNED_URL_TTL must be positive")
+	}
+	if c.Settlement.ReminderStaleAge <= 0 {
+		return errors.New("PAYMENT_REMINDER_STALE_HOURS must be positive")
+	}
+	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
+		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
+	}
+	if c.Settlement.StalledConfirmationAge <= 0 {
+		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
 	}
 	return nil
 }

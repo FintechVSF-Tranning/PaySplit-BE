@@ -40,6 +40,7 @@ type expenseBillResponse struct {
 func expensePageResponse(page *domain.ExpensePage) map[string]any {
 	bills := make([]expenseBillResponse, 0)
 	byID := make(map[string]int)
+	itemSubtotals := make(map[string]int64)
 	for _, row := range page.Items {
 		idx, ok := byID[row.BillID]
 		if !ok {
@@ -55,8 +56,8 @@ func expensePageResponse(page *domain.ExpensePage) map[string]any {
 				Allocation: allocationResponse{"0", strconv.FormatInt(row.ServiceChargeShare, 10), strconv.FormatInt(row.VATShare, 10), strconv.FormatInt(row.DiscountShare, 10), strconv.FormatInt(row.RoundingAdjustment, 10), strconv.FormatInt(row.FinalAmount, 10)}, Items: []expenseItemResponse{}})
 		}
 		bills[idx].Items = append(bills[idx].Items, expenseItemResponse{row.ItemName, row.Quantity, strconv.FormatInt(row.UnitPrice, 10), strconv.FormatInt(row.LineTotal, 10), strconv.FormatInt(row.ItemDiscountAmount, 10), strconv.FormatInt(row.ItemFinalPrice, 10), row.ShareRatio, strconv.FormatInt(row.ItemShare, 10)})
-		current, _ := strconv.ParseInt(bills[idx].Allocation.ItemSubtotal, 10, 64)
-		bills[idx].Allocation.ItemSubtotal = strconv.FormatInt(current+row.ItemShare, 10)
+		itemSubtotals[row.BillID] += row.ItemShare
+		bills[idx].Allocation.ItemSubtotal = strconv.FormatInt(itemSubtotals[row.BillID], 10)
 	}
 	return map[string]any{"summary": map[string]string{"total_owed": strconv.FormatInt(page.Summary.TotalOwed, 10), "total_settled": strconv.FormatInt(page.Summary.TotalSettled, 10), "total_receivable": strconv.FormatInt(page.Summary.TotalReceivable, 10), "net_balance": strconv.FormatInt(page.Summary.NetBalance, 10)}, "bills": bills, "next_cursor": page.NextCursor}
 }
@@ -112,5 +113,9 @@ func paymentResponse(p *domain.Payment) map[string]any {
 		}
 		return v
 	}
-	return map[string]any{"id": p.ID, "group_id": p.GroupID, "debtor_member_id": p.DebtorMemberID, "creditor_member_id": p.CreditorMemberID, "amount": strconv.FormatInt(p.Amount, 10), "reference_code": p.ReferenceCode, "status": p.Status, "qr_payload": nullable(p.QRPayload), "qr_image_url": nullable(p.QRImageURL), "recipient": recipient, "image_url": p.ImageURL, "note": p.Note, "rejection_reason": p.RejectionReason, "covered_debt_ids": p.CoveredDebtIDs, "created_at": p.CreatedAt, "submitted_at": p.SubmittedAt, "confirmed_at": p.ConfirmedAt, "rejected_at": p.RejectedAt}
+	coveredDebtIDs := p.CoveredDebtIDs
+	if coveredDebtIDs == nil {
+		coveredDebtIDs = []string{}
+	}
+	return map[string]any{"id": p.ID, "group_id": p.GroupID, "debtor_member_id": p.DebtorMemberID, "creditor_member_id": p.CreditorMemberID, "amount": strconv.FormatInt(p.Amount, 10), "reference_code": p.ReferenceCode, "status": p.Status, "qr_payload": nullable(p.QRPayload), "qr_image_url": nullable(p.QRImageURL), "recipient": recipient, "image_url": p.ImageURL, "note": p.Note, "rejection_reason": p.RejectionReason, "covered_debt_ids": coveredDebtIDs, "created_at": p.CreatedAt, "submitted_at": p.SubmittedAt, "confirmed_at": p.ConfirmedAt, "rejected_at": p.RejectedAt}
 }

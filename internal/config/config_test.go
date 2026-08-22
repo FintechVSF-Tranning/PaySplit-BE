@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,11 +99,26 @@ func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidSettlementConfiguration_AC6AndAC10(t *testing.T) {
+func TestValidateAcceptsConfiguredSettlementReminderMaximum_AC10(t *testing.T) {
 	cfg := validConfig()
 	cfg.Settlement = SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 2, StalledConfirmationAge: 48 * time.Hour}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected invalid reminder maximum error")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("configured reminder maximum rejected: %v", err)
+	}
+	for _, maxCount := range []int{0, 4} {
+		cfg.Settlement.ReminderMaxCount = maxCount
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected reminder maximum %d to be rejected", maxCount)
+		}
+	}
+}
+
+func TestValidateRejectsEmptySettlementBaseURLByVariableName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Settlement.VietQRServiceBaseURL = ""
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "VIETQR_SERVICE_BASE_URL") {
+		t.Fatalf("Validate() error = %v, want named settlement URL error", err)
 	}
 }
 
@@ -120,5 +136,6 @@ func validConfig() *Config {
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
+		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3, StalledConfirmationAge: 48 * time.Hour},
 	}
 }

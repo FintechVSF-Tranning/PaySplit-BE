@@ -3,9 +3,10 @@ package usecase
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"net/http"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -30,17 +31,18 @@ type Service struct {
 	storage   ProofStorage
 	proofMax  int64
 	signedTTL time.Duration
+	remindMax int32
 	notifier  TxNotifier
 }
 
 func (s *Service) SetNotifier(notifier TxNotifier) { s.notifier = notifier }
-func (s *Service) notify(kind string) func(context.Context, repository.Executor, []string) error {
-	return func(ctx context.Context, ex repository.Executor, targets []string) error {
+func (s *Service) notify(kind string) repository.BeforeCommit {
+	return func(ctx context.Context, ex repository.Executor, targets []string, data map[string]string) error {
 		if s.notifier == nil {
 			return nil
 		}
 		for _, target := range targets {
-			if err := s.notifier.NotifyTx(ctx, ex, target, kind, map[string]string{"type": kind}); err != nil {
+			if err := s.notifier.NotifyTx(ctx, ex, target, kind, data); err != nil {
 				return err
 			}
 		}
@@ -52,7 +54,14 @@ func NewService(repo repository.Repository) *Service {
 	if repo == nil {
 		panic("settlement service repository must not be nil")
 	}
-	return &Service{repo: repo}
+	return &Service{repo: repo, remindMax: 3}
+}
+
+func (s *Service) SetReminderMaxCount(maxCount int) {
+	if maxCount < 1 || maxCount > 3 {
+		panic("settlement reminder maximum must be between 1 and 3")
+	}
+	s.remindMax = int32(maxCount)
 }
 
 func (s *Service) SetProofStorage(storage ProofStorage, maxBytes int64, signedTTL time.Duration) {
@@ -80,7 +89,7 @@ func (s *Service) GeneratePayment(ctx context.Context, in GeneratePaymentInput) 
 	}
 	ids := append([]string(nil), in.DebtIDs...)
 	seen := make(map[string]struct{}, len(ids))
-	for _, raw := range ids {
+	for index, raw := range ids {
 		id, e := uuid.Parse(raw)
 		if e != nil {
 			return nil, false, domain.ErrInvalidInput
@@ -90,6 +99,7 @@ func (s *Service) GeneratePayment(ctx context.Context, in GeneratePaymentInput) 
 			return nil, false, domain.ErrInvalidInput
 		}
 		seen[normalized] = struct{}{}
+		ids[index] = normalized
 	}
 	sort.Strings(ids)
 	canonical, _ := json.Marshal(map[string]any{"group_id": in.GroupID, "creditor_member_id": in.CreditorMemberID, "debt_ids": ids})
@@ -121,9 +131,6 @@ func (s *Service) SubmitProof(ctx context.Context, in SubmitProofInput) (*domain
 	if strings.TrimSpace(in.IdempotencyKey) == "" {
 		return nil, domain.ErrInvalidInput
 	}
-	if in.ContentType == "" && len(in.Image) > 0 {
-		in.ContentType = http.DetectContentType(in.Image)
-	}
 	if len(in.Image) == 0 || int64(len(in.Image)) > s.proofMax || !validProofImage(in.Image, in.ContentType) {
 		return nil, domain.ErrInvalidImage
 	}
@@ -149,14 +156,17 @@ func (s *Service) SubmitProof(ctx context.Context, in SubmitProofInput) (*domain
 	objectKey := "payments/" + in.PaymentID + "/proofs/" + operationID
 	uploaded, err := s.storage.Upload(ctx, in.Image, objectKey)
 	if err != nil {
-		return nil, domain.ErrStorageUnavailable
+		resetErr := s.repo.ResetProofAttempt(ctx, in.CallerUserID, in.IdempotencyKey, requestHashValue, operationID, false)
+		return nil, errors.Join(domain.ErrStorageUnavailable, resetErr)
 	}
 	payment, err := s.repo.SubmitProof(ctx, repository.SubmitProofInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, PaymentID: in.PaymentID, ObjectKey: uploaded, Note: in.Note, IdempotencyKey: in.IdempotencyKey, RequestHash: requestHashValue, OperationID: operationID, BeforeCommit: s.notify("payment_submitted")})
 	if err != nil {
+		var cleanupErr error
 		if deleteErr := s.storage.Delete(ctx, uploaded); deleteErr != nil {
-			_ = s.repo.QueueMediaCleanup(ctx, uploaded, "proof submission compensation")
+			cleanupErr = s.repo.QueueMediaCleanup(ctx, uploaded, "proof submission compensation")
 		}
-		return nil, err
+		resetErr := s.repo.ResetProofAttempt(ctx, in.CallerUserID, in.IdempotencyKey, requestHashValue, operationID, true)
+		return nil, errors.Join(err, cleanupErr, resetErr)
 	}
 	s.signProof(payment)
 	return payment, nil
@@ -173,16 +183,40 @@ func (s *Service) signProof(payment *domain.Payment) {
 
 func validProofImage(data []byte, contentType string) bool {
 	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if contentType == "image/jpeg" && len(data) >= 3 {
-		return data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff
+	if contentType == "image/heif" {
+		contentType = "image/heic"
 	}
-	if contentType == "image/png" && len(data) >= 8 {
-		return string(data[:8]) == "\x89PNG\r\n\x1a\n"
+	detected := DetectProofContentType(data)
+	if contentType == "" || contentType == "application/octet-stream" {
+		return detected != ""
 	}
-	if (contentType == "image/heic" || contentType == "image/heif") && len(data) >= 12 {
-		return string(data[4:8]) == "ftyp"
+	return contentType == detected
+}
+
+// DetectProofContentType validates file signatures independently of multipart headers.
+func DetectProofContentType(data []byte) string {
+	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
+		return "image/jpeg"
 	}
-	return false
+	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
+		return "image/png"
+	}
+	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
+		boxEnd := int(binary.BigEndian.Uint32(data[:4]))
+		if boxEnd == 0 {
+			boxEnd = len(data)
+		}
+		if boxEnd < 12 || boxEnd > len(data) {
+			return ""
+		}
+		for offset := 8; offset+4 <= boxEnd; offset += 4 {
+			switch string(data[offset : offset+4]) {
+			case "heic", "heix", "hevc", "hevx", "mif1", "msf1":
+				return "image/heic"
+			}
+		}
+	}
+	return ""
 }
 
 type PaymentMutationInput struct {
@@ -231,7 +265,7 @@ func (s *Service) RemindDebt(ctx context.Context, in RemindInput) (*domain.Remin
 	}
 	raw, _ := json.Marshal(map[string]string{"group_id": in.GroupID, "debt_id": in.DebtID})
 	sum := sha256.Sum256(raw)
-	return s.repo.RemindDebt(ctx, repository.RemindInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, DebtID: in.DebtID, IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(sum[:]), BeforeCommit: s.notify("debt_reminded")})
+	return s.repo.RemindDebt(ctx, repository.RemindInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, DebtID: in.DebtID, IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(sum[:]), MaxCount: s.remindMax, BeforeCommit: s.notify("debt_reminded")})
 }
 func (s *Service) ProcessAutomatedReminders(ctx context.Context, staleBefore time.Time, maxCount int) error {
 	return s.repo.ProcessAutomatedReminders(ctx, staleBefore, maxCount, s.notify("debt_reminded"))

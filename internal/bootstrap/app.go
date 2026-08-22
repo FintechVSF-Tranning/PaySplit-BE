@@ -167,14 +167,20 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("create bill storage: %w", err)
 	}
+	proofStorage, err := avatarstorage.NewProofStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create payment proof storage: %w", err)
+	}
 	qrGenerator := vietqr.New(cfg.Settlement.VietQRServiceBaseURL, cfg.Settlement.VietQRTemplate)
 	settlementRepo := settlementpostgres.NewWithPayments(db, func(code string) (settlementpostgres.BankInfo, bool) {
 		bank, ok := bankDirectory.Get(code)
 		return settlementpostgres.BankInfo{Code: bank.Code, Name: bank.Name, BIN: bank.BIN, Supported: bank.Supported}, ok
 	}, qrGenerator)
 	settlementService := settlementusecase.NewService(settlementRepo)
-	settlementService.SetProofStorage(billStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
-	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL)
+	settlementService.SetProofStorage(proofStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
+	settlementService.SetReminderMaxCount(cfg.Settlement.ReminderMaxCount)
+	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL, cfg.Settlement.ProofMaxBytes)
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
 	billHub := billhttp.NewHub(db)
@@ -186,7 +192,7 @@ func New(ctx context.Context) (*App, error) {
 	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
 	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
 	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays)
-	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, billStorage, cfg.Settlement.ReminderStaleAge, cfg.Settlement.StalledConfirmationAge, cfg.Settlement.ReminderMaxCount)
+	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, proofStorage, cfg.Settlement.ReminderStaleAge, cfg.Settlement.StalledConfirmationAge, cfg.Settlement.ReminderMaxCount)
 	periodicJobs := append(billPeriodicJobs, settlementPeriodicJobs...)
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{

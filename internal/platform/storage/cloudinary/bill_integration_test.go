@@ -1,7 +1,13 @@
 package cloudinary_test
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -72,11 +78,10 @@ func TestIntegration_CloudinaryBillStorage(t *testing.T) {
 	}()
 
 	// 2. Sinh Signed URL
-	signedURL, err := storage.SignedURL(uploadedID, 5*time.Minute)
+	_, err = storage.SignedURL(uploadedID, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("SignedURL() error = %v", err)
 	}
-	t.Logf("Generated 5-minute signed URL: %s", signedURL)
 
 	// 3. Download bytes
 	downloadedBytes, err := storage.Download(ctx, uploadedID)
@@ -93,4 +98,65 @@ func TestIntegration_CloudinaryBillStorage(t *testing.T) {
 		t.Fatalf("Delete() error = %v", err)
 	}
 	t.Logf("Deleted test receipt successfully!")
+}
+
+func TestIntegration_CloudinaryProofStorageConvertsPNGToWebP(t *testing.T) {
+	_ = godotenv.Load("../../../../.env")
+
+	cloudName := strings.TrimSpace(os.Getenv("CLOUDINARY_CLOUD_NAME"))
+	apiKey := strings.TrimSpace(os.Getenv("CLOUDINARY_API_KEY"))
+	apiSecret := strings.TrimSpace(os.Getenv("CLOUDINARY_API_SECRET"))
+	if cloudName == "" || apiKey == "" || apiSecret == "" || strings.HasPrefix(apiKey, "replace-") || strings.HasPrefix(cloudName, "replace-") {
+		t.Skip("Bỏ qua integration test: Cloudinary credentials chưa được cấu hình thực tế trong .env")
+	}
+
+	storage, err := cloudinary.NewProofStorage(config.CloudinaryConfig{
+		CloudName: cloudName,
+		APIKey:    apiKey,
+		APISecret: apiSecret,
+	}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewProofStorage() error = %v", err)
+	}
+
+	source := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	source.Set(0, 0, color.White)
+	source.Set(1, 0, color.Black)
+	var input bytes.Buffer
+	if err = png.Encode(&input, source); err != nil {
+		t.Fatalf("png.Encode() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	publicID := "payments/test-integration-payment/proofs/png-to-webp"
+	uploadedID, err := storage.Upload(ctx, input.Bytes(), publicID)
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	defer func() { _ = storage.Delete(context.Background(), uploadedID) }()
+
+	signedURL, err := storage.SignedURL(uploadedID, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("SignedURL() error = %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("download WebP proof: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download status=%d", resp.StatusCode)
+	}
+	output, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(output) < 12 || string(output[:4]) != "RIFF" || string(output[8:12]) != "WEBP" {
+		t.Fatalf("downloaded proof is not WebP, first bytes=%x", output)
+	}
 }

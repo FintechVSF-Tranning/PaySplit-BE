@@ -1,5 +1,13 @@
 # Verify: Split and settlement v1 · spec 0004
 
+## Latest verification evidence (2026-08-22)
+
+- Isolated database: `TEST_DATABASE_URL` points to `paysplit_test`; settlement integration tests skip when it is absent and never fall back to `DATABASE_URL`.
+- Migration: fresh `up` through `000010`, `down-to 8`, and `up` again all succeeded.
+- Automated gates: `go test -count=1 ./...` and `go test -race -count=1 ./...` passed, including PostgreSQL integration and real Cloudinary PNG-to-lossless-WebP coverage.
+- Real API on port 18080: readiness returned `ready/ok`; expenses returned one bill with `item_subtotal=125000`; debts returned payable `125000`; QR returned `201`, same-key replay `201`, exact-set replay `200`, and conflicting hash `IDEMPOTENCY_KEY_REUSED`; proof upload returned `pending_confirmation` with a signed URL; confirmation settled one debt and moved the summary from `125000 owed` to `125000 settled`.
+- Contract: `docs/openapi.yaml` parsed successfully after adding settlement `404`/`422` responses and concrete expense/debt schemas.
+
 ## API and runtime
 
 - [x] Start the real API with the project run command, confirm the health endpoint responds, and confirm migration `000009_split_settlement_v1.sql` is applied in the live PostgreSQL database. → AC-1 through AC-12
