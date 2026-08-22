@@ -62,7 +62,7 @@ Provide group creation, member shareable Base62 invites with Captain controlled 
 - [x] Verify it: `/check verify group management v1`
 - [x] Test it: `/test group management v1`
 - [x] Review it (fresh model): `/check review group management v1`
-- [ ] Document it: `/document group management v1`
+- [x] Document it: `/document group management v1`
 
 Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/modules/group/` and `internal/bootstrap/`
 
@@ -85,8 +85,8 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
   - [x] Manual edit preserves item level discount: `discount_amount` round trips through `POST /bills` and `PUT /bills/{id}`, plus the pre existing `CreateBill` discount composition bug fix (satisfies AC-19, AC-20, AC-21)
 - [x] Verify it: `/check verify bill and OCR v1`
 - [x] Test it: `/test bill and OCR v1`
-- [ ] Review it (fresh model): `/check review bill and OCR v1`
-- [ ] Document it: `/document bill and OCR v1`
+- [x] Review it (fresh model): `/check review bill and OCR v1`
+- [x] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
