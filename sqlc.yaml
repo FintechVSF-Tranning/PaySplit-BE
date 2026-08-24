@@ -10,3 +10,53 @@ sql:
         sql_package: "pgx/v5"
         emit_json_tags: true
         emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/group/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/group/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/notification/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/notification/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/bill/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/bill/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/admin/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/admin/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+  - engine: "postgresql"
+    queries: "./internal/modules/settlement/repository/postgres/queries"
+    schema: "./db/migrations"
+    gen:
+      go:
+        package: "sqlc"
+        out: "./internal/modules/settlement/repository/postgres/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true

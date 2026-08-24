@@ -1,18 +1,56 @@
 package config
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/joho/godotenv"
+)
+
+// Config chứa các thiết lập runtime đã được kiểm tra dùng để khởi tạo API.
 type Config struct {
-	App      AppConfig
-	Database DatabaseConfig
-	Auth     AuthConfig
+	App        AppConfig
+	Database   DatabaseConfig
+	Auth       AuthConfig
+	SMTP       SMTPConfig
+	Cloudinary CloudinaryConfig
+	Avatar     AvatarConfig
+	Cleanup    CleanupConfig
+	Firebase   FirebaseConfig
+	River      RiverConfig
+	Group      GroupConfig
+	OCR        OCRConfig
+	BillImage  BillImageConfig
+	BillSSE    BillSSEConfig
+	Metrics    MetricsConfig
+	Settlement SettlementConfig
 }
 
+// MetricsConfig chứa cấu hình Prometheus metrics scraper.
+type MetricsConfig struct {
+	Enabled     bool
+	BearerToken string
+}
+
+// AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
 type AppConfig struct {
-	Environment string
-	Address     string
+	Environment                string
+	Host                       string
+	Port                       string
+	Address                    string
+	RequestTimeout             time.Duration
+	CORSAllowedOrigins         []string
+	RateLimitRequestsPerMinute int
 }
 
+// DatabaseConfig chứa cấu hình kết nối và pool PostgreSQL; giá trị này không
+// đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
 	URL               string
 	MaxConns          int32
@@ -22,16 +60,517 @@ type DatabaseConfig struct {
 	HealthCheckPeriod time.Duration
 }
 
+// AuthConfig chứa các thiết lập cần thiết để phát hành access token.
 type AuthConfig struct {
-	JWTSecret      string
-	JWTIssuer      string
-	AccessTokenTTL time.Duration
+	JWTSecret            string
+	JWTIssuer            string
+	AccessTokenTTL       time.Duration
+	RefreshTokenTTL      time.Duration
+	EmailVerificationTTL time.Duration
+	PasswordResetTTL     time.Duration
+	EmailVerificationURL string
+	PasswordResetURL     string
 }
 
+type SMTPConfig struct {
+	Host        string
+	Port        int
+	Username    string
+	AppPassword string
+	FromName    string
+	Timeout     time.Duration
+}
+type CloudinaryConfig struct {
+	CloudName string
+	APIKey    string
+	APISecret string
+}
+type AvatarConfig struct {
+	UploadTimeout            time.Duration
+	ProcessingTimeout        time.Duration
+	MaxConcurrentConversions int
+}
+type CleanupConfig struct {
+	Interval            time.Duration
+	Retention           time.Duration
+	MediaWorkerInterval time.Duration
+	MediaMaxAttempts    int
+}
+type FirebaseConfig struct {
+	CredentialsFile string
+	CredentialsJSON string
+	Timeout         time.Duration
+}
+
+// RiverConfig chứa cấu hình cho background job queue (River trên PostgreSQL).
+type RiverConfig struct {
+	WorkerCount   int
+	FetchCooldown time.Duration
+}
+
+// GroupConfig chứa cấu hình dùng riêng cho module group management.
+type GroupConfig struct {
+	InviteBaseURL string
+}
+
+// OCRConfig chứa cấu hình tích hợp dịch vụ LlamaExtract và background retry/retention cho OCR.
+type OCRConfig struct {
+	APIKey            string
+	Endpoint          string
+	ProviderTimeout   time.Duration
+	MaxAttempts       int
+	RetryBaseDelay    time.Duration
+	ManualLimit       int
+	ManualWindowHours time.Duration
+	RawRetentionDays  time.Duration
+}
+
+// BillImageConfig chứa cấu hình tải lên, xử lý và tạo signed URL cho ảnh hóa đơn.
+type BillImageConfig struct {
+	MaxCount          int
+	MaxBytes          int64
+	UploadTimeout     time.Duration
+	ProcessingTimeout time.Duration
+	SignedURLTTL      time.Duration
+}
+
+// BillSSEConfig chứa cấu hình SSE streaming cho bill events (Spec 3 AC-2, AC-8).
+type BillSSEConfig struct {
+	HeartbeatInterval time.Duration
+	MaxConnectionAge  time.Duration
+}
+
+type SettlementConfig struct {
+	VietQRServiceBaseURL   string
+	VietQRTemplate         string
+	ProofMaxBytes          int64
+	ProofSignedURLTTL      time.Duration
+	ReminderStaleAge       time.Duration
+	ReminderMaxCount       int
+	StalledConfirmationAge time.Duration
+}
+
+// Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
+// kiểm tra kết quả trước khi bootstrap khởi tạo các tài nguyên bên ngoài.
 func Load() (*Config, error) {
-	panic("TODO: implement config.Load")
+	// File .env hỗ trợ cấu hình thuận tiện khi phát triển cục bộ. Biến môi trường
+	// hiện có vẫn được ưu tiên để nền tảng triển khai có thể cung cấp giá trị riêng.
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load .env: %w", err)
+	}
+
+	maxConns, err := int32Env("DB_MAX_CONNS", 10)
+	if err != nil {
+		return nil, err
+	}
+	minConns, err := int32Env("DB_MIN_CONNS", 2)
+	if err != nil {
+		return nil, err
+	}
+	maxConnLifetime, err := durationEnv("DB_MAX_CONN_LIFETIME_MINUTES", 60, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	maxConnIdle, err := durationEnv("DB_MAX_CONN_IDLE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	healthCheckPeriod, err := durationEnv("DB_HEALTH_CHECK_SECONDS", 30, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	accessTokenTTL, err := durationEnv("JWT_ACCESS_TOKEN_TTL_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	rateLimit, err := intEnv("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE", 30)
+	if err != nil {
+		return nil, err
+	}
+	requestTimeout, err := durationEnv("HTTP_REQUEST_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	refreshTTL, err := durationEnv("AUTH_REFRESH_TOKEN_TTL_HOURS", 168, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	verificationTTL, err := durationEnv("AUTH_EMAIL_VERIFICATION_TTL_MINUTES", 10, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	resetTTL, err := durationEnv("AUTH_PASSWORD_RESET_TTL_MINUTES", 10, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	smtpPort, err := intEnv("SMTP_PORT", 587)
+	if err != nil {
+		return nil, err
+	}
+	smtpTimeout, err := durationEnv("SMTP_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarUploadTimeout, err := durationEnv("AVATAR_UPLOAD_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarProcessingTimeout, err := durationEnv("AVATAR_PROCESSING_TIMEOUT_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	avatarConcurrency, err := intEnv("AVATAR_MAX_CONCURRENT_CONVERSIONS", 2)
+	if err != nil {
+		return nil, err
+	}
+	cleanupInterval, err := durationEnv("AUTH_CLEANUP_INTERVAL_HOURS", 24, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	retention, err := durationEnv("AUTH_RECORD_RETENTION_DAYS", 30, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	mediaInterval, err := durationEnv("MEDIA_CLEANUP_WORKER_INTERVAL_SECONDS", 60, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	mediaAttempts, err := intEnv("MEDIA_CLEANUP_MAX_ATTEMPTS", 10)
+	if err != nil {
+		return nil, err
+	}
+	fcmTimeout, err := durationEnv("FCM_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	riverWorkerCount, err := intEnv("RIVER_WORKER_COUNT", 5)
+	if err != nil {
+		return nil, err
+	}
+	riverFetchCooldown, err := durationEnv("RIVER_FETCH_COOLDOWN_MS", 100, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	ocrProviderTimeout, err := durationEnv("BILL_OCR_PROVIDER_TIMEOUT_SECONDS", 8, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrMaxAttempts, err := intEnv("BILL_OCR_MAX_ATTEMPTS", 3)
+	if err != nil {
+		return nil, err
+	}
+	ocrRetryBaseDelay, err := durationEnv("BILL_OCR_RETRY_BASE_DELAY_SECONDS", 1, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualLimit, err := intEnv("BILL_OCR_MANUAL_LIMIT", 5)
+	if err != nil {
+		return nil, err
+	}
+	ocrManualWindow, err := durationEnv("BILL_OCR_MANUAL_WINDOW_HOURS", 24, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	ocrRawRetention, err := durationEnv("BILL_OCR_RAW_RETENTION_DAYS", 30, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	billImageMaxCount, err := intEnv("BILL_IMAGE_MAX_COUNT", 5)
+	if err != nil {
+		return nil, err
+	}
+	billImageMaxBytes, err := intEnv("BILL_IMAGE_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	billImageUploadTimeout, err := durationEnv("BILL_IMAGE_UPLOAD_TIMEOUT_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageProcessingTimeout, err := durationEnv("BILL_IMAGE_PROCESSING_TIMEOUT_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billImageSignedURLTTL, err := durationEnv("BILL_IMAGE_SIGNED_URL_TTL_MINUTES", 5, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	paymentProofMaxBytes, err := intEnv("PAYMENT_PROOF_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	paymentProofSignedTTL, err := durationEnv("PAYMENT_PROOF_SIGNED_URL_TTL", 300, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderAge, err := durationEnv("PAYMENT_REMINDER_STALE_HOURS", 72, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderMax, err := intEnv("PAYMENT_REMINDER_MAX_COUNT", 3)
+	if err != nil {
+		return nil, err
+	}
+	stalledConfirmationAge, err := durationEnv("STALLED_CONFIRMATION_HOURS", 48, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	billSSEHeartbeat, err := durationEnv("BILL_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	billSSEMaxAge, err := durationEnv("BILL_SSE_MAX_CONNECTION_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	httpHost := stringEnv("HTTP_HOST", "localhost")
+	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
+	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
+	if httpAddress == "" {
+		if httpHost != "" {
+			httpAddress = net.JoinHostPort(httpHost, httpPort)
+		} else {
+			httpAddress = ":" + httpPort
+		}
+	} else if host, port, err := net.SplitHostPort(httpAddress); err == nil {
+		if host != "" {
+			httpHost = host
+		}
+		if port != "" {
+			httpPort = port
+		}
+	}
+
+	cfg := &Config{
+		App: AppConfig{
+			Environment:                stringEnv("APP_ENV", "development"),
+			Host:                       httpHost,
+			Port:                       httpPort,
+			Address:                    httpAddress,
+			RequestTimeout:             requestTimeout,
+			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
+			RateLimitRequestsPerMinute: rateLimit,
+		},
+		Database: DatabaseConfig{
+			URL:               os.Getenv("DATABASE_URL"),
+			MaxConns:          maxConns,
+			MinConns:          minConns,
+			MaxConnLifetime:   maxConnLifetime,
+			MaxConnIdleTime:   maxConnIdle,
+			HealthCheckPeriod: healthCheckPeriod,
+		},
+		Auth: AuthConfig{
+			JWTSecret:            os.Getenv("JWT_SECRET_KEY"),
+			JWTIssuer:            stringEnv("JWT_ISSUER", "paysplit-backend"),
+			AccessTokenTTL:       accessTokenTTL,
+			RefreshTokenTTL:      refreshTTL,
+			EmailVerificationTTL: verificationTTL,
+			PasswordResetTTL:     resetTTL,
+			EmailVerificationURL: os.Getenv("AUTH_EMAIL_VERIFICATION_URL"),
+			PasswordResetURL:     os.Getenv("AUTH_PASSWORD_RESET_URL"),
+		},
+		SMTP:       SMTPConfig{Host: stringEnv("SMTP_HOST", "smtp.gmail.com"), Port: smtpPort, Username: os.Getenv("SMTP_USERNAME"), AppPassword: os.Getenv("SMTP_APP_PASSWORD"), FromName: stringEnv("SMTP_FROM_NAME", "PaySplit"), Timeout: smtpTimeout},
+		Cloudinary: CloudinaryConfig{CloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"), APIKey: os.Getenv("CLOUDINARY_API_KEY"), APISecret: os.Getenv("CLOUDINARY_API_SECRET")},
+		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
+		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
+		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
+		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
+		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		OCR: OCRConfig{
+			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
+			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
+			ProviderTimeout:   ocrProviderTimeout,
+			MaxAttempts:       ocrMaxAttempts,
+			RetryBaseDelay:    ocrRetryBaseDelay,
+			ManualLimit:       ocrManualLimit,
+			ManualWindowHours: ocrManualWindow,
+			RawRetentionDays:  ocrRawRetention,
+		},
+		BillImage: BillImageConfig{
+			MaxCount:          billImageMaxCount,
+			MaxBytes:          int64(billImageMaxBytes),
+			UploadTimeout:     billImageUploadTimeout,
+			ProcessingTimeout: billImageProcessingTimeout,
+			SignedURLTTL:      billImageSignedURLTTL,
+		},
+		BillSSE: BillSSEConfig{
+			HeartbeatInterval: billSSEHeartbeat,
+			MaxConnectionAge:  billSSEMaxAge,
+		},
+		Metrics: MetricsConfig{
+			Enabled:     boolEnv("METRICS_ENABLED", true),
+			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
+		},
+		Settlement: SettlementConfig{
+			VietQRServiceBaseURL: stringEnv("VIETQR_SERVICE_BASE_URL", "https://img.vietqr.io/image"),
+			VietQRTemplate:       stringEnv("VIETQR_TEMPLATE", "compact"),
+			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
+			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
+			StalledConfirmationAge: stalledConfirmationAge,
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
+// Validate từ chối cấu hình thiếu hoặc không nhất quán để startup thất bại
+// trước khi mở cổng mạng hoặc kết nối database.
 func (c *Config) Validate() error {
-	panic("TODO: implement Config.Validate")
+	if c == nil {
+		return errors.New("config must not be nil")
+	}
+	if strings.TrimSpace(c.App.Address) == "" {
+		return errors.New("HTTP_ADDRESS must not be empty")
+	}
+	if c.App.RequestTimeout <= 0 {
+		return errors.New("HTTP_REQUEST_TIMEOUT_SECONDS must be positive")
+	}
+	if len(c.App.CORSAllowedOrigins) == 0 {
+		return errors.New("HTTP_CORS_ALLOWED_ORIGINS must contain at least one origin")
+	}
+	if c.App.RateLimitRequestsPerMinute <= 0 {
+		return errors.New("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")
+	}
+	if strings.TrimSpace(c.Database.URL) == "" {
+		return errors.New("DATABASE_URL must not be empty")
+	}
+	if c.Database.MinConns < 0 || c.Database.MaxConns <= 0 || c.Database.MinConns > c.Database.MaxConns {
+		return errors.New("DB_MIN_CONNS must be non-negative and no greater than DB_MAX_CONNS")
+	}
+	if c.Database.MaxConnLifetime <= 0 || c.Database.MaxConnIdleTime <= 0 || c.Database.HealthCheckPeriod <= 0 {
+		return errors.New("database duration settings must be positive")
+	}
+	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
+		return errors.New("JWT_SECRET_KEY must not be empty")
+	}
+	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
+		return errors.New("JWT_ISSUER must not be empty")
+	}
+	if c.Auth.AccessTokenTTL != 15*time.Minute {
+		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
+	}
+	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
+		return errors.New("auth TTL settings must match the v1 contract")
+	}
+	if strings.TrimSpace(c.Auth.EmailVerificationURL) == "" || strings.TrimSpace(c.Auth.PasswordResetURL) == "" {
+		return errors.New("auth callback URLs must not be empty")
+	}
+	if strings.TrimSpace(c.SMTP.Host) == "" || c.SMTP.Port <= 0 || strings.TrimSpace(c.SMTP.Username) == "" || strings.TrimSpace(c.SMTP.AppPassword) == "" || strings.TrimSpace(c.SMTP.FromName) == "" || c.SMTP.Timeout <= 0 {
+		return errors.New("Gmail SMTP configuration is required")
+	}
+	if strings.TrimSpace(c.Cloudinary.CloudName) == "" || strings.TrimSpace(c.Cloudinary.APIKey) == "" || strings.TrimSpace(c.Cloudinary.APISecret) == "" {
+		return errors.New("Cloudinary configuration is required")
+	}
+	if c.Avatar.UploadTimeout <= 0 || c.Avatar.ProcessingTimeout <= 0 || c.Avatar.MaxConcurrentConversions <= 0 {
+		return errors.New("avatar settings must be positive")
+	}
+	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
+		return errors.New("cleanup settings are invalid")
+	}
+	if c.River.WorkerCount <= 0 || c.River.FetchCooldown <= 0 {
+		return errors.New("river settings must be positive")
+	}
+	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
+		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
+	}
+	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
+	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
+		return errors.New("APP_INVITE_BASE_URL must be an absolute HTTPS URL without user info, query, or fragment")
+	}
+	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
+		return errors.New("OCR settings must be positive")
+	}
+	if c.BillImage.MaxCount <= 0 || c.BillImage.MaxBytes <= 0 || c.BillImage.UploadTimeout <= 0 || c.BillImage.ProcessingTimeout <= 0 || c.BillImage.SignedURLTTL <= 0 {
+		return errors.New("bill image settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval <= 0 || c.BillSSE.MaxConnectionAge <= 0 {
+		return errors.New("bill sse settings must be positive")
+	}
+	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
+		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
+	}
+	vietQRURL, err := url.ParseRequestURI(c.Settlement.VietQRServiceBaseURL)
+	if err != nil || (vietQRURL.Scheme != "http" && vietQRURL.Scheme != "https") || vietQRURL.Host == "" {
+		return errors.New("VIETQR_SERVICE_BASE_URL must be a valid HTTP(S) URL")
+	}
+	if strings.TrimSpace(c.Settlement.VietQRTemplate) == "" {
+		return errors.New("VIETQR_TEMPLATE must not be empty")
+	}
+	if c.Settlement.ProofMaxBytes <= 0 {
+		return errors.New("PAYMENT_PROOF_MAX_BYTES must be positive")
+	}
+	if c.Settlement.ProofSignedURLTTL <= 0 {
+		return errors.New("PAYMENT_PROOF_SIGNED_URL_TTL must be positive")
+	}
+	if c.Settlement.ReminderStaleAge <= 0 {
+		return errors.New("PAYMENT_REMINDER_STALE_HOURS must be positive")
+	}
+	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
+		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
+	}
+	if c.Settlement.StalledConfirmationAge <= 0 {
+		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
+	}
+	return nil
+}
+
+func stringEnv(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func csvEnv(name string) []string {
+	values := strings.Split(os.Getenv(name), ",")
+	origins := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			origins = append(origins, value)
+		}
+	}
+	return origins
+}
+
+func intEnv(name string, fallback int) (int, error) {
+	value := stringEnv(name, strconv.Itoa(fallback))
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func int32Env(name string, fallback int32) (int32, error) {
+	value, err := intEnv(name, int(fallback))
+	if err != nil {
+		return 0, err
+	}
+	if value < -1<<31 || value > 1<<31-1 {
+		return 0, fmt.Errorf("parse %s: value is outside int32 range", name)
+	}
+	return int32(value), nil
+}
+
+func durationEnv(name string, fallback int, unit time.Duration) (time.Duration, error) {
+	value, err := intEnv(name, fallback)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(value) * unit, nil
+}
+
+func boolEnv(name string, fallback bool) bool {
+	if val := strings.TrimSpace(os.Getenv(name)); val != "" {
+		parsed, err := strconv.ParseBool(val)
+		if err == nil {
+			return parsed
+		}
+	}
+	return fallback
 }
