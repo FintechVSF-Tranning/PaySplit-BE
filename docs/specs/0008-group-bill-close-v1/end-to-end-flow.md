@@ -517,3 +517,161 @@ Nếu An còn nợ cùng Creditor ở bill khác, An có thể tạo một VietQ
 9. Proof, receipt image, bank account và raw OCR không được xuất hiện trong log.
 10. Archived group không có user access trong V1.
 11. Chỉ current Captain được finalize bill đơn hoặc chốt toàn bộ. Creditor có quyền review nhưng không có quyền finalize chỉ vì sở hữu bill.
+
+## 23. Chi tiết schema database sau thay đổi V1
+
+Phần này mô tả schema đích của tính năng khóa gửi bill và chốt toàn bộ. Đây là thiết kế cho migration V1, chưa phải mô tả một migration đã chạy trong database hiện tại.
+
+### 23.1 Tổng quan thay đổi
+
+| Thành phần | Loại thay đổi | Mục đích |
+|---|---|---|
+| `groups` | Thêm một cột | Lưu chính sách nhóm đã ngừng nhận bill mới |
+| `group_bill_finalize_batches` | Bảng mới | Lưu một lần Captain yêu cầu chốt toàn bộ và tiến độ tổng |
+| `group_bill_finalize_items` | Bảng mới | Lưu kết quả độc lập của từng bill được capture trong batch |
+| `bulk_finalize_status` | Enum mới | Giới hạn trạng thái hợp lệ của batch |
+| `bulk_finalize_item_status` | Enum mới | Giới hạn trạng thái hợp lệ của từng item |
+| `activity_type` | Bổ sung giá trị | Ghi audit khi khóa nhóm, bắt đầu batch và hoàn tất batch |
+
+`bills`, `bill_member_shares`, `debts`, `payments` và `payment_debts` không thêm cột trong thay đổi này. Bulk finalize gọi lại luồng finalize hiện tại để ghi share và debt, không tạo một ledger tài chính riêng.
+
+### 23.2 Bảng `groups` sau thay đổi
+
+| Trường | Kiểu và null | Giá trị mặc định | Ý nghĩa và quy tắc ghi |
+|---|---|---|---|
+| `id` | `uuid`, không null, primary key | `uuidv7()` | Định danh của group |
+| `name` | `text`, không null | Không có | Tên group sau trim, dài từ 1 đến 100 ký tự |
+| `currency` | `text`, không null | `VND` | Tiền tệ của group. V1 chỉ chấp nhận `VND` |
+| `created_by` | `uuid`, không null, FK tới `users.id` | Không có | User đã tạo group. Trường này không đại diện cho current Captain |
+| `created_at` | `timestamptz`, không null | PostgreSQL `now()` | Thời điểm tạo group |
+| `status` | `group_status`, không null | `active` | `active` cho group đang hoạt động, `archived` cho group đã đóng và không còn user access |
+| `bill_submission_locked_at` | `timestamptz`, có thể null | `null` | `null` nghĩa là còn nhận bill mới. Có timestamp nghĩa là đã khóa. Timestamp do PostgreSQL ghi khi request khóa hoặc bulk start thắng transaction |
+
+Quy tắc quan trọng của `bill_submission_locked_at`:
+
+1. Mọi group cũ nhận giá trị `null` sau migration, vì vậy vẫn mở.
+2. Backend dùng `bill_submission_locked_at IS NOT NULL` để suy ra API field `bill_submission_locked = true`.
+3. V1 chỉ cho chuyển từ `null` sang timestamp. Không có API hoặc business flow đặt trường này về `null`.
+4. Khóa lặp lại giữ nguyên timestamp đầu tiên bằng `COALESCE(bill_submission_locked_at, now())`.
+5. Cột này không lưu người đã khóa. Actor được lấy từ authenticated Captain và lưu trong group activity tương ứng.
+
+### 23.3 Enum `bulk_finalize_status`
+
+| Giá trị | Ý nghĩa | Điều kiện timestamp và count |
+|---|---|---|
+| `queued` | Batch đã được tạo và các River job đã được enqueue, nhưng chưa có worker bắt đầu xử lý | `started_at` và `completed_at` là `null` |
+| `processing` | Ít nhất một worker đã nhận batch hoặc item đang được xử lý | `started_at` có giá trị, `completed_at` là `null` |
+| `completed` | Mọi item đã có kết quả cuối cùng | `started_at` và `completed_at` có giá trị, `finalized_count + failed_count = target_count` |
+
+Batch chỉ chuyển theo chiều `queued` sang `processing` rồi sang `completed`. Batch có `target_count = 0` được hoàn tất ngay trong transaction tạo batch và có đủ terminal timestamp.
+
+### 23.4 Bảng `group_bill_finalize_batches`
+
+| Trường | Kiểu và null | Giá trị khởi tạo | Ý nghĩa và quy tắc cập nhật |
+|---|---|---|---|
+| `id` | `uuid`, không null, primary key | `uuidv7()` | Định danh bền vững của batch, được trả về cho Captain và dùng để poll kết quả |
+| `group_id` | `uuid`, không null, FK tới `groups.id` | Group trong path API | Group sở hữu batch. Mọi query batch phải scope bằng cả `group_id` và `id` |
+| `requested_by_member_id` | `uuid`, không null | Active Captain tại lúc start | Member đã yêu cầu batch, dùng cho audit. FK theo cặp với `group_id` bảo đảm member thuộc đúng group |
+| `status` | `bulk_finalize_status`, không null | `queued` | Trạng thái tổng của batch |
+| `target_count` | `integer`, không null | Số bill `draft` được capture | Tổng item cố định của batch. Giá trị không đổi sau khi transaction start commit |
+| `finalized_count` | `integer`, không null | `0` | Số item đã finalize thành công hoặc được xác định đã finalize đúng captured version |
+| `failed_count` | `integer`, không null | `0` | Số item kết thúc với stable failure |
+| `started_at` | `timestamptz`, có thể null | `null` | PostgreSQL time khi batch bắt đầu processing. Với zero target batch, trường này được ghi cùng lúc hoàn tất |
+| `completed_at` | `timestamptz`, có thể null | `null` | PostgreSQL time khi không còn item `pending` |
+| `created_at` | `timestamptz`, không null | PostgreSQL transaction time | Thời điểm batch được tạo |
+| `updated_at` | `timestamptz`, không null | Bằng `created_at` | Thời điểm gần nhất status hoặc count của batch thay đổi |
+
+Các constraint bắt buộc:
+
+1. `target_count`, `finalized_count` và `failed_count` không âm.
+2. `finalized_count + failed_count` không lớn hơn `target_count`.
+3. Batch `completed` phải có tổng terminal count bằng `target_count`.
+4. Chỉ có tối đa một batch `queued` hoặc `processing` cho mỗi group. Database giữ invariant này bằng partial unique index trên `group_id` cho hai trạng thái active.
+5. `target_count` phải bằng số dòng item được insert trong transaction bắt đầu batch.
+
+Index phục vụ read path:
+
+1. `(group_id, created_at DESC, id DESC)` tìm latest batch và phân trang ổn định.
+2. Partial unique index trên `group_id` khi status là `queued` hoặc `processing` chặn hai active batch chạy cùng lúc.
+
+### 23.5 Enum `bulk_finalize_item_status`
+
+| Giá trị | Ý nghĩa | Trường đi kèm |
+|---|---|---|
+| `pending` | Bill đã được capture nhưng chưa có kết quả cuối | `processed_at = null`, `error_code = null` |
+| `finalized` | Bill đã finalize thành công, hoặc đã được request cạnh tranh finalize đúng captured version | `processed_at` có giá trị, `error_code = null` |
+| `failed` | Bill không thể finalize trong batch này | `processed_at` có giá trị, `error_code` là stable domain code không rỗng |
+
+Item chỉ chuyển từ `pending` sang `finalized` hoặc `failed`. Không chuyển item terminal về `pending`. Muốn thử lại một bill thất bại, Captain sửa draft rồi finalize riêng hoặc tạo batch mới với item mới.
+
+### 23.6 Bảng `group_bill_finalize_items`
+
+| Trường | Kiểu và null | Giá trị khởi tạo | Ý nghĩa và quy tắc cập nhật |
+|---|---|---|---|
+| `batch_id` | `uuid`, không null, FK tới `group_bill_finalize_batches.id` | Batch đang được tạo | Xác định batch chứa item |
+| `bill_id` | `uuid`, không null, không có FK cứng tới `bills.id` | ID bill được capture | Định danh logic của bill tại thời điểm start. Không có FK cứng để draft vẫn được hard delete theo contract hiện tại |
+| `bill_version` | `integer`, không null | `bills.version` lúc capture | Version chính xác mà worker được phép xử lý. Version hiện tại khác giá trị này tạo `VERSION_CONFLICT` |
+| `captured_reviewed` | `boolean`, không null | Kết quả `reviewed_at IS NOT NULL` của exact version | Snapshot cho biết version được capture đã review hay chưa. Trường này phục vụ audit và UI, worker vẫn kiểm tra lại bill trong transaction |
+| `status` | `bulk_finalize_item_status`, không null | `pending` | Kết quả xử lý riêng của bill trong batch |
+| `error_code` | `text`, có thể null | `null` | Stable domain code khi status là `failed`, ví dụ `BILL_DELETED`, `VERSION_CONFLICT`, `BILL_NOT_READY` hoặc `BANK_ACCOUNT_REQUIRED`. Không lưu message động hoặc dữ liệu nhạy cảm |
+| `processed_at` | `timestamptz`, có thể null | `null` | PostgreSQL time khi item đạt trạng thái terminal |
+| `created_at` | `timestamptz`, không null | PostgreSQL transaction time | Thời điểm bill được capture vào batch |
+| `updated_at` | `timestamptz`, không null | Bằng `created_at` | Thời điểm status, error hoặc processed time thay đổi gần nhất |
+
+Primary key là cặp `(batch_id, bill_id)`. Một bill chỉ xuất hiện một lần trong cùng batch, nhưng có thể xuất hiện trong batch mới sau khi batch cũ đã completed.
+
+Không có `group_id` riêng trên item. Group được suy ra qua `batch_id`, và worker luôn đọc bill bằng cả captured `bill_id` cùng group của batch để tránh truy cập chéo group.
+
+Index `(batch_id, status, bill_id)` hỗ trợ worker tìm item `pending`, đếm terminal result và trả item list ổn định. `bill_id` không có hard foreign key là quyết định có chủ ý. Nếu draft bị xóa, item vẫn giữ ID và `BILL_DELETED`, nhưng không giữ merchant name, item text hoặc nội dung receipt.
+
+### 23.7 Quan hệ giữa các bảng
+
+```text
+groups
+  1 -> N group_bill_finalize_batches
+             1 -> N group_bill_finalize_items
+                          N -> 1 bills, logical reference only
+```
+
+1. Một group có nhiều batch theo thời gian, nhưng chỉ một batch active.
+2. Một batch có đúng `target_count` item.
+3. Mỗi item giữ snapshot `bill_id`, `bill_version` và review state tại lúc start.
+4. Share và debt không tham chiếu batch. Chúng vẫn tham chiếu finalized bill theo contract tài chính hiện tại.
+5. `requested_by_member_id` giữ Captain đã start batch. Notification hoàn tất gửi cho current active Captain tại thời điểm completion, có thể là người khác nếu đã chuyển Captain.
+
+### 23.8 Activity type được bổ sung
+
+Schema của bảng activity không đổi. Enum `activity_type` thêm các giá trị sau:
+
+| Giá trị | Thời điểm ghi | Metadata an toàn |
+|---|---|---|
+| `bill_submission_locked` | Lần đầu `bill_submission_locked_at` chuyển từ `null` sang timestamp | `group_id`, `locked_at` |
+| `bill_bulk_finalize_started` | Transaction tạo batch commit | `batch_id`, `target_count`, `captured_reviewed_count`, `captured_unreviewed_count` |
+| `bill_bulk_finalize_completed` | Batch không còn item `pending` | `batch_id`, `target_count`, `finalized_count`, `failed_count` |
+
+Activity chỉ lưu ID, count, outcome và timestamp cần cho audit. Không lưu merchant name, item text, image data, bank data hoặc `Idempotency-Key`.
+
+### 23.9 Ví dụ dữ liệu theo vòng đời một batch
+
+Giả sử group có ba bill `draft` khi Captain bấm `Chốt toàn bộ`:
+
+1. `groups.bill_submission_locked_at` được ghi nếu group chưa khóa.
+2. Một batch được tạo với `status = queued`, `target_count = 3`, `finalized_count = 0` và `failed_count = 0`.
+3. Ba item được tạo với `status = pending`, mỗi item giữ bill ID, version và review snapshot riêng.
+4. Worker đầu tiên chuyển batch sang `processing` và ghi `started_at`.
+5. Hai bill hợp lệ chuyển item sang `finalized`. Một bill sai total chuyển item sang `failed` với `error_code = BILL_NOT_READY`.
+6. Batch kết thúc với `status = completed`, `finalized_count = 2`, `failed_count = 1` và `completed_at` có giá trị.
+7. Hai bill thành công đã có immutable share và debt. Bill lỗi vẫn là `draft`, có thể sửa dù group không còn nhận bill mới.
+
+### 23.10 Trường API được suy ra, không phải cột database
+
+| Trường API | Nguồn dữ liệu |
+|---|---|
+| `bill_submission_locked` | `groups.bill_submission_locked_at IS NOT NULL` |
+| `active_bill_finalize_batch_id` | Batch mới nhất của group có status `queued` hoặc `processing` |
+| `latest_bill_finalize_batch_id` | Batch mới nhất theo `(created_at DESC, id DESC)` |
+| `bill_display_name` của item | Join bill hiện tại bằng `bill_id` và group của batch. Nếu bill đã bị xóa thì trả `null` |
+| `captured_reviewed_count` | Đếm item có `captured_reviewed = true` trong batch |
+| `captured_unreviewed_count` | `target_count - captured_reviewed_count` |
+
+Các field suy ra không được lưu lặp lại nếu có thể tính ổn định từ source of truth ở trên. Điều này tránh count hoặc lock state lệch giữa database và API response.
