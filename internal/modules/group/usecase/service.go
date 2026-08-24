@@ -2,8 +2,11 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"path"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,21 +25,26 @@ const (
 	maxInviteExpiresInHours     = 168
 	minInviteMaxUses            = 1
 	maxInviteMaxUses            = 50
+	maxInviteCodeAttempts       = 5
 )
+
+var inviteCodePattern = regexp.MustCompile(`^[A-Za-z0-9]{8}$`)
 
 type Service struct {
 	repo          repository.Repository
 	inviteURLBase string
+	newInviteCode func() (string, error)
 }
 
 func NewService(repo repository.Repository, inviteURLBase string) *Service {
 	if repo == nil {
 		panic("group service repository must not be nil")
 	}
-	if strings.TrimSpace(inviteURLBase) == "" {
-		panic("group service invite URL base must not be empty")
+	normalizedBase, err := normalizeInviteURLBase(inviteURLBase)
+	if err != nil {
+		panic(fmt.Sprintf("group service invite URL base is invalid: %v", err))
 	}
-	return &Service{repo: repo, inviteURLBase: inviteURLBase}
+	return &Service{repo: repo, inviteURLBase: normalizedBase, newInviteCode: domain.NewInviteCode}
 }
 
 type CreateGroupInput struct {
@@ -108,11 +116,13 @@ func (s *Service) GetGroupDetail(ctx context.Context, groupID, callerUserID stri
 }
 
 type CreateInviteInput struct {
-	GroupID        string
-	CallerUserID   string
-	ExpiresInHours *int
-	MaxUses        *int
-	Regenerate     bool
+	GroupID              string
+	CallerUserID         string
+	ExpiresInHours       *int
+	MaxUses              *int
+	Regenerate           *bool
+	HasConfiguration     bool
+	HasNullConfiguration bool
 }
 
 type CreateInviteOutput struct {
@@ -121,13 +131,42 @@ type CreateInviteOutput struct {
 	Created   bool
 }
 
+// AuthorizeInviteConfiguration is the presence-first authorization used by
+// HTTP before it decodes policy values. CreateInvite repeats the check before
+// mutation, and the repository checks again under the group lock.
+func (s *Service) AuthorizeInviteConfiguration(ctx context.Context, groupID, callerUserID string) error {
+	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
+		return domain.ErrGroupNotFound
+	}
+	role, err := s.repo.GetActiveMembershipRole(ctx, groupID, callerUserID)
+	if err != nil {
+		return err
+	}
+	if role != domain.RoleCaptain {
+		return domain.ErrCaptainRequired
+	}
+	return nil
+}
+
 // CreateInvite applies the AC-3 validation contract: expiry defaults to 24
 // hours and accepts 1 through 168, max_uses is optional and accepts 1
 // through 50. Without regeneration the group's one available invite is
 // reused; regeneration revokes every available invite first.
 func (s *Service) CreateInvite(ctx context.Context, in CreateInviteInput) (*CreateInviteOutput, error) {
 	if strings.TrimSpace(in.GroupID) == "" || strings.TrimSpace(in.CallerUserID) == "" {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
+	}
+	var err error
+	if in.HasConfiguration {
+		err = s.AuthorizeInviteConfiguration(ctx, in.GroupID, in.CallerUserID)
+	} else {
+		_, err = s.repo.GetActiveMembershipRole(ctx, in.GroupID, in.CallerUserID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if in.HasNullConfiguration {
+		return nil, domain.ErrInvalidInput
 	}
 	expiresInHours := defaultInviteExpiresInHours
 	if in.ExpiresInHours != nil {
@@ -140,18 +179,33 @@ func (s *Service) CreateInvite(ctx context.Context, in CreateInviteInput) (*Crea
 		return nil, domain.ErrInvalidInput
 	}
 
-	code, err := domain.NewInviteCode()
-	if err != nil {
-		return nil, fmt.Errorf("generate invite code: %w", err)
+	regenerate := false
+	if in.Regenerate != nil {
+		regenerate = *in.Regenerate
 	}
-	result, err := s.repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{
-		GroupID:      in.GroupID,
-		CallerUserID: in.CallerUserID,
-		Code:         code,
-		ExpiresIn:    time.Duration(expiresInHours) * time.Hour,
-		MaxUses:      in.MaxUses,
-		Regenerate:   in.Regenerate,
-	})
+
+	var result *repository.CreateInviteResult
+	for attempt := 0; attempt < maxInviteCodeAttempts; attempt++ {
+		code, generateErr := s.newInviteCode()
+		if generateErr != nil {
+			return nil, fmt.Errorf("generate invite code: %w", generateErr)
+		}
+		result, err = s.repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{
+			GroupID:          in.GroupID,
+			CallerUserID:     in.CallerUserID,
+			Code:             code,
+			ExpiresIn:        time.Duration(expiresInHours) * time.Hour,
+			MaxUses:          in.MaxUses,
+			Regenerate:       regenerate,
+			HasConfiguration: in.HasConfiguration,
+		})
+		if !errors.Is(err, domain.ErrInviteCodeCollision) {
+			break
+		}
+	}
+	if errors.Is(err, domain.ErrInviteCodeCollision) {
+		return nil, fmt.Errorf("invite code collision retry budget exhausted: %w", err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -162,26 +216,64 @@ func (s *Service) CreateInvite(ctx context.Context, in CreateInviteInput) (*Crea
 	return &CreateInviteOutput{Invite: result.Invite, InviteURL: inviteURL, Created: result.Created}, nil
 }
 
-// buildInviteURL sets code as a query parameter on the configured base,
-// mirroring gmail.tokenURL's pattern for the auth module's own deep links.
-// Bare concatenation ("paysplit://join" + code) produced an unroutable
-// link with no separator between the base and the code.
 func buildInviteURL(base, code string) (string, error) {
-	parsed, err := url.Parse(base)
-	if err != nil {
-		return "", fmt.Errorf("parse invite URL base: %w", err)
+	if !inviteCodePattern.MatchString(code) {
+		return "", errors.New("invite code must be eight Base62 characters")
 	}
-	query := parsed.Query()
-	query.Set("code", code)
-	parsed.RawQuery = query.Encode()
+	normalized, err := normalizeInviteURLBase(base)
+	if err != nil {
+		return "", err
+	}
+	joined, err := url.JoinPath(normalized, code)
+	if err != nil {
+		return "", fmt.Errorf("append invite URL path: %w", err)
+	}
+	return joined, nil
+}
+
+func normalizeInviteURLBase(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invite URL base must be an absolute HTTPS URL without user info, query, or fragment")
+	}
+	cleanedPath := path.Clean(parsed.Path)
+	if cleanedPath == "." {
+		cleanedPath = ""
+	}
+	parsed.Path = cleanedPath
+	parsed.RawPath = ""
 	return parsed.String(), nil
+}
+
+type AvailableInvite struct {
+	Invite    domain.Invite
+	InviteURL string
+}
+
+func (s *Service) ListAvailableInvites(ctx context.Context, groupID, callerUserID string) ([]AvailableInvite, error) {
+	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
+		return nil, domain.ErrGroupNotFound
+	}
+	invites, err := s.repo.ListAvailableInvites(ctx, groupID, callerUserID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AvailableInvite, 0, len(invites))
+	for _, invite := range invites {
+		inviteURL, buildErr := buildInviteURL(s.inviteURLBase, invite.Code)
+		if buildErr != nil {
+			return nil, fmt.Errorf("build invite URL: %w", buildErr)
+		}
+		items = append(items, AvailableInvite{Invite: invite, InviteURL: inviteURL})
+	}
+	return items, nil
 }
 
 // RevokeInvite is idempotent: revoking an already revoked or unknown-state
 // invite still succeeds once the caller and invite are confirmed valid.
 func (s *Service) RevokeInvite(ctx context.Context, groupID, inviteID, callerUserID string) error {
 	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
-		return domain.ErrCaptainRequired
+		return domain.ErrGroupNotFound
 	}
 	if strings.TrimSpace(inviteID) == "" {
 		return domain.ErrInviteNotFound
@@ -192,7 +284,7 @@ func (s *Service) RevokeInvite(ctx context.Context, groupID, inviteID, callerUse
 // PreviewInvite lets an authenticated nonmember see the group name, active
 // member count, and Captain display name for a valid invite code (AC-4).
 func (s *Service) PreviewInvite(ctx context.Context, code string) (*domain.InvitePreview, error) {
-	if strings.TrimSpace(code) == "" {
+	if !inviteCodePattern.MatchString(code) {
 		return nil, domain.ErrInviteNotFound
 	}
 	return s.repo.PreviewInvite(ctx, code)
@@ -202,7 +294,7 @@ func (s *Service) PreviewInvite(ctx context.Context, code string) (*domain.Invit
 // the invite, enforces capacity, and activates the membership; an already
 // active member gets idempotent success (AC-5).
 func (s *Service) JoinGroup(ctx context.Context, code, callerUserID string) (*domain.JoinResult, error) {
-	if strings.TrimSpace(code) == "" {
+	if !inviteCodePattern.MatchString(code) {
 		return nil, domain.ErrInviteNotFound
 	}
 	if strings.TrimSpace(callerUserID) == "" {
@@ -229,12 +321,30 @@ func (s *Service) LeaveOrRemoveMember(ctx context.Context, groupID, targetMember
 // the active Captain may call it (AC-7).
 func (s *Service) TransferCaptain(ctx context.Context, groupID, targetMembershipID, callerUserID string) (*domain.CaptainTransfer, error) {
 	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
-		return nil, domain.ErrCaptainRequired
+		return nil, domain.ErrGroupNotFound
 	}
 	if strings.TrimSpace(targetMembershipID) == "" {
 		return nil, domain.ErrMemberNotFound
 	}
 	return s.repo.TransferCaptain(ctx, groupID, targetMembershipID, callerUserID)
+}
+
+func (s *Service) RenameGroup(ctx context.Context, groupID, callerUserID, rawName string) (*domain.Group, error) {
+	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
+		return nil, domain.ErrGroupNotFound
+	}
+	name := strings.TrimSpace(rawName)
+	if length := utf8.RuneCountInString(name); length < minGroupNameLength || length > maxGroupNameLength {
+		return nil, domain.ErrInvalidInput
+	}
+	return s.repo.RenameGroup(ctx, groupID, callerUserID, name)
+}
+
+func (s *Service) DisbandGroup(ctx context.Context, groupID, callerUserID string) error {
+	if strings.TrimSpace(groupID) == "" || strings.TrimSpace(callerUserID) == "" {
+		return domain.ErrGroupNotFound
+	}
+	return s.repo.DisbandGroup(ctx, groupID, callerUserID)
 }
 
 type ListActivitiesInput struct {

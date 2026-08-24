@@ -14,6 +14,11 @@ import (
 const countActiveOCRJobs = `-- name: CountActiveOCRJobs :one
 SELECT COUNT(*) FROM ocr_jobs
 WHERE status IN ('queued', 'processing')
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 `
 
 // Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
@@ -381,7 +386,7 @@ INSERT INTO debts (
     updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, 'awaiting', 0, now(), now()
-) RETURNING id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at, voided_at
+) RETURNING id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at, voided_at, last_reminded_at
 `
 
 type CreateDebtParams struct {
@@ -417,6 +422,7 @@ func (q *Queries) CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, e
 		&i.SettledAt,
 		&i.UpdatedAt,
 		&i.VoidedAt,
+		&i.LastRemindedAt,
 	)
 	return i, err
 }
@@ -780,8 +786,9 @@ func (q *Queries) GetBillOnlyByID(ctx context.Context, id pgtype.UUID) (GetBillO
 
 const getGroupMember = `-- name: GetGroupMember :one
 SELECT id, group_id, user_id, role, status, joined_at, left_at
-FROM group_members
+FROM group_members gm
 WHERE group_id = $1 AND user_id = $2
+  AND EXISTS (SELECT 1 FROM groups g WHERE g.id = gm.group_id AND g.status = 'active')
 `
 
 type GetGroupMemberParams struct {
@@ -808,6 +815,7 @@ const getGroupMemberUser = `-- name: GetGroupMemberUser :one
 SELECT gm.id, gm.group_id, gm.user_id, gm.role, gm.status, u.default_bank_code, u.default_bank_account_number, u.default_bank_account_holder
 FROM group_members gm
 JOIN users u ON gm.user_id = u.id
+JOIN groups g ON g.id = gm.group_id AND g.status = 'active'
 WHERE gm.id = $1 AND gm.group_id = $2
 `
 
@@ -906,7 +914,7 @@ INSERT INTO group_activities (
     created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, now()
-) RETURNING id, group_id, actor_member_id, action_type, description, metadata, created_at
+) RETURNING id, group_id, actor_member_id, action_type, description, metadata, created_at, actor_kind
 `
 
 type InsertGroupActivityParams struct {
@@ -936,6 +944,7 @@ func (q *Queries) InsertGroupActivity(ctx context.Context, arg InsertGroupActivi
 		&i.Description,
 		&i.Metadata,
 		&i.CreatedAt,
+		&i.ActorKind,
 	)
 	return i, err
 }
@@ -964,8 +973,9 @@ func (q *Queries) InsertMediaCleanupJob(ctx context.Context, arg InsertMediaClea
 
 const listActiveGroupMembers = `-- name: ListActiveGroupMembers :many
 SELECT id, group_id, user_id, role, status, joined_at, left_at
-FROM group_members
+FROM group_members gm
 WHERE group_id = $1 AND status = 'active'
+  AND EXISTS (SELECT 1 FROM groups g WHERE g.id = gm.group_id AND g.status = 'active')
 `
 
 func (q *Queries) ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error) {
@@ -1301,7 +1311,7 @@ func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGro
 }
 
 const listDebtsByBillIDForUpdate = `-- name: ListDebtsByBillIDForUpdate :many
-SELECT id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at, voided_at FROM debts
+SELECT id, group_id, bill_id, debtor_member_id, creditor_member_id, amount, status, reminder_count, payment_id, created_at, settled_at, updated_at, voided_at, last_reminded_at FROM debts
 WHERE bill_id = $1
 ORDER BY id ASC
 FOR UPDATE
@@ -1330,6 +1340,7 @@ func (q *Queries) ListDebtsByBillIDForUpdate(ctx context.Context, billID pgtype.
 			&i.SettledAt,
 			&i.UpdatedAt,
 			&i.VoidedAt,
+			&i.LastRemindedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1490,7 +1501,12 @@ SET status = 'failed',
     error_message = $2,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND status = 'processing'
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status = 'processing'
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
@@ -1524,7 +1540,12 @@ UPDATE ocr_jobs
 SET status = 'processing',
     attempts = attempts + 1,
     updated_at = now()
-WHERE id = $1 AND status IN ('queued', 'processing')
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status IN ('queued', 'processing')
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 
@@ -1555,7 +1576,12 @@ SET status = 'succeeded',
     raw_response = $3,
     updated_at = now(),
     completed_at = now()
-WHERE id = $1 AND status = 'processing'
+WHERE ocr_jobs.id = $1 AND ocr_jobs.status = 'processing'
+  AND EXISTS (
+    SELECT 1 FROM bills b
+    JOIN groups g ON g.id = b.group_id AND g.status = 'active'
+    WHERE b.id = ocr_jobs.bill_id
+  )
 RETURNING id, bill_id, status, provider, attempts, raw_response, error_message, created_at, updated_at, completed_at, candidate, version
 `
 

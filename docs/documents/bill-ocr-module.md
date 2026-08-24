@@ -114,6 +114,7 @@ PostgreSQL 18 Pool (pgxpool) + River Queue (bảng river_job)
 ```
 
 * **Nguyên tắc Clean Architecture**: giống module Auth — `domain/` chỉ chứa struct thuần và sentinel errors; `usecase/` định nghĩa interface phụ thuộc (`OCRProvider`, `BillStorage`, `Enqueuer`) và không import `pgx`/`chi`/`net/http`; lời gọi mạng ra ngoài (LlamaExtract, Cloudinary) không bao giờ chạy trong lúc giữ khóa transaction.
+* **Nhóm đã giải tán chặn mọi write bill**: kể từ group governance (spec 0002 AC-9), `CreateBill`, `UpdateDraftBill`, `ReviewBill`, `FinalizeBill` đều gọi `database.LockActiveGroup` (`internal/platform/database/group_lock.go`) trước khi ghi bất cứ gì; nếu `groups.status = 'archived'` thao tác bị chặn ngay trong transaction. Các câu SQL đọc trạng thái OCR job (`UpdateOCRJobProcessing`, `UpdateOCRJobSuccess`, `UpdateOCRJobFailed`) và gauge `paysplit_ocr_queue_depth` cũng lọc theo `groups.status = 'active'`, nên một job của nhóm đã bị giải tán không còn được tính là job đang chạy.
 * **Idempotency**: Các mutation quan trọng (tạo bill, xóa draft, apply-candidate, review, finalize, void) yêu cầu header `Idempotency-Key`, được kiểm tra qua bảng `bill_idempotency_keys` với khóa `(actor_user_id, operation, key_hash)` và một dòng "in_progress" được reserve trước khi gọi ra ngoài (Cloudinary, LlamaExtract). Câu lệnh reserve dùng `ON CONFLICT ... DO UPDATE ... WHERE expires_at <= now()`, nên một dòng đã hết hạn được chiếm lại nguyên tử trong đúng một lượt. Dòng còn hạn không bị đụng và được đọc lại để quyết định replay hay báo xung đột.
 
 ---

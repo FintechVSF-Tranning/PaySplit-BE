@@ -334,7 +334,63 @@ paths:
               schema: {$ref: "#/components/schemas/GroupDetailResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
+    patch:
+      operationId: renameGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RenameGroupRequest"}
+      responses:
+        "200":
+          description: Group renamed and the activity committed atomically
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GroupResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      operationId: disbandGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: Group archived without deleting financial or audit history}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/GroupHasUnsettledObligations"}
   /api/v1/groups/{id}/invites:
+    get:
+      operationId: listGroupInvites
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Available invites ordered by created_at and id descending
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InviteListResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
     post:
       operationId: createGroupInvite
       tags: [Groups]
@@ -345,7 +401,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema: {$ref: "#/components/schemas/CreateInviteRequest"}
@@ -363,6 +419,7 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{id}/invites/{inviteId}:
     delete:
       operationId: revokeGroupInvite
@@ -391,7 +448,7 @@ paths:
         - name: code
           in: path
           required: true
-          schema: {type: string}
+          schema: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$'}
       responses:
         "200":
           description: Group name, active member count, and Captain display name
@@ -399,8 +456,8 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/InvitePreviewResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "410": {$ref: "#/components/responses/InviteUnavailable"}
+        "404": {$ref: "#/components/responses/InviteNotFound"}
+        "429": {$ref: "#/components/responses/RateLimited"}
   /api/v1/groups/join:
     post:
       operationId: joinGroup
@@ -418,9 +475,9 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/JoinGroupResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "404": {$ref: "#/components/responses/NotFound"}
+        "404": {$ref: "#/components/responses/InviteNotFound"}
         "409": {$ref: "#/components/responses/GroupMemberLimitReached"}
-        "410": {$ref: "#/components/responses/InviteUnavailable"}
+        "429": {$ref: "#/components/responses/RateLimited"}
   /api/v1/groups/{id}/members/{memberId}:
     delete:
       operationId: leaveOrRemoveMember
@@ -1058,6 +1115,126 @@ paths:
           description: "Bill already voided (BILL_ALREADY_VOIDED), or a payment for this bill has already started (PAYMENT_ALREADY_STARTED)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
 
+  /api/v1/groups/{groupId}/expenses/me:
+    get:
+      operationId: getMyGroupExpenses
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Personal finalized bill allocations, content: {application/json: {schema: {$ref: "#/components/schemas/ExpensePage"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/groups/{groupId}/debts:
+    get:
+      operationId: listGroupDebts
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: debtor_member_id, in: query, schema: {type: string, format: uuid}}
+        - {name: creditor_member_id, in: query, schema: {type: string, format: uuid}}
+        - {name: status, in: query, schema: {type: string, enum: [awaiting, pending_confirmation, settled]}}
+      responses:
+        "200": {description: Filtered debts plus unfiltered group totals, content: {application/json: {schema: {$ref: "#/components/schemas/DebtPage"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/v1/groups/{groupId}/debts/{debtId}/remind:
+    post:
+      operationId: remindDebt
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {name: debtId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      responses:
+        "200": {description: Reminder claimed, content: {application/json: {schema: {$ref: "#/components/schemas/ReminderResult"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/groups/{groupId}/payments/qr:
+    post:
+      operationId: generatePaymentQR
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GeneratePaymentRequest"}}}}
+      responses:
+        "200": {description: Matching pending payment replayed, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "201": {description: Payment created, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
+  /api/v1/groups/{groupId}/payments/{paymentId}:
+    get:
+      operationId: getPayment
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/PaymentId"}
+      responses:
+        "200": {description: Payment detail, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
+  /api/v1/groups/{groupId}/payments/{paymentId}/proof:
+    post:
+      operationId: submitPaymentProof
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/PaymentId"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties: {image: {type: string, format: binary}, note: {type: string, maxLength: 500}}
+      responses:
+        "200": {description: Proof accepted, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
+        "503": {description: Private storage unavailable}
+  /api/v1/groups/{groupId}/payments/{paymentId}/confirm:
+    post:
+      operationId: confirmPayment
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/PaymentId"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      responses:
+        "200": {description: Payment and every covered debt settled, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/groups/{groupId}/payments/{paymentId}/reject:
+    post:
+      operationId: rejectPayment
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {$ref: "#/components/parameters/PaymentId"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 1, maxLength: 500}}}}}}
+      responses:
+        "200": {description: Payment rejected and covered debts reset, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/admin/accounts:
     get:
       summary: List user accounts with search, filter, sort, and pagination
@@ -1178,6 +1355,12 @@ paths:
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    GroupId: {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
+    PaymentId: {name: paymentId, in: path, required: true, schema: {type: string, format: uuid}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1}}
   requestBodies:
     VerifyEmail:
       required: true
@@ -1215,12 +1398,18 @@ components:
     NotFound:
       description: Resource missing, or the caller is not authorized to see it
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    UnprocessableEntity:
+      description: The request is valid but required business data is incomplete
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     CaptainRequired:
       description: Caller is not the group's active Captain
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
-    InviteUnavailable:
-      description: Invite is expired, revoked, or exhausted (one public code for all three)
+    InviteNotFound:
+      description: Invite is malformed, unknown, expired, revoked, or exhausted; every unusable state returns INVITE_NOT_FOUND
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    GroupHasUnsettledObligations:
+      description: Group has bills outside finalized or voided, or debts outside settled or voided
+      content: {application/json: {schema: {$ref: "#/components/schemas/GroupUnsettledObligationsError"}}}
     GroupMemberLimitReached:
       description: Group already has 50 active members
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -1238,6 +1427,139 @@ components:
             required: [message]
             properties: {message: {type: string}}
   schemas:
+    GeneratePaymentRequest:
+      type: object
+      required: [creditor_member_id]
+      properties:
+        creditor_member_id: {type: string, format: uuid}
+        debt_ids: {type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: {type: string, format: uuid}}
+    RecipientBank:
+      type: object
+      required: [bank_code, bank_name, account_number, account_holder]
+      properties:
+        bank_code: {type: string, description: VietQR bank BIN}
+        bank_name: {type: string}
+        account_number: {type: string}
+        account_holder: {type: string}
+    Payment:
+      type: object
+      required: [id, group_id, debtor_member_id, creditor_member_id, amount, reference_code, status, covered_debt_ids, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        debtor_member_id: {type: string, format: uuid}
+        creditor_member_id: {type: string, format: uuid}
+        amount: {type: string, pattern: '^[0-9]+$'}
+        reference_code: {type: string, pattern: '^PAY[A-HJ-NP-Z2-9]{8}$'}
+        status: {type: string, enum: [pending_proof, pending_confirmation, confirmed, rejected, superseded]}
+        qr_payload: {type: string, nullable: true}
+        qr_image_url: {type: string, format: uri, nullable: true}
+        recipient: {allOf: [{$ref: "#/components/schemas/RecipientBank"}], nullable: true}
+        image_url: {type: string, format: uri, nullable: true}
+        note: {type: string, nullable: true}
+        rejection_reason: {type: string, nullable: true}
+        covered_debt_ids: {type: array, items: {type: string, format: uuid}}
+        created_at: {type: string, format: date-time}
+        submitted_at: {type: string, format: date-time, nullable: true}
+        confirmed_at: {type: string, format: date-time, nullable: true}
+        rejected_at: {type: string, format: date-time, nullable: true}
+    PaymentEnvelope:
+      type: object
+      required: [payment]
+      properties: {payment: {$ref: "#/components/schemas/Payment"}}
+    PaymentMutationEnvelope:
+      type: object
+      required: [payment]
+      properties:
+        payment: {$ref: "#/components/schemas/Payment"}
+        settled_debts: {type: array, items: {type: string, format: uuid}}
+        reset_debts: {type: array, items: {type: string, format: uuid}}
+    ReminderResult:
+      type: object
+      required: [debt_id, reminder_count, reminded_at]
+      properties: {debt_id: {type: string, format: uuid}, reminder_count: {type: integer, minimum: 1, maximum: 3}, reminded_at: {type: string, format: date-time}}
+    ExpenseItem:
+      type: object
+      required: [item_name, quantity, unit_price, line_total, item_discount_amount, item_final_price, share_ratio, item_share]
+      properties:
+        item_name: {type: string}
+        quantity: {type: string}
+        unit_price: {type: string}
+        line_total: {type: string}
+        item_discount_amount: {type: string}
+        item_final_price: {type: string}
+        share_ratio: {type: string}
+        item_share: {type: string}
+    ExpenseAllocation:
+      type: object
+      required: [item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount]
+      properties:
+        item_subtotal: {type: string}
+        service_charge_share: {type: string}
+        vat_share: {type: string}
+        discount_share: {type: string}
+        rounding_adjustment: {type: string}
+        final_amount: {type: string}
+    ExpenseBill:
+      type: object
+      required: [bill_id, bill_date, merchant_name, creditor_member_id, creditor_display_name, debt_id, debt_status, allocation, items]
+      properties:
+        bill_id: {type: string, format: uuid}
+        bill_date: {type: string, format: date}
+        merchant_name: {type: string}
+        creditor_member_id: {type: string, format: uuid}
+        creditor_display_name: {type: string}
+        debt_id: {type: string, format: uuid, nullable: true}
+        debt_status: {type: string, enum: [awaiting, pending_confirmation, settled, voided], nullable: true}
+        allocation: {$ref: "#/components/schemas/ExpenseAllocation"}
+        items: {type: array, items: {$ref: "#/components/schemas/ExpenseItem"}}
+    ExpensePage:
+      type: object
+      required: [summary, bills, next_cursor]
+      properties:
+        summary:
+          type: object
+          required: [total_owed, total_settled, total_receivable, net_balance]
+          properties: {total_owed: {type: string}, total_settled: {type: string}, total_receivable: {type: string}, net_balance: {type: string}}
+        bills: {type: array, items: {$ref: "#/components/schemas/ExpenseBill"}}
+        next_cursor: {type: string, nullable: true}
+    Debt:
+      type: object
+      required: [id, bill_id, bill_date, merchant_name, debtor_member_id, debtor_display_name, debtor_avatar_url, creditor_member_id, creditor_display_name, creditor_avatar_url, amount, status, reminder_count, payment_id, created_at, settled_at]
+      properties:
+        id: {type: string, format: uuid}
+        bill_id: {type: string, format: uuid}
+        bill_date: {type: string, format: date}
+        merchant_name: {type: string}
+        debtor_member_id: {type: string, format: uuid}
+        debtor_display_name: {type: string}
+        debtor_avatar_url: {type: string, format: uri, nullable: true}
+        creditor_member_id: {type: string, format: uuid}
+        creditor_display_name: {type: string}
+        creditor_avatar_url: {type: string, format: uri, nullable: true}
+        amount: {type: string}
+        status: {type: string, enum: [awaiting, pending_confirmation, settled, voided]}
+        reminder_count: {type: integer, minimum: 0, maximum: 3}
+        payment_id: {type: string, format: uuid, nullable: true}
+        created_at: {type: string, format: date-time}
+        settled_at: {type: string, format: date-time, nullable: true}
+    DebtMatrixEntry:
+      type: object
+      required: [debtor_member_id, creditor_member_id, total_amount, debt_count]
+      properties:
+        debtor_member_id: {type: string, format: uuid}
+        creditor_member_id: {type: string, format: uuid}
+        total_amount: {type: string}
+        debt_count: {type: integer, format: int64, minimum: 1}
+    DebtPage:
+      type: object
+      required: [debts, net_matrix, caller_payable, caller_receivable, next_cursor]
+      properties:
+        debts: {type: array, items: {$ref: "#/components/schemas/Debt"}}
+        net_matrix: {type: array, items: {$ref: "#/components/schemas/DebtMatrixEntry"}}
+        caller_payable: {type: string}
+        caller_receivable: {type: string}
+        next_cursor: {type: string, nullable: true}
     Password:
       type: string
       minLength: 8
@@ -1365,6 +1687,23 @@ components:
               properties:
                 payable_amount: {type: string, description: Decimal VND string the target still owes others}
                 receivable_amount: {type: string, description: Decimal VND string others still owe the target}
+    GroupUnsettledObligationsError:
+      description: Error variant for GROUP_HAS_UNSETTLED_OBLIGATIONS
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, fields]
+          properties:
+            code: {type: string, enum: [GROUP_HAS_UNSETTLED_OBLIGATIONS]}
+            message: {type: string}
+            fields:
+              type: object
+              required: [draft_or_reviewed_bill_count, open_debt_count]
+              properties:
+                draft_or_reviewed_bill_count: {type: string, pattern: '^[0-9]+$'}
+                open_debt_count: {type: string, pattern: '^[0-9]+$'}
     CreateGroupRequest:
       type: object
       required: [name]
@@ -1380,6 +1719,17 @@ components:
         name: {type: string}
         currency: {type: string, enum: [VND]}
         created_at: {type: string, format: date-time}
+    RenameGroupRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100, description: Trimmed to 1-100 Unicode code points}
+    GroupResponse:
+      type: object
+      required: [group]
+      properties:
+        group: {$ref: "#/components/schemas/Group"}
     Membership:
       type: object
       required: [id, group_id, user_id, role, status, joined_at, left_at]
@@ -1438,17 +1788,20 @@ components:
     CreateInviteRequest:
       type: object
       additionalProperties: false
+      description: >-
+        Any present field requires the active Captain. With an available invite and regenerate
+        absent or false, that invite is reused unchanged. Values apply when creating a new invite.
       properties:
-        expires_in_hours: {type: integer, minimum: 1, maximum: 168, default: 24}
-        max_uses: {type: integer, minimum: 1, maximum: 50, nullable: true, description: Optional; unlimited when omitted}
-        regenerate: {type: boolean, default: false, description: Revoke every available invite first and create one new one}
+        expires_in_hours: {type: integer, minimum: 1, maximum: 168, description: Defaults to 24 when a new invite is created}
+        max_uses: {type: integer, minimum: 1, maximum: 50, description: Unlimited when omitted for a new invite}
+        regenerate: {type: boolean, description: True revokes every available invite first; false behaves like omission}
     Invite:
       type: object
       required: [id, code, invite_url, expires_at, max_uses, use_count]
       properties:
         id: {type: string, format: uuid}
-        code: {type: string, description: Sensitive; only ever returned by create or reuse}
-        invite_url: {type: string, description: APP_INVITE_BASE_URL plus the encoded invite code}
+        code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$', description: Sensitive; only returned by active invite list or create/reuse}
+        invite_url: {type: string, format: uri, description: HTTPS APP_INVITE_BASE_URL plus code as the final path segment}
         expires_at: {type: string, format: date-time}
         max_uses: {type: integer, nullable: true}
         use_count: {type: integer}
@@ -1457,6 +1810,13 @@ components:
       required: [invite]
       properties:
         invite: {$ref: "#/components/schemas/Invite"}
+    InviteListResponse:
+      type: object
+      required: [invites]
+      properties:
+        invites:
+          type: array
+          items: {$ref: "#/components/schemas/Invite"}
     InvitePreview:
       type: object
       required: [group_name, active_member_count, captain_display_name]
@@ -1474,7 +1834,7 @@ components:
       required: [code]
       additionalProperties: false
       properties:
-        code: {type: string}
+        code: {type: string, minLength: 8, maxLength: 8, pattern: '^[A-Za-z0-9]{8}$', description: Malformed values still receive INVITE_NOT_FOUND}
     JoinResult:
       type: object
       required: [group_id, membership_id, role, status, result]
@@ -1521,7 +1881,7 @@ components:
         id: {type: string, format: uuid}
         action_type:
           type: string
-          enum: [group_created, invite_created, invite_revoked, member_joined, member_reactivated, member_left, member_removed, captain_transferred]
+          enum: [group_created, invite_created, invite_revoked, member_joined, member_reactivated, member_left, member_removed, captain_transferred, group_renamed, group_archived]
         description: {type: string}
         actor: {$ref: "#/components/schemas/ActivityActor"}
         metadata: {type: object, description: "Exact keys per action_type; never includes an invite code"}

@@ -20,6 +20,9 @@ var (
 	// ErrInviteUnavailable covers expired, revoked, and exhausted invites
 	// with a single public code so none is distinguishable from another.
 	ErrInviteUnavailable = errors.New("invite unavailable")
+	// ErrInviteCodeCollision asks the usecase to generate a new code and start
+	// the repository operation again at a fresh transaction boundary.
+	ErrInviteCodeCollision = errors.New("invite code collision")
 	// ErrGroupMemberLimitReached is returned when a new join or
 	// reactivation would push a group past 50 active members.
 	ErrGroupMemberLimitReached = errors.New("group member limit reached")
@@ -46,3 +49,14 @@ type OpenDebtsError struct {
 }
 
 func (e *OpenDebtsError) Error() string { return "member has open debts" }
+
+// UnsettledObligationsError carries the exact row counts that prevent a group
+// from being archived.
+type UnsettledObligationsError struct {
+	DraftOrReviewedBillCount int64
+	OpenDebtCount            int64
+}
+
+func (e *UnsettledObligationsError) Error() string {
+	return "group has unsettled obligations"
+}

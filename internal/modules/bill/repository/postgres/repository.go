@@ -17,6 +17,7 @@ import (
 	"paysplit-backend/internal/modules/bill/domain"
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/modules/bill/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/database"
 )
 
 type postgresRepository struct {
@@ -43,8 +44,10 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 	}
 	defer tx.Rollback(ctx)
 
+	if err = lockActiveBillGroup(ctx, tx, p.Bill.GroupID); err != nil {
+		return nil, err
+	}
 	q := sqlc.New(tx)
-
 	// 1. Tạo bản ghi bills
 	var billDate pgtype.Date
 	if p.Bill.BillDate != nil {
@@ -424,6 +427,9 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 	}
 	defer tx.Rollback(ctx)
 
+	if err = lockActiveBillGroup(ctx, tx, p.Bill.GroupID); err != nil {
+		return nil, err
+	}
 	q := sqlc.New(tx)
 
 	var billDate pgtype.Date
@@ -558,6 +564,9 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 	}
 	defer tx.Rollback(ctx)
 
+	if err = lockActiveBillGroup(ctx, tx, groupID); err != nil {
+		return nil, err
+	}
 	q := sqlc.New(tx)
 
 	dbBill, err := q.ReviewBill(ctx, sqlc.ReviewBillParams{
@@ -692,6 +701,9 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 	}
 	defer tx.Rollback(ctx)
 
+	if err = lockActiveBillGroup(ctx, tx, p.GroupID); err != nil {
+		return nil, err
+	}
 	q := sqlc.New(tx)
 
 	// 1. Cập nhật status bill thành finalized
@@ -807,6 +819,11 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	defer tx.Rollback(ctx)
 
 	q := sqlc.New(tx)
+	// Settlement v1 serializes every debt or payment mutation through the group
+	// row. This keeps bill void and proof submission on the same lock order.
+	if err = lockActiveBillGroup(ctx, tx, p.GroupID); err != nil {
+		return nil, err
+	}
 
 	// 1. Khóa bản ghi bills trước (bills FOR UPDATE) tuân thủ lock ordering hierarchy
 	// để ngăn ngừa deadlock với luồng finalize và module thanh toán (Spec 3 index.md:88, 0003:50, Invariant 12).
@@ -840,6 +857,19 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 	for _, d := range debts {
 		if d.Status != "awaiting" || d.PaymentID.Valid {
 			return nil, domain.ErrPaymentAlreadyStarted
+		}
+	}
+
+	// A pending proof payment is only a QR intent and does not reserve a debt.
+	// Preserve its immutable payment_debts audit links, but make its QR inactive
+	// before the linked awaiting debts are voided.
+	debtIDs := make([]uuid.UUID, 0, len(debts))
+	for _, debt := range debts {
+		debtIDs = append(debtIDs, uuid.UUID(debt.ID.Bytes))
+	}
+	if len(debtIDs) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE payments p SET status='superseded',updated_at=now() FROM (SELECT DISTINCT payment_id FROM payment_debts WHERE debt_id=ANY($1::uuid[])) linked WHERE p.id=linked.payment_id AND p.status='pending_proof'`, debtIDs); err != nil {
+			return nil, fmt.Errorf("supersede pending payments for void: %w", err)
 		}
 	}
 
@@ -891,6 +921,9 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.D
 	}
 	defer tx.Rollback(ctx)
 
+	if err = lockActiveBillGroup(ctx, tx, p.GroupID); err != nil {
+		return err
+	}
 	q := sqlc.New(tx)
 
 	// Lấy thông tin bill trước khi xóa để kiểm tra
@@ -958,6 +991,16 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 	defer tx.Rollback(ctx)
 
 	q := sqlc.New(tx)
+	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: job.BillID, Valid: true})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrBillNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get OCR job bill: %w", err)
+	}
+	if err = lockActiveBillGroup(ctx, tx, uuid.UUID(billRow.GroupID.Bytes)); err != nil {
+		return nil, err
+	}
 
 	var candidateBytes []byte
 	if job.Candidate != nil {
@@ -1129,6 +1172,16 @@ func (r *postgresRepository) EnqueueMediaCleanup(ctx context.Context, prefix, ki
 		ID:        pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		ObjectKey: prefix,
 	})
+}
+
+func lockActiveBillGroup(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) error {
+	if err := database.LockActiveGroup(ctx, tx, groupID); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrForbidden
+		}
+		return fmt.Errorf("lock active group: %w", err)
+	}
+	return nil
 }
 
 // ============================================================================

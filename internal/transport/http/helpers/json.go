@@ -36,7 +36,20 @@ func WriteJSON(w http.ResponseWriter, status int, data any) error {
 // ReadJSON decodes exactly one JSON value from a request body. The body is
 // limited to 1 MiB and unknown object fields are rejected.
 func ReadJSON(w http.ResponseWriter, r *http.Request, data any) error {
+	return readJSON(w, r, data, false)
+}
+
+// ReadOptionalJSON applies the same size, unknown-field, and single-value
+// rules as ReadJSON while accepting a missing or empty body as the zero value.
+func ReadOptionalJSON(w http.ResponseWriter, r *http.Request, data any) error {
+	return readJSON(w, r, data, true)
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, data any, allowEmpty bool) error {
 	if r.Body == nil {
+		if allowEmpty {
+			return nil
+		}
 		return errors.New("request body must not be empty")
 	}
 
@@ -48,6 +61,9 @@ func ReadJSON(w http.ResponseWriter, r *http.Request, data any) error {
 
 	if err := decoder.Decode(data); err != nil {
 		if errors.Is(err, io.EOF) {
+			if allowEmpty {
+				return nil
+			}
 			return errors.New("request body must not be empty")
 		}
 		return fmt.Errorf("decode JSON request body: %w", err)

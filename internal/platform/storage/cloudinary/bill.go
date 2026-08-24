@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	cld "github.com/cloudinary/cloudinary-go/v2"
@@ -46,6 +49,10 @@ func NewBillStorage(cfg config.CloudinaryConfig, timeout time.Duration) (*BillSt
 // Upload lưu trữ ảnh hóa đơn lên Cloudinary dưới dạng Private Asset (Spec 3 AC-1).
 // Public ID tuân thủ quy ước: "bills/{operation_id}/{position}".
 func (s *BillStorage) Upload(ctx context.Context, data []byte, publicID string) (string, error) {
+	return s.upload(ctx, data, publicID, "jpg", "", "bill receipt")
+}
+
+func (s *BillStorage) upload(ctx context.Context, data []byte, publicID, format, transformation, assetKind string) (string, error) {
 	uploadCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
@@ -56,16 +63,18 @@ func (s *BillStorage) Upload(ctx context.Context, data []byte, publicID string) 
 		PublicID:       publicID,
 		ResourceType:   "image",
 		Type:           api.Private,
+		Format:         format,
+		Transformation: transformation,
 		Overwrite:      &overwrite,
 		UniqueFilename: &unique,
 	})
 	if err != nil {
-		return "", fmt.Errorf("upload Cloudinary bill receipt: %w", err)
+		return "", fmt.Errorf("upload Cloudinary %s: %w", assetKind, err)
 	}
 	if result != nil && result.Error.Message != "" {
-		return "", fmt.Errorf("upload Cloudinary bill receipt: %s", result.Error.Message)
+		return "", fmt.Errorf("upload Cloudinary %s: %s", assetKind, result.Error.Message)
 	}
-	if result == nil || result.PublicID == "" {
+	if result == nil || result.PublicID == "" || !strings.EqualFold(result.Format, format) {
 		return "", errors.New("empty Cloudinary upload response")
 	}
 
@@ -74,6 +83,10 @@ func (s *BillStorage) Upload(ctx context.Context, data []byte, publicID string) 
 
 // SignedURL sinh URL truy cập tạm thời có chữ ký bảo mật cho ảnh hóa đơn private (Spec 3 AC-8, AC-12).
 func (s *BillStorage) SignedURL(publicID string, ttl time.Duration) (string, error) {
+	return s.signedURL(publicID, ttl, "jpg")
+}
+
+func (s *BillStorage) signedURL(publicID string, ttl time.Duration, format string) (string, error) {
 	if publicID == "" {
 		return "", errors.New("publicID must not be empty")
 	}
@@ -82,19 +95,29 @@ func (s *BillStorage) SignedURL(publicID string, ttl time.Duration) (string, err
 		ttl = 5 * time.Minute
 	}
 
-	asset, err := s.client.Image(publicID)
-	if err != nil {
-		return "", fmt.Errorf("build Cloudinary image asset: %w", err)
+	query := url.Values{
+		"expires_at": {strconv.FormatInt(time.Now().Add(ttl).Unix(), 10)},
+		"format":     {format},
+		"public_id":  {publicID},
+		"type":       {string(api.Private)},
 	}
-
-	asset.DeliveryType = api.Private
-	asset.Config.URL.SignURL = true
-	asset.Config.AuthToken.Duration = int64(ttl.Seconds())
-
-	urlStr, err := asset.String()
+	signature, err := api.SignParametersUsingAlgoAndVersion(
+		query,
+		s.client.Config.Cloud.APISecret,
+		s.client.Config.Cloud.GetSignatureAlgorithm(),
+		s.client.Config.Cloud.GetSignatureVersion(),
+	)
 	if err != nil {
 		return "", fmt.Errorf("generate signed url: %w", err)
 	}
+	query.Set("api_key", s.client.Config.Cloud.APIKey)
+	query.Set("signature", signature)
+	urlStr := fmt.Sprintf(
+		"%s/v1_1/%s/image/download?%s",
+		strings.TrimRight(s.client.Config.API.UploadPrefix, "/"),
+		s.client.Config.Cloud.CloudName,
+		query.Encode(),
+	)
 
 	return urlStr, nil
 }

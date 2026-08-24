@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -101,6 +102,62 @@ func setupTestUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, userID)
 	})
 	return userID
+}
+
+func TestIntegration_CreateBillRejectsArchivedGroup_AC9(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, _ := setupTestGroupAndMembers(t, pool)
+	if _, err := pool.Exec(context.Background(), `UPDATE groups SET status='archived' WHERE id=$1`, groupID); err != nil {
+		t.Fatal(err)
+	}
+
+	billID := uuid.New()
+	_, err := repo.CreateBill(context.Background(), repository.CreateBillParams{Bill: &domain.Bill{
+		ID:               billID,
+		GroupID:          groupID,
+		CreditorMemberID: creditorID,
+		Status:           domain.BillStatusDraft,
+		SplitMethod:      domain.SplitMethodEven,
+	}})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("CreateBill() error = %v, want ErrForbidden for archived group", err)
+	}
+	var count int
+	if countErr := pool.QueryRow(context.Background(), `SELECT count(*) FROM bills WHERE id=$1`, billID).Scan(&count); countErr != nil {
+		t.Fatal(countErr)
+	}
+	if count != 0 {
+		t.Fatalf("archived group write created %d bills, want 0", count)
+	}
+}
+
+func TestIntegration_OCRCompletionRejectsArchivedGroup_AC9(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, _ := setupTestGroupAndMembers(t, pool)
+	billID, jobID := uuid.New(), uuid.New()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO bills(id,group_id,creditor_member_id,status) VALUES($1,$2,$3,'draft')`, billID, groupID, creditorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO ocr_jobs(id,bill_id,status,provider) VALUES($1,$2,'processing','test')`, jobID, billID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE groups SET status='archived' WHERE id=$1`, groupID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.UpdateOCRJobSuccess(ctx, jobID, nil, []byte(`{}`)); !errors.Is(err, domain.ErrOcrJobConflict) {
+		t.Fatalf("UpdateOCRJobSuccess() error = %v, want ErrOcrJobConflict", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status::text FROM ocr_jobs WHERE id=$1`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "processing" {
+		t.Fatalf("archived OCR job status = %q, want unchanged processing", status)
+	}
 }
 
 func TestIntegration_CreateAndGetBill(t *testing.T) {

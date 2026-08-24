@@ -9,18 +9,18 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 
 ## At a glance
 
-| # | Feature | Phase | Status |
-|---|---|---|---|
-| 1 | Auth and account v1 | Slice 1 | in-progress |
-| 2 | Group management v1 | Slice 2 | in-progress |
-| 3 | Bill and OCR v1 | Slice 3 | done |
-| 4 | Split and settlement v1 | Slice 4 | in-progress |
-| 5 | Admin v1 | Slice 5 | in-progress |
-| 6 | Notification and background queue v1 | Slice 6 | done |
+| #   | Feature                              | Phase   | Status      |
+| --- | ------------------------------------ | ------- | ----------- |
+| 1   | Auth and account v1                  | Slice 1 | done        |
+| 2   | Group management v1                  | Slice 2 | in-progress |
+| 3   | Bill and OCR v1                      | Slice 3 | done        |
+| 4   | Split and settlement v1              | Slice 4 | in-progress |
+| 5   | Admin v1                             | Slice 5 | in-progress |
+| 6   | Notification and background queue v1 | Slice 6 | done        |
 
 ## Slice 1: Identity and account
 
-### 1. Auth and account v1 · in-progress
+### 1. Auth and account v1 · done
 
 Provide registration, email verification, email password sign in, one active device, rotating refresh tokens, password recovery, profile updates, bank validation, and WebP avatars.
 
@@ -44,23 +44,25 @@ Spec [0001](../specs/0001-auth-account-v1/index.md) · code in `internal/modules
 
 ### 2. Group management v1 · in-progress
 
-Provide group creation, Captain controlled invites, idempotent invite redemption, group preview, membership management, Captain transfer, activity logging, safe member exit with no open debtor or creditor obligations, and safe group disbandment.
+Provide group creation, member shareable Base62 invites with Captain controlled policy, idempotent invite redemption, group preview, membership management, Captain transfer, rename, activity logging, safe member exit with no open debtor or creditor obligations, and safe group disbandment.
 
-**Done when:** all nine acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, concurrent invite and Captain operations preserve their limits and invariants, member exit and group disbandment reject every open debtor or creditor obligation (correctly excluding voided debts), and key group mutations write activities atomically.
+**Done when:** all twelve acceptance criteria in spec 0002 pass against PostgreSQL 18, active memberships govern access, concurrent invite and Captain operations preserve their limits and invariants, member exit and group disbandment reject every open debtor or creditor obligation (correctly excluding voided debts), archived groups reject later group, bill, and settlement writes, and key group mutations write activities atomically.
 
 - [x] Design it (spec): `/architect group management v1`
-- [ ] Build it: `/develop group management v1`
+- [x] Build it: `/develop group management v1`
   - [x] Create, list, and detail vertical slice with exact validation, DTOs, privacy preserving authorization, cursor reads, and PostgreSQL coverage (satisfies AC-1, AC-2)
   - [x] Captain invite vertical slice with one available invite, reuse, regeneration, revocation, redaction, and atomic activities (satisfies AC-3, AC-8)
   - [x] Preview and redemption vertical slice with idempotent join, capacity limits, membership reactivation, and concurrency coverage (satisfies AC-4, AC-5, AC-8)
   - [x] Member exit and Captain transfer vertical slice with open obligation checks, ordered locks, atomic role transfer, and stable conflicts (satisfies AC-6, AC-7, AC-8)
   - [x] Activity timeline, shared error mapping, OpenAPI, module documentation, and end to end verification (satisfies AC-1 through AC-8)
   - [x] Fix the voided debt exclusion bug in member exit's open obligation queries, plus their backing indexes (satisfies corrected AC-6)
-  - [ ] Disband group vertical slice: `groups.status` migration, disband transaction, archived group write gate, and integration coverage (satisfies AC-9)
-- [ ] Verify it: `/check verify group management v1`
-- [ ] Test it: `/test group management v1`
-- [ ] Review it (fresh model): `/check review group management v1`
-- [ ] Document it: `/document group management v1`
+  - [x] Member invite sharing vertical slice: Base62 migration, path links, list endpoint, member create or reuse, unified unavailable errors, collision retries, and account plus IP limiter (satisfies AC-3, AC-4, AC-10, AC-12)
+  - [x] Rename group vertical slice: Captain transaction, validation, activity, route, and integration coverage (satisfies AC-8, AC-11)
+  - [x] Disband group vertical slice: `groups.status` migration, disband transaction, shared active group lock, archived group write gate, and integration coverage (satisfies AC-6, AC-9)
+- [x] Verify it: `/check verify group management v1`
+- [x] Test it: `/test group management v1`
+- [x] Review it (fresh model): `/check review group management v1`
+- [x] Document it: `/document group management v1`
 
 Spec [0002](../specs/0002-group-management-v1/index.md) · code in `internal/modules/group/` and `internal/bootstrap/`
 
@@ -83,8 +85,8 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
   - [x] Manual edit preserves item level discount: `discount_amount` round trips through `POST /bills` and `PUT /bills/{id}`, plus the pre existing `CreateBill` discount composition bug fix (satisfies AC-19, AC-20, AC-21)
 - [x] Verify it: `/check verify bill and OCR v1`
 - [x] Test it: `/test bill and OCR v1`
-- [ ] Review it (fresh model): `/check review bill and OCR v1`
-- [ ] Document it: `/document bill and OCR v1`
+- [x] Review it (fresh model): `/check review bill and OCR v1`
+- [x] Document it: `/document bill and OCR v1`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
@@ -97,19 +99,19 @@ Provide personal allocated expense breakdown, group debt matrix and cursor listi
 **Done when:** all twelve acceptance criteria in spec 0004 pass against PostgreSQL 18, payments strictly coordinate peer to peer transfers without fund custody, dynamic bank lookups and immutable proof snapshots operate reliably, strict lock ordering eliminates race conditions with bill voiding, and River background jobs process reminder and stalled alerts.
 
 - [x] Design it (spec): `/architect split and settlement v1`
-- [ ] Build it: `/develop split and settlement v1`
-  - [ ] Personal expense breakdown and group debt matrix query slice (satisfies AC-1, AC-2)
-  - [ ] VietQR payment generation and dynamic bank profile lookup slice (satisfies AC-3, AC-4, AC-5, AC-11)
-  - [ ] Transfer proof submission and Cloudinary private asset slice (satisfies AC-6, AC-11, AC-12)
-  - [ ] Creditor confirmation and rejection all or nothing settlement slice (satisfies AC-7, AC-8, AC-11)
-  - [ ] Manual debt reminder and River scheduled background jobs slice (satisfies AC-9, AC-10)
-  - [ ] Operational hardening, metrics, structured redaction, and end to end verification (satisfies AC-1 through AC-12)
-- [ ] Verify it: `/check verify split and settlement v1`
-- [ ] Test it: `/test split and settlement v1`
-- [ ] Review it (fresh model): `/check review split and settlement v1`
-- [ ] Document it: `/document split and settlement v1`
+- [x] Build it: `/develop split and settlement v1`
+  - [x] Personal expense breakdown and group debt matrix query slice (satisfies AC-1, AC-2)
+  - [x] VietQR payment generation and dynamic bank profile lookup slice (satisfies AC-3, AC-4, AC-5, AC-11)
+  - [x] Transfer proof submission and Cloudinary private asset slice (satisfies AC-6, AC-11, AC-12)
+  - [x] Creditor confirmation and rejection all or nothing settlement slice (satisfies AC-7, AC-8, AC-11)
+  - [x] Manual debt reminder and River scheduled background jobs slice (satisfies AC-9, AC-10)
+  - [x] Operational hardening, metrics, structured redaction, and end to end verification (satisfies AC-1 through AC-12)
+- [x] Verify it: `/check verify split and settlement v1`
+- [x] Test it: `/test split and settlement v1`
+- [x] Review it (fresh model): `/check review split and settlement v1`
+- [x] Document it: `/document split and settlement v1`
 
-Spec [0004](../specs/0004-split-settlement-v1/index.md) · planned code in `internal/modules/settlement/`, `internal/platform/vietqr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
+Spec [0004](../specs/0004-split-settlement-v1/index.md) · code in `internal/modules/settlement/`, `internal/platform/vietqr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
 ## Slice 5: Admin and monitoring
 

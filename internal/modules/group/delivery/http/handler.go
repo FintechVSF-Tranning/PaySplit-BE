@@ -95,17 +95,45 @@ func (h *Handler) GetGroupDetail(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	var req createInviteRequest
-	if !read(w, r, &req) {
+	if !readOptional(w, r, &req) {
 		return
 	}
 	userID, _ := authmw.UserID(r.Context())
 	groupID := chi.URLParam(r, "id")
+	hasConfiguration := req.hasConfiguration()
+	if hasConfiguration {
+		// Presence is authoritative for authorization. Values remain raw until
+		// after this check so malformed policy fields from a non-Captain still
+		// receive the contractually required 403 response.
+		if err := h.service.AuthorizeInviteConfiguration(r.Context(), groupID, userID); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
+	if err := req.decodePolicy(); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return
+	}
+	var expiresInHours *int
+	if req.ExpiresInHours.Set && !req.ExpiresInHours.Null {
+		expiresInHours = &req.ExpiresInHours.Value
+	}
+	var maxUses *int
+	if req.MaxUses.Set && !req.MaxUses.Null {
+		maxUses = &req.MaxUses.Value
+	}
+	var regenerate *bool
+	if req.Regenerate.Set && !req.Regenerate.Null {
+		regenerate = &req.Regenerate.Value
+	}
 	out, err := h.service.CreateInvite(r.Context(), usecase.CreateInviteInput{
-		GroupID:        groupID,
-		CallerUserID:   userID,
-		ExpiresInHours: req.ExpiresInHours,
-		MaxUses:        req.MaxUses,
-		Regenerate:     req.Regenerate,
+		GroupID:              groupID,
+		CallerUserID:         userID,
+		ExpiresInHours:       expiresInHours,
+		MaxUses:              maxUses,
+		Regenerate:           regenerate,
+		HasConfiguration:     hasConfiguration,
+		HasNullConfiguration: req.hasNullConfiguration(),
 	})
 	if err != nil {
 		writeDomainError(w, err)
@@ -116,6 +144,20 @@ func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, r, status, map[string]any{"invite": newInviteResponse(*out.Invite, out.InviteURL)})
+}
+
+func (h *Handler) ListInvites(w http.ResponseWriter, r *http.Request) {
+	userID, _ := authmw.UserID(r.Context())
+	items, err := h.service.ListAvailableInvites(r.Context(), chi.URLParam(r, "id"), userID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	invites := make([]inviteResponse, 0, len(items))
+	for _, item := range items {
+		invites = append(invites, newInviteResponse(item.Invite, item.InviteURL))
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"invites": invites})
 }
 
 func (h *Handler) RevokeInvite(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +226,29 @@ func (h *Handler) TransferRole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"transfer": newCaptainTransferResponse(*transfer)})
 }
 
+func (h *Handler) RenameGroup(w http.ResponseWriter, r *http.Request) {
+	var req renameGroupRequest
+	if !read(w, r, &req) {
+		return
+	}
+	userID, _ := authmw.UserID(r.Context())
+	group, err := h.service.RenameGroup(r.Context(), chi.URLParam(r, "id"), userID, req.Name)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"group": newGroupResponse(*group)})
+}
+
+func (h *Handler) DisbandGroup(w http.ResponseWriter, r *http.Request) {
+	userID, _ := authmw.UserID(r.Context())
+	if err := h.service.DisbandGroup(r.Context(), chi.URLParam(r, "id"), userID); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) ListActivities(w http.ResponseWriter, r *http.Request) {
 	userID, _ := authmw.UserID(r.Context())
 	groupID := chi.URLParam(r, "id")
@@ -229,6 +294,14 @@ func read(w http.ResponseWriter, r *http.Request, d any) bool {
 	}
 	return true
 }
+
+func readOptional(w http.ResponseWriter, r *http.Request, d any) bool {
+	if err := helpers.ReadOptionalJSON(w, r, d); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid request body", nil)
+		return false
+	}
+	return true
+}
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 	if err := helpers.WriteJSON(w, status, data); err != nil {
 		log.Printf("event=response_write_failed request_id=%s", chiMiddleware.GetReqID(r.Context()))
@@ -245,10 +318,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusNotFound, "GROUP_NOT_FOUND", "group not found"
 	case errors.Is(err, domain.ErrCaptainRequired):
 		status, code, message = http.StatusForbidden, "CAPTAIN_REQUIRED", "the active Captain must perform this action"
-	case errors.Is(err, domain.ErrInviteNotFound):
+	case errors.Is(err, domain.ErrInviteNotFound), errors.Is(err, domain.ErrInviteUnavailable):
 		status, code, message = http.StatusNotFound, "INVITE_NOT_FOUND", "invite not found"
-	case errors.Is(err, domain.ErrInviteUnavailable):
-		status, code, message = http.StatusGone, "INVITE_UNAVAILABLE", "invite is no longer available"
 	case errors.Is(err, domain.ErrGroupMemberLimitReached):
 		status, code, message = http.StatusConflict, "GROUP_MEMBER_LIMIT_REACHED", "group has reached its member limit"
 	case errors.Is(err, domain.ErrForbidden):
@@ -266,6 +337,16 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		fields := map[string]string{
 			"payable_amount":    strconv.FormatInt(openDebts.PayableAmount, 10),
 			"receivable_amount": strconv.FormatInt(openDebts.ReceivableAmount, 10),
+		}
+		_ = helpers.WriteAPIError(w, status, code, message, fields)
+		return
+	}
+	var obligations *domain.UnsettledObligationsError
+	if errors.As(err, &obligations) {
+		status, code, message = http.StatusConflict, "GROUP_HAS_UNSETTLED_OBLIGATIONS", "group has unsettled obligations"
+		fields := map[string]string{
+			"draft_or_reviewed_bill_count": strconv.FormatInt(obligations.DraftOrReviewedBillCount, 10),
+			"open_debt_count":              strconv.FormatInt(obligations.OpenDebtCount, 10),
 		}
 		_ = helpers.WriteAPIError(w, status, code, message, fields)
 		return

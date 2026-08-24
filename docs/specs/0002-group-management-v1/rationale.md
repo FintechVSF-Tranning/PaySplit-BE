@@ -4,16 +4,24 @@
 
 Group management is the access and isolation boundary for every later bill, debt, and payment workflow. Membership history must stay stable after a person leaves because financial rows reference `group_members`, not `users`. Invite redemption, member exit, Captain transfer, and future debt creation can run concurrently, so correctness cannot depend on separate check then write calls.
 
-The PRD requires Captain controlled invites, a 50 member limit, preserved financial history, and removal only after all obligations are settled. The current schema already provides composite group foreign keys, reusable membership identities, invite usage fields, a partial unique Captain index, and a derived member balance view. The design must distinguish a net zero display balance from the absence of open debt.
+The original PRD required Captain controlled invites. The approved FE change request now requires every active member to share the current invite while the Captain keeps control of invite policy, rename, revocation, and disbandment. The current schema already provides composite group foreign keys, reusable membership identities, invite usage fields, a partial unique Captain index, and a derived member balance view. The design must preserve those consistency rules while changing the public invite contract and keeping financial history intact.
 
 ## Drift check against shipped spec 0003, and the disband proposal (2026-08-21)
 
-This spec shipped (`Accepted`) before spec 0003 (`docs/specs/0003-bill-ocr-v1/`) added a `voided` value to `debt_status`. A cross check triggered by reviewing `docs/api-change-request.md` (a separate, non `docs/specs/` document proposing invite and group governance changes, requested by the FE team 2026-08-20) found two consequences:
+This spec shipped (`Accepted`) before spec 0003 (`docs/specs/0003-bill-ocr-v1/`) added a `voided` value to `debt_status`. A cross check triggered by reviewing `docs/change-req/api-change-request-01.md` (a separate, non `docs/specs/` document proposing invite and group governance changes, requested by the FE team 2026-08-20) found two consequences:
 
-- **A live bug, not just a stale doc.** This spec's AC-6 (member leave/removal) is implemented by `SumOpenDebtorTotal`/`SumOpenCreditorTotal` in `internal/modules/group/repository/postgres/queries/groups.sql`, both filtering `status <> 'settled'`. Since `voided` did not exist when this spec (and that code) was written, the filter was correct then; it is wrong now. A member whose only debt was voided (their bill got cancelled) is currently refused an otherwise valid exit with `409 GROUP_MEMBER_HAS_OPEN_DEBTS`. This is shipped, running code, tracked as Build plan item 6 and Follow-up item 5, routed to `/debug` since `/architect` does not change code.
-- **The Disband Group proposal in `api-change-request.md` had the identical bug** in its own precondition query, plus left the delete-versus-archive decision unresolved ("Xóa mềm / Lưu trữ nhóm ... hoặc xóa nhóm theo chính sách xóa cascade dữ liệu"). Decision (below, under Options considered's original Option 1 spirit: prefer the boring, already-established pattern) resolves both as **AC-9**: soft archive via `groups.status`, corrected debt predicate, never delete. This is additive to this spec, not a reopening of its already accepted decisions.
+- **A shipped bug, now fixed.** This spec's AC-6 member exit queries originally filtered `status <> 'settled'`. Once `voided` existed, that filter wrongly blocked a member whose only debt had been cancelled. Migration 000008, the corrected queries, and the regression test now exclude both `settled` and `voided`; Build plan item 6 and Follow-up item 5 preserve the repair history.
+- **The Disband Group proposal in `docs/change-req/api-change-request-01.md` had the identical bug** in its own precondition query, plus left the delete-versus-archive decision unresolved ("Xóa mềm / Lưu trữ nhóm ... hoặc xóa nhóm theo chính sách xóa cascade dữ liệu"). Decision (below, under Options considered's original Option 1 spirit: prefer the boring, already-established pattern) resolves both as **AC-9**: soft archive via `groups.status`, corrected debt predicate, never delete. This is additive to this spec, not a reopening of its already accepted decisions.
 
-`api-change-request.md`'s other proposals (Base62 invite codes, opening invite creation to any member, a new invite list endpoint, group rename, per account rate limiting) were deliberately left out of this update: none of them touch `debts`, and each reverses or extends an already accepted decision in this spec (AC-3, Security model #4, Key invariant #7) in ways that need their own design conversation, not a drift correction. See Follow-up item 6.
+The remaining proposals in `docs/change-req/api-change-request-01.md` were reconciled on 2026-08-22. AC-3 now allows an active member to share the default invite, AC-10 adds active invite listing, AC-11 adds rename, and AC-12 fixes the code, link, retry, redaction, unified error, and account plus IP rate limit contract.
+
+## Governance enhancement decision (2026-08-22)
+
+The existing group row remains the coordination point. Member sharing is not a new governance role: a standard member can only reuse the current invite or create one with fixed defaults. Supplying any policy field remains a Captain action, even when the supplied value is `false` or otherwise matches a default.
+
+Legacy invite rows cannot satisfy the new eight character check. Keeping them active with a hidden mapping would add a second code authority and conflict with the change request. The migration therefore revokes every legacy invite, replaces its stored value with a unique compliant historical placeholder, and lets a later member request create the new shareable code.
+
+Preview and join use one route specific UTC epoch minute window keyed independently by authenticated account and the direct TCP peer IP. The router already uses Chi `ClientIPFromRemoteAddr`, so forwarding headers remain untrusted and cannot spoof the key; a deployment behind a proxy intentionally shares that proxy's IP bucket until an explicit trusted proxy boundary is designed. The limiter reuses the current positive `HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE` value, so no new operational dependency is introduced. This is suitable only for the current single instance deployment. A shared PostgreSQL or Redis counter is required before adding replicas.
 
 ## Options considered
 
@@ -62,13 +70,23 @@ Move Captain existence, invite capacity, membership exit eligibility, and activi
 2. Business rules split between Go and procedural SQL.
 3. Trigger ordering and migration changes raise operational complexity for this team and scope.
 
+### Invite governance options considered
+
+**Fix in place (chosen)**: Extend the existing group transaction so active members can share defaults while the Captain retains policy control. Rotate legacy codes once and keep one raw code authority. (basis: the existing group module, the approved change request, and the strangler pattern for live enhancements)
+
+**Keep Captain only sharing**: Preserve the existing API and ask the Captain to relay every invite. This has the lowest migration cost, but it does not satisfy the Group Hub workflow.
+
+**Create a separate short code service**: Keep old codes and map new eight character codes through another table or service. This permits gradual link migration, but it creates two code authorities, extra lookup state, and a larger security surface for a small feature.
+
+For rate limiting, a shared PostgreSQL event table was the runner up. It works across replicas and survives restarts, but it adds write load and cleanup work that the current one instance deployment does not need.
+
 ## Rationale
 
 Option 1 provides the strongest practical consistency without introducing a second service or moving the whole usecase into database triggers. A short group row lock gives all conflicting flows one ordering rule. It also lets the current partial unique index keep enforcing at most one active Captain while service transactions preserve at least one.
 
 The exit decision uses absence of open debtor and creditor rows, not only `v_member_balances`. Net values are correct for the group summary but can hide two equal unresolved obligations. This stricter rule matches the PRD instruction that a removed member has neither outstanding debt nor outstanding credit.
 
-Captain only invite mutation follows the PRD permission model. Invite preview still requires authentication because the PRD starts the join flow with an authenticated user, and this avoids adding a public enumeration and rate limit surface in v1. Join is idempotent because mobile deep links and client retries can submit the same valid invite more than once. An already active member does not consume another invite use or create another activity.
+Member invite sharing follows the Group Hub workflow without granting policy mutation. Invite preview still requires authentication, invalid invite states share one public response, and preview plus join are limited by both account and IP. Join remains idempotent because mobile links and client retries can submit the same valid invite more than once. An already active member does not consume another invite use or create another activity.
 
 Captain transfer uses a nonblocking group lock so a concurrent request receives a deterministic conflict instead of waiting and later appearing to be an ordinary permission failure. Group detail returns the same not found response for missing groups and nonmembers, and group profile DTOs exclude contact and bank data.
 
@@ -82,7 +100,7 @@ Captain transfer uses a nonblocking group lock so a concurrent request receives 
 4. `db/migrations/000001_init_schema.up.sql`: Group tables, composite foreign keys, activity enum, debts, and `v_member_balances`.
 5. `docs/specs/0001-auth-account-v1/index.md`: Live session authentication and shared public error contract.
 6. `docs/specs/0003-bill-ocr-v1/index.md`: source of the `debt_status.voided` value this spec's AC-6/AC-9 debt predicates must exclude alongside `settled`.
-7. `docs/api-change-request.md`: the FE-requested change document that prompted this spec's AC-9 (disband) addition and the AC-6 drift discovery; its other proposals remain unresolved, see Follow-up item 6.
+7. `docs/change-req/api-change-request-01.md`: the FE requested invite and governance change now covered by AC-3 and AC-9 through AC-12.
 
 **Practices and standards**:
 

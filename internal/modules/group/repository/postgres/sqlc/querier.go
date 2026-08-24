@@ -12,6 +12,8 @@ import (
 
 type Querier interface {
 	CountActiveMembers(ctx context.Context, groupID pgtype.UUID) (int64, error)
+	CountOpenDebts(ctx context.Context, groupID pgtype.UUID) (int64, error)
+	CountUnfinishedBills(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	CreateGroup(ctx context.Context, arg CreateGroupParams) (Group, error)
 	CreateInitialCaptainMembership(ctx context.Context, arg CreateInitialCaptainMembershipParams) (GroupMember, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (GroupInvite, error)
@@ -30,6 +32,7 @@ type Querier interface {
 	InsertMembership(ctx context.Context, arg InsertMembershipParams) (GroupMember, error)
 	ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error)
 	ListActiveMembers(ctx context.Context, groupID pgtype.UUID) ([]ListActiveMembersRow, error)
+	ListAvailableInvites(ctx context.Context, arg ListAvailableInvitesParams) ([]GroupInvite, error)
 	ListGroupActivities(ctx context.Context, arg ListGroupActivitiesParams) ([]ListGroupActivitiesRow, error)
 	ListGroupBalances(ctx context.Context, groupID pgtype.UUID) ([]ListGroupBalancesRow, error)
 	LockGroup(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
@@ -37,6 +40,7 @@ type Querier interface {
 	MarkMembershipInactive(ctx context.Context, arg MarkMembershipInactiveParams) error
 	PromoteToCaptain(ctx context.Context, id pgtype.UUID) error
 	ReactivateMembership(ctx context.Context, arg ReactivateMembershipParams) (GroupMember, error)
+	RenameGroup(ctx context.Context, arg RenameGroupParams) (Group, error)
 	RevokeAvailableInvites(ctx context.Context, arg RevokeAvailableInvitesParams) ([]GroupInvite, error)
 	RevokeInviteByID(ctx context.Context, arg RevokeInviteByIDParams) error
 	SumOpenCreditorTotal(ctx context.Context, arg SumOpenCreditorTotalParams) (int64, error)

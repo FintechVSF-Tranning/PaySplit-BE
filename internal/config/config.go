@@ -29,6 +29,7 @@ type Config struct {
 	BillImage  BillImageConfig
 	BillSSE    BillSSEConfig
 	Metrics    MetricsConfig
+	Settlement SettlementConfig
 }
 
 // MetricsConfig chứa cấu hình Prometheus metrics scraper.
@@ -137,6 +138,16 @@ type BillImageConfig struct {
 type BillSSEConfig struct {
 	HeartbeatInterval time.Duration
 	MaxConnectionAge  time.Duration
+}
+
+type SettlementConfig struct {
+	VietQRServiceBaseURL   string
+	VietQRTemplate         string
+	ProofMaxBytes          int64
+	ProofSignedURLTTL      time.Duration
+	ReminderStaleAge       time.Duration
+	ReminderMaxCount       int
+	StalledConfirmationAge time.Duration
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -285,6 +296,26 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	paymentProofMaxBytes, err := intEnv("PAYMENT_PROOF_MAX_BYTES", 10*1024*1024)
+	if err != nil {
+		return nil, err
+	}
+	paymentProofSignedTTL, err := durationEnv("PAYMENT_PROOF_SIGNED_URL_TTL", 300, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderAge, err := durationEnv("PAYMENT_REMINDER_STALE_HOURS", 72, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	paymentReminderMax, err := intEnv("PAYMENT_REMINDER_MAX_COUNT", 3)
+	if err != nil {
+		return nil, err
+	}
+	stalledConfirmationAge, err := durationEnv("STALLED_CONFIRMATION_HOURS", 48, time.Hour)
+	if err != nil {
+		return nil, err
+	}
 	billSSEHeartbeat, err := durationEnv("BILL_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
 	if err != nil {
 		return nil, err
@@ -372,6 +403,13 @@ func Load() (*Config, error) {
 			Enabled:     boolEnv("METRICS_ENABLED", true),
 			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
 		},
+		Settlement: SettlementConfig{
+			VietQRServiceBaseURL: stringEnv("VIETQR_SERVICE_BASE_URL", "https://img.vietqr.io/image"),
+			VietQRTemplate:       stringEnv("VIETQR_TEMPLATE", "compact"),
+			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
+			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
+			StalledConfirmationAge: stalledConfirmationAge,
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -440,8 +478,9 @@ func (c *Config) Validate() error {
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
 	}
-	if _, err := url.Parse(c.Group.InviteBaseURL); strings.TrimSpace(c.Group.InviteBaseURL) == "" || err != nil {
-		return errors.New("APP_INVITE_BASE_URL must be a valid HTTPS URL or deep link base")
+	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
+	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
+		return errors.New("APP_INVITE_BASE_URL must be an absolute HTTPS URL without user info, query, or fragment")
 	}
 	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
 		return errors.New("OCR settings must be positive")
@@ -454,6 +493,28 @@ func (c *Config) Validate() error {
 	}
 	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
 		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
+	}
+	vietQRURL, err := url.ParseRequestURI(c.Settlement.VietQRServiceBaseURL)
+	if err != nil || (vietQRURL.Scheme != "http" && vietQRURL.Scheme != "https") || vietQRURL.Host == "" {
+		return errors.New("VIETQR_SERVICE_BASE_URL must be a valid HTTP(S) URL")
+	}
+	if strings.TrimSpace(c.Settlement.VietQRTemplate) == "" {
+		return errors.New("VIETQR_TEMPLATE must not be empty")
+	}
+	if c.Settlement.ProofMaxBytes <= 0 {
+		return errors.New("PAYMENT_PROOF_MAX_BYTES must be positive")
+	}
+	if c.Settlement.ProofSignedURLTTL <= 0 {
+		return errors.New("PAYMENT_PROOF_SIGNED_URL_TTL must be positive")
+	}
+	if c.Settlement.ReminderStaleAge <= 0 {
+		return errors.New("PAYMENT_REMINDER_STALE_HOURS must be positive")
+	}
+	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
+		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
+	}
+	if c.Settlement.StalledConfirmationAge <= 0 {
+		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
 	}
 	return nil
 }

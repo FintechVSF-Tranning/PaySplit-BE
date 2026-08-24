@@ -1,5 +1,5 @@
 {
-  "tool": "testing",
+  "tool": "go testing",
   "gate": null,
   "additionalTools": [],
   "e2eTool": "none",

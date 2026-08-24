@@ -33,6 +33,11 @@ import (
 	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
+	settlementhttp "paysplit-backend/internal/modules/settlement/delivery/http"
+	settlementintegration "paysplit-backend/internal/modules/settlement/integration"
+	settlementjobs "paysplit-backend/internal/modules/settlement/jobs"
+	settlementpostgres "paysplit-backend/internal/modules/settlement/repository/postgres"
+	settlementusecase "paysplit-backend/internal/modules/settlement/usecase"
 	"paysplit-backend/internal/platform/auth/jwt"
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/database"
@@ -45,6 +50,7 @@ import (
 	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
+	"paysplit-backend/internal/platform/vietqr"
 	transportmw "paysplit-backend/internal/transport/http/middleware"
 	"paysplit-backend/internal/transport/http/router"
 )
@@ -161,6 +167,20 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("create bill storage: %w", err)
 	}
+	proofStorage, err := avatarstorage.NewProofStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create payment proof storage: %w", err)
+	}
+	qrGenerator := vietqr.New(cfg.Settlement.VietQRServiceBaseURL, cfg.Settlement.VietQRTemplate)
+	settlementRepo := settlementpostgres.NewWithPayments(db, func(code string) (settlementpostgres.BankInfo, bool) {
+		bank, ok := bankDirectory.Get(code)
+		return settlementpostgres.BankInfo{Code: bank.Code, Name: bank.Name, BIN: bank.BIN, Supported: bank.Supported}, ok
+	}, qrGenerator)
+	settlementService := settlementusecase.NewService(settlementRepo)
+	settlementService.SetProofStorage(proofStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
+	settlementService.SetReminderMaxCount(cfg.Settlement.ReminderMaxCount)
+	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL, cfg.Settlement.ProofMaxBytes)
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
 	billHub := billhttp.NewHub(db)
@@ -172,11 +192,13 @@ func New(ctx context.Context) (*App, error) {
 	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
 	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
 	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays)
+	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, proofStorage, cfg.Settlement.ReminderStaleAge, cfg.Settlement.StalledConfirmationAge, cfg.Settlement.ReminderMaxCount)
+	periodicJobs := append(billPeriodicJobs, settlementPeriodicJobs...)
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{
 		MaxWorkers:    cfg.River.WorkerCount,
 		FetchCooldown: cfg.River.FetchCooldown,
-		PeriodicJobs:  billPeriodicJobs,
+		PeriodicJobs:  periodicJobs,
 	})
 	if err != nil {
 		db.Close()
@@ -185,6 +207,7 @@ func New(ctx context.Context) (*App, error) {
 
 	// 7. Khởi tạo Module Notification
 	notificationEnqueuer := notificationjobs.NewEnqueuer(riverClient)
+	settlementService.SetNotifier(settlementintegration.NewNotifier(notificationRepo, notificationEnqueuer))
 	notificationService := notificationusecase.NewService(notificationRepo, fcmNotifier, notificationEnqueuer)
 	notificationHandler := notificationhttp.NewHandler(notificationService)
 
@@ -199,7 +222,7 @@ func New(ctx context.Context) (*App, error) {
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
-
+	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.RateLimitRequestsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
 	adminService := adminusecase.NewService(adminRepo)
@@ -216,7 +239,10 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
-		api.Route("/groups", func(r chi.Router) { groupHandler.RegisterGroupRoutes(r, liveAuth) })
+		api.Route("/groups", func(r chi.Router) {
+			groupHandler.RegisterGroupRoutes(r, liveAuth, inviteAttemptLimiter)
+			settlementHandler.RegisterRoutes(r, liveAuth)
+		})
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })
 		api.Route("/bills", func(r chi.Router) { billHandler.RegisterRoutes(r, liveAuth) })

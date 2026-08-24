@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"paysplit-backend/internal/modules/group/domain"
 	"paysplit-backend/internal/modules/group/repository"
+	"paysplit-backend/internal/platform/database"
 )
 
 // --- test infrastructure -----------------------------------------------
@@ -66,7 +68,7 @@ func createUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cleanup *
 	t.Helper()
 	seq := testUserSeq.Add(1)
 	email := fmt.Sprintf("group.repo.test.%d.%d@example.invalid", time.Now().UnixNano(), seq)
-	phone := fmt.Sprintf("+849%08d", seq%100000000)
+	phone := fmt.Sprintf("+843%08d", (time.Now().UnixNano()+seq*7919)%100000000)
 	var id string
 	err := pool.QueryRow(ctx, `INSERT INTO users (email, password_hash, display_name, phone_number, role, status, email_verified_at) VALUES ($1,'x',$2,$3,'user','active',now()) RETURNING id`, email, displayName, phone).Scan(&id)
 	if err != nil {
@@ -248,7 +250,7 @@ func TestGetGroupDetail_MissingGroupAndNonMemberReturnIdenticalNotFound(t *testi
 
 // --- Invite lifecycle (AC-3, AC-8) ----------------------------------------
 
-func TestCreateOrReuseInvite_ReusesRegeneratesAndRequiresCaptain(t *testing.T) {
+func TestCreateOrReuseInvite_ReusesForMembersAndRestrictsConfigurationToCaptain_AC3(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	cleanup := newCleanup(t, pool)
@@ -257,6 +259,9 @@ func TestCreateOrReuseInvite_ReusesRegeneratesAndRequiresCaptain(t *testing.T) {
 	captainID := createUser(t, ctx, pool, cleanup, "Captain")
 	memberID := createUser(t, ctx, pool, cleanup, "Member")
 	group, _ := mustCreateGroup(t, ctx, repo, cleanup, "Invite Trip", captainID)
+	if _, err := pool.Exec(ctx, `INSERT INTO group_members (group_id, user_id, role, status) VALUES ($1,$2,'member','active')`, group.ID, memberID); err != nil {
+		t.Fatalf("add active member: %v", err)
+	}
 
 	code1, err := domain.NewInviteCode()
 	if err != nil {
@@ -311,8 +316,88 @@ func TestCreateOrReuseInvite_ReusesRegeneratesAndRequiresCaptain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{GroupID: group.ID, CallerUserID: memberID, Code: code4, ExpiresIn: 24 * time.Hour}); !errors.Is(err, domain.ErrCaptainRequired) {
-		t.Fatalf("non-Captain caller: error = %v, want ErrCaptainRequired", err)
+	memberReuse, err := repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{GroupID: group.ID, CallerUserID: memberID, Code: code4, ExpiresIn: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("default member reuse: %v", err)
+	}
+	if memberReuse.Created || memberReuse.Invite.ID != regenerated.Invite.ID {
+		t.Fatalf("default member result = %+v, want reuse of newest available invite %+v", memberReuse, regenerated.Invite)
+	}
+
+	code5, err := domain.NewInviteCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.CreateOrReuseInvite(ctx, repository.CreateInviteParams{
+		GroupID:          group.ID,
+		CallerUserID:     memberID,
+		Code:             code5,
+		ExpiresIn:        24 * time.Hour,
+		HasConfiguration: true,
+	}); !errors.Is(err, domain.ErrCaptainRequired) {
+		t.Fatalf("configured non-Captain caller: error = %v, want ErrCaptainRequired", err)
+	}
+}
+
+func TestListAvailableInvites_FiltersOrdersAndDatabaseRejectsMalformedCodes_AC10_AC12(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := newCleanup(t, pool)
+	repo := New(pool)
+
+	captainID := createUser(t, ctx, pool, cleanup, "Captain")
+	memberID := createUser(t, ctx, pool, cleanup, "Member")
+	outsiderID := createUser(t, ctx, pool, cleanup, "Outsider")
+	group, captainMembership := mustCreateGroup(t, ctx, repo, cleanup, "List Invites", captainID)
+	if _, err := pool.Exec(ctx, `INSERT INTO group_members (group_id,user_id,role,status) VALUES ($1,$2,'member','active')`, group.ID, memberID); err != nil {
+		t.Fatal(err)
+	}
+
+	newCode := func() string {
+		t.Helper()
+		code, err := domain.NewInviteCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return code
+	}
+	olderCode, newerCode := newCode(), newCode()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO group_invites (group_id,code,created_by,expires_at,created_at)
+		VALUES ($1,$2,$3,now()+interval '1 hour',now()-interval '2 seconds'),
+		       ($1,$4,$3,now()+interval '1 hour',now()-interval '1 second')`,
+		group.ID, olderCode, captainMembership.ID, newerCode); err != nil {
+		t.Fatalf("insert available invites: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO group_invites (group_id,code,created_by,expires_at,revoked_at) VALUES
+		($1,$2,$3,now()+interval '1 hour',now()),
+		($1,$4,$3,now()-interval '1 second',NULL)`,
+		group.ID, newCode(), captainMembership.ID, newCode()); err != nil {
+		t.Fatalf("insert unavailable invites: %v", err)
+	}
+
+	// Insert the exhausted row separately so its exact code is retained.
+	exhaustedCode := newCode()
+	if _, err := pool.Exec(ctx, `INSERT INTO group_invites (group_id,code,created_by,expires_at,max_uses,use_count) VALUES ($1,$2,$3,now()+interval '1 hour',1,1)`, group.ID, exhaustedCode, captainMembership.ID); err != nil {
+		t.Fatalf("insert exhausted invite: %v", err)
+	}
+
+	invites, err := repo.ListAvailableInvites(ctx, group.ID, memberID)
+	if err != nil {
+		t.Fatalf("list as active member: %v", err)
+	}
+	if len(invites) != 2 || invites[0].Code != newerCode || invites[1].Code != olderCode {
+		t.Fatalf("available invites = %+v, want newest %q then %q only", invites, newerCode, olderCode)
+	}
+	if _, err = repo.ListAvailableInvites(ctx, group.ID, outsiderID); !errors.Is(err, domain.ErrGroupNotFound) {
+		t.Fatalf("outsider list error = %v, want ErrGroupNotFound", err)
+	}
+
+	_, err = pool.Exec(ctx, `INSERT INTO group_invites (group_id,code,created_by,expires_at) VALUES ($1,'bad-code',$2,now()+interval '1 hour')`, group.ID, captainMembership.ID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "group_invites_code_base62_check" {
+		t.Fatalf("malformed code insert error = %#v, want Base62 check violation", err)
 	}
 }
 
@@ -376,8 +461,8 @@ func TestPreviewInvite_UnknownAndUnavailableCodes(t *testing.T) {
 	if err = repo.RevokeInvite(ctx, group.ID, invite.Invite.ID, captainID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.PreviewInvite(ctx, code); !errors.Is(err, domain.ErrInviteUnavailable) {
-		t.Fatalf("revoked code: error = %v, want ErrInviteUnavailable", err)
+	if _, err = repo.PreviewInvite(ctx, code); !errors.Is(err, domain.ErrInviteNotFound) {
+		t.Fatalf("revoked code: error = %v, want the unified ErrInviteNotFound", err)
 	}
 }
 
@@ -428,6 +513,25 @@ func TestRedeemInvite_JoinsThenIsIdempotentThenReactivates(t *testing.T) {
 	if useCount != 1 {
 		t.Fatalf("invite use_count = %d, want 1 (idempotent join must not increment it again)", useCount)
 	}
+	if _, err = pool.Exec(ctx, `UPDATE group_invites SET revoked_at=now() WHERE code=$1`, code); err != nil {
+		t.Fatal(err)
+	}
+	alreadyActiveWithRevokedCode, err := repo.RedeemInvite(ctx, code, joinerID)
+	if err != nil {
+		t.Fatalf("active member repeat with revoked code: %v", err)
+	}
+	if alreadyActiveWithRevokedCode.Result != domain.JoinResultAlreadyActive || alreadyActiveWithRevokedCode.MembershipID != joined.MembershipID {
+		t.Fatalf("revoked repeat = %+v, want already_active with membership %q", alreadyActiveWithRevokedCode, joined.MembershipID)
+	}
+	if err = pool.QueryRow(ctx, `SELECT use_count FROM group_invites WHERE code=$1`, code).Scan(&useCount); err != nil {
+		t.Fatal(err)
+	}
+	if useCount != 1 || countActivities(t, ctx, pool, group.ID, "member_joined") != 1 {
+		t.Fatalf("revoked active-member retry changed usage or activity: use_count=%d", useCount)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE group_invites SET revoked_at=NULL WHERE code=$1`, code); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err = pool.Exec(ctx, `UPDATE group_members SET status='inactive', left_at=now() WHERE id=$1`, joined.MembershipID); err != nil {
 		t.Fatal(err)
@@ -469,8 +573,8 @@ func TestRedeemInvite_UnknownAndUnavailableCodes(t *testing.T) {
 	if err = repo.RevokeInvite(ctx, group.ID, invite.Invite.ID, captainID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.RedeemInvite(ctx, code, joinerID); !errors.Is(err, domain.ErrInviteUnavailable) {
-		t.Fatalf("revoked code: error = %v, want ErrInviteUnavailable", err)
+	if _, err = repo.RedeemInvite(ctx, code, joinerID); !errors.Is(err, domain.ErrInviteNotFound) {
+		t.Fatalf("revoked code: error = %v, want the unified ErrInviteNotFound", err)
 	}
 }
 
@@ -553,7 +657,7 @@ func TestRedeemInvite_ConcurrentRedemptionsNeverExceedMaxUses(t *testing.T) {
 			switch {
 			case err == nil:
 				successes.Add(1)
-			case errors.Is(err, domain.ErrInviteUnavailable):
+			case errors.Is(err, domain.ErrInviteNotFound):
 				unavailable.Add(1)
 			default:
 				unexpected.Add(1)
@@ -567,7 +671,7 @@ func TestRedeemInvite_ConcurrentRedemptionsNeverExceedMaxUses(t *testing.T) {
 		t.Fatalf("successful joins = %d, want exactly 1 (max_uses=1)", successes.Load())
 	}
 	if unavailable.Load() != racers-1 {
-		t.Fatalf("ErrInviteUnavailable count = %d, want %d", unavailable.Load(), racers-1)
+		t.Fatalf("unified ErrInviteNotFound count = %d, want %d", unavailable.Load(), racers-1)
 	}
 	var useCount int
 	if err = pool.QueryRow(ctx, `SELECT use_count FROM group_invites WHERE code=$1`, code).Scan(&useCount); err != nil {
@@ -740,6 +844,62 @@ func TestLeaveOrRemoveMember_BlockedByOpenDebtsAsDebtorAndCreditorThenSucceedsOn
 	}
 	if !leftAt.Equal(leftAtAfterRetry) {
 		t.Fatalf("left_at changed on idempotent retry: %v -> %v", leftAt, leftAtAfterRetry)
+	}
+}
+
+func TestLeaveOrRemoveMember_SerializesWithDebtCreationThroughSharedGroupLock_AC6_AC9(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := newCleanup(t, pool)
+	repo := New(pool)
+
+	captainID := createUser(t, ctx, pool, cleanup, "Captain")
+	memberID := createUser(t, ctx, pool, cleanup, "Member")
+	group, captainMembership := mustCreateGroup(t, ctx, repo, cleanup, "Lock Trip", captainID)
+	var memberMembershipID string
+	if err := pool.QueryRow(ctx, `INSERT INTO group_members (group_id,user_id,role,status) VALUES ($1,$2,'member','active') RETURNING id`, group.ID, memberID).Scan(&memberMembershipID); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if err = database.LockActiveGroup(ctx, writer, group.ID); err != nil {
+		t.Fatalf("writer lock active group: %v", err)
+	}
+	var billID string
+	if err = writer.QueryRow(ctx, `INSERT INTO bills (group_id,creditor_member_id,status,finalized_at) VALUES ($1,$2,'finalized',now()) RETURNING id`, group.ID, captainMembership.ID).Scan(&billID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = writer.Exec(ctx, `INSERT INTO debts (group_id,bill_id,debtor_member_id,creditor_member_id,amount,status) VALUES ($1,$2,$3,$4,2500,'awaiting')`, group.ID, billID, memberMembershipID, captainMembership.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	leaveResult := make(chan error, 1)
+	go func() {
+		close(started)
+		leaveResult <- repo.LeaveOrRemoveMember(ctx, group.ID, memberMembershipID, memberID)
+	}()
+	<-started
+	select {
+	case err = <-leaveResult:
+		t.Fatalf("leave returned before the debt writer released the shared group lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err = writer.Commit(ctx); err != nil {
+		t.Fatalf("commit debt writer: %v", err)
+	}
+	select {
+	case err = <-leaveResult:
+		var openDebts *domain.OpenDebtsError
+		if !errors.As(err, &openDebts) || openDebts.PayableAmount != 2500 {
+			t.Fatalf("serialized leave error = %#v, want payable open debt 2500", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("leave remained blocked after the writer committed")
 	}
 }
 
