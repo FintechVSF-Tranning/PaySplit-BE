@@ -34,7 +34,12 @@ paths:
           description: Account created pending email verification
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/SignUpResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/SignUpResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "409": {$ref: "#/components/responses/Conflict"}
         "429": {$ref: "#/components/responses/RateLimited"}
@@ -49,9 +54,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [status]
-                properties: {status: {type: string, enum: [active]}}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [status]
+                        properties: {status: {type: string, enum: [active]}}
         "400": {$ref: "#/components/responses/BadRequest"}
   /api/v1/auth/resend-verification:
     post:
@@ -76,7 +86,12 @@ paths:
           description: Signed in and prior device revoked
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/SignInResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/SignInResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -101,7 +116,12 @@ paths:
           description: Token pair rotated
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/TokenPair"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/TokenPair"}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/auth/sign-out:
     post:
@@ -150,9 +170,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [user]
-                properties: {user: {$ref: "#/components/schemas/User"}}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [user]
+                        properties: {user: {$ref: "#/components/schemas/User"}}
         "401": {$ref: "#/components/responses/Unauthorized"}
     patch:
       operationId: patchMyProfile
@@ -169,9 +194,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [user]
-                properties: {user: {$ref: "#/components/schemas/User"}}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [user]
+                        properties: {user: {$ref: "#/components/schemas/User"}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409": {$ref: "#/components/responses/Conflict"}
@@ -215,9 +245,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [avatar_url]
-                properties: {avatar_url: {type: string, format: uri}}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [avatar_url]
+                        properties: {avatar_url: {type: string, format: uri}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "413": {$ref: "#/components/responses/BadRequest"}
@@ -250,10 +285,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [status]
-                properties:
-                  status: {type: string, enum: [ok]}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [status]
+                        properties:
+                          status: {type: string, enum: [ok]}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/banks:
@@ -277,7 +317,12 @@ paths:
               schema: {type: string, example: "public, max-age=86400"}
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/BankListResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/BankListResponse"}
   /api/v1/groups:
     post:
       operationId: createGroup
@@ -293,7 +338,12 @@ paths:
           description: Group created with the caller as its active Captain
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/CreateGroupResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/CreateGroupResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
     get:
@@ -313,7 +363,12 @@ paths:
           description: Groups where the caller is an active member, newest first
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/GroupListResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/GroupListResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/groups/{id}:
@@ -331,7 +386,12 @@ paths:
           description: Group, active members, balances, and the caller's role
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/GroupDetailResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/GroupDetailResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
     patch:
@@ -353,7 +413,12 @@ paths:
           description: Group renamed and the activity committed atomically
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/GroupResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/GroupResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
@@ -388,7 +453,12 @@ paths:
           description: Available invites ordered by created_at and id descending
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/InviteListResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/InviteListResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
     post:
@@ -410,12 +480,22 @@ paths:
           description: A new invite was created
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/InviteResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/InviteResponse"}
         "200":
           description: The group's one available invite was reused
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/InviteResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/InviteResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
@@ -454,7 +534,12 @@ paths:
           description: Group name, active member count, and Captain display name
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/InvitePreviewResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/InvitePreviewResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/InviteNotFound"}
         "429": {$ref: "#/components/responses/RateLimited"}
@@ -473,7 +558,12 @@ paths:
           description: Joined, reactivated, or already an active member
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/JoinGroupResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/JoinGroupResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/InviteNotFound"}
         "409": {$ref: "#/components/responses/GroupMemberLimitReached"}
@@ -528,7 +618,12 @@ paths:
           description: Captain role transferred to the target member
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/CaptainTransferResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/CaptainTransferResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
@@ -560,7 +655,12 @@ paths:
           description: The group's activity timeline, newest first
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ActivityListResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/ActivityListResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -583,7 +683,12 @@ paths:
           description: Paginated notifications list
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/PaginatedNotifications"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/PaginatedNotifications"}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/notifications/unread-count:
     get:
@@ -596,10 +701,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [unread_count]
-                properties:
-                  unread_count: {type: integer, format: int64}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [unread_count]
+                        properties:
+                          unread_count: {type: integer, format: int64}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/notifications/read-all:
     patch:
@@ -612,10 +722,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [message]
-                properties:
-                  message: {type: string}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [message]
+                        properties:
+                          message: {type: string}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/notifications/{id}/read:
     patch:
@@ -633,10 +748,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [message]
-                properties:
-                  message: {type: string}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [message]
+                        properties:
+                          message: {type: string}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -708,20 +828,30 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
-                  is_accepted: {type: boolean}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
+                          is_accepted: {type: boolean}
         "202":
           description: Image bill created and OCR job queued
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
-                  ocr_job: {$ref: "#/components/schemas/OCRJob"}
-                  is_accepted: {type: boolean}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
+                          ocr_job: {$ref: "#/components/schemas/OCRJob"}
+                          is_accepted: {type: boolean}
         "400":
           description: "Validation failed (VALIDATION_FAILED), or images required for an image-based draft (IMAGES_REQUIRED)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -751,12 +881,17 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bills:
-                    type: array
-                    items: {$ref: "#/components/schemas/Bill"}
-                  next_cursor: {type: string}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bills:
+                            type: array
+                            items: {$ref: "#/components/schemas/Bill"}
+                          next_cursor: {type: string}
         "400":
           description: "Validation failed (VALIDATION_FAILED), or an invalid cursor was supplied (INVALID_CURSOR)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -783,15 +918,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
-                  breakdown:
-                    type: array
-                    items: {$ref: "#/components/schemas/MemberAllocation"}
-                  signed_urls:
-                    type: object
-                    additionalProperties: {type: string}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
+                          breakdown:
+                            type: array
+                            items: {$ref: "#/components/schemas/MemberAllocation"}
+                          signed_urls:
+                            type: object
+                            additionalProperties: {type: string}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -852,9 +992,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
@@ -924,9 +1069,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ocr_job: {$ref: "#/components/schemas/OCRJob"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          ocr_job: {$ref: "#/components/schemas/OCRJob"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
@@ -976,9 +1126,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "404":
@@ -1021,9 +1176,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
@@ -1063,9 +1223,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
@@ -1106,9 +1271,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  bill: {$ref: "#/components/schemas/Bill"}
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill: {$ref: "#/components/schemas/Bill"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
@@ -1124,7 +1294,7 @@ paths:
         - {$ref: "#/components/parameters/Cursor"}
         - {$ref: "#/components/parameters/Limit"}
       responses:
-        "200": {description: Personal finalized bill allocations, content: {application/json: {schema: {$ref: "#/components/schemas/ExpensePage"}}}}
+        "200": {description: Personal finalized bill allocations, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/ExpensePage"}}}]}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{groupId}/debts:
@@ -1139,7 +1309,7 @@ paths:
         - {name: creditor_member_id, in: query, schema: {type: string, format: uuid}}
         - {name: status, in: query, schema: {type: string, enum: [awaiting, pending_confirmation, settled]}}
       responses:
-        "200": {description: Filtered debts plus unfiltered group totals, content: {application/json: {schema: {$ref: "#/components/schemas/DebtPage"}}}}
+        "200": {description: Filtered debts plus unfiltered group totals, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/DebtPage"}}}]}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{groupId}/debts/{debtId}/remind:
@@ -1151,7 +1321,7 @@ paths:
         - {name: debtId, in: path, required: true, schema: {type: string, format: uuid}}
         - {$ref: "#/components/parameters/IdempotencyKey"}
       responses:
-        "200": {description: Reminder claimed, content: {application/json: {schema: {$ref: "#/components/schemas/ReminderResult"}}}}
+        "200": {description: Reminder claimed, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/ReminderResult"}}}]}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
@@ -1165,8 +1335,8 @@ paths:
         - {$ref: "#/components/parameters/IdempotencyKey"}
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GeneratePaymentRequest"}}}}
       responses:
-        "200": {description: Matching pending payment replayed, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
-        "201": {description: Payment created, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "200": {description: Matching pending payment replayed, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentEnvelope"}}}]}}}}
+        "201": {description: Payment created, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentEnvelope"}}}]}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
@@ -1179,7 +1349,7 @@ paths:
         - {$ref: "#/components/parameters/GroupId"}
         - {$ref: "#/components/parameters/PaymentId"}
       responses:
-        "200": {description: Payment detail, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "200": {description: Payment detail, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentEnvelope"}}}]}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "422": {$ref: "#/components/responses/UnprocessableEntity"}
@@ -1200,7 +1370,7 @@ paths:
               required: [image]
               properties: {image: {type: string, format: binary}, note: {type: string, maxLength: 500}}
       responses:
-        "200": {description: Proof accepted, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentEnvelope"}}}}
+        "200": {description: Proof accepted, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentEnvelope"}}}]}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1216,7 +1386,7 @@ paths:
         - {$ref: "#/components/parameters/PaymentId"}
         - {$ref: "#/components/parameters/IdempotencyKey"}
       responses:
-        "200": {description: Payment and every covered debt settled, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}}
+        "200": {description: Payment and every covered debt settled, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}]}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
@@ -1230,7 +1400,7 @@ paths:
         - {$ref: "#/components/parameters/IdempotencyKey"}
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 1, maxLength: 500}}}}}}
       responses:
-        "200": {description: Payment rejected and covered debts reset, content: {application/json: {schema: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}}
+        "200": {description: Payment rejected and covered debts reset, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}]}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1269,7 +1439,12 @@ paths:
           description: Paginated list of accounts
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ListAccountsResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/ListAccountsResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -1290,7 +1465,12 @@ paths:
           description: Account detail with bank info, sessions, groups, financials, and recent audit logs
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/AccountDetailResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/AccountDetailResponse"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -1325,7 +1505,12 @@ paths:
           description: Status updated; warning flags any unsettled debts/credits the target still has
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/UpdateStatusResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/UpdateStatusResponse"}
         "400":
           description: "Validation failed (VALIDATION_FAILED), or invalid status transition (INVALID_STATUS_TRANSITION)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
@@ -1348,7 +1533,12 @@ paths:
           description: Counts across users, groups, bills, debts, media cleanup, OCR jobs, and runtime stats
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/SystemOverviewResponse"}
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/SystemOverviewResponse"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 
@@ -1423,9 +1613,14 @@ components:
       content:
         application/json:
           schema:
-            type: object
-            required: [message]
-            properties: {message: {type: string}}
+            allOf:
+              - $ref: "#/components/schemas/SuccessEnvelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [message]
+                    properties: {message: {type: string}}
   schemas:
     GeneratePaymentRequest:
       type: object
@@ -1659,29 +1854,39 @@ components:
           type: array
           items: {$ref: "#/components/schemas/Notification"}
         meta: {$ref: "#/components/schemas/PaginationMeta"}
+    SuccessEnvelope:
+      description: Standard envelope every non-exempt success response is wrapped in. Concrete operations narrow "data" via allOf.
+      type: object
+      required: [success, data, message]
+      properties:
+        success: {type: boolean, enum: [true]}
+        data: {}
+        message: {type: string}
     Error:
       type: object
-      required: [error]
+      required: [success, error]
       properties:
+        success: {type: boolean, enum: [false]}
         error:
           type: object
           required: [code, message]
           properties:
             code: {type: string}
             message: {type: string}
-            fields: {type: object, additionalProperties: {type: string}}
+            details: {type: object, additionalProperties: {type: string}}
     OpenDebtsError:
       description: Error variant for GROUP_MEMBER_HAS_OPEN_DEBTS, carrying the target's outstanding amounts
       type: object
-      required: [error]
+      required: [success, error]
       properties:
+        success: {type: boolean, enum: [false]}
         error:
           type: object
-          required: [code, message, fields]
+          required: [code, message, details]
           properties:
             code: {type: string, enum: [GROUP_MEMBER_HAS_OPEN_DEBTS]}
             message: {type: string}
-            fields:
+            details:
               type: object
               required: [payable_amount, receivable_amount]
               properties:
@@ -1690,15 +1895,16 @@ components:
     GroupUnsettledObligationsError:
       description: Error variant for GROUP_HAS_UNSETTLED_OBLIGATIONS
       type: object
-      required: [error]
+      required: [success, error]
       properties:
+        success: {type: boolean, enum: [false]}
         error:
           type: object
-          required: [code, message, fields]
+          required: [code, message, details]
           properties:
             code: {type: string, enum: [GROUP_HAS_UNSETTLED_OBLIGATIONS]}
             message: {type: string}
-            fields:
+            details:
               type: object
               required: [draft_or_reviewed_bill_count, open_debt_count]
               properties:

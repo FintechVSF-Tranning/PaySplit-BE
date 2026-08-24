@@ -98,8 +98,11 @@ func healthReady(dbChecker DBPingChecker) http.HandlerFunc {
 	}
 }
 
+// writeJSON ghi response thô, không bọc envelope success/data/message: các
+// endpoint hạ tầng (root, health probes) được miễn trừ vì mục đích của chúng
+// là bị đọc bởi công cụ probe/monitoring bên ngoài, không phải client API.
 func writeJSON(w http.ResponseWriter, status int, data any) {
-	if err := helpers.WriteJSON(w, status, data); err != nil {
+	if err := helpers.WriteRawJSON(w, status, data); err != nil {
 		log.Printf("failed to write router response: %v", err)
 	}
 }

@@ -620,11 +620,14 @@ func (h *Handler) checkIdempotency(w http.ResponseWriter, r *http.Request, actor
 	}
 
 	if rec != nil && rec.State == "completed" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(rec.ResponseCode)
-		if len(rec.ResponseBody) > 0 {
-			_, _ = w.Write(rec.ResponseBody)
+		if rec.ResponseCode == http.StatusNoContent || len(rec.ResponseBody) == 0 {
+			w.WriteHeader(rec.ResponseCode)
+			return true, ""
 		}
+		// rec.ResponseBody lưu payload gốc (chính giá trị đã truyền cho
+		// helpers.WriteJSON), không phải body đã ghi ra client, nên bọc lại
+		// vào envelope success/data/message thay vì phát lại nguyên trạng.
+		_ = helpers.WriteJSON(w, rec.ResponseCode, json.RawMessage(rec.ResponseBody))
 		return true, ""
 	}
 
