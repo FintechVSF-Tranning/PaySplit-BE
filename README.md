@@ -179,6 +179,28 @@ docker run --rm -p 8080:8080 --env-file .env paysplit-api
 
 Image được build nhiều tầng: build binary tĩnh với `CGO_ENABLED=0` rồi đóng gói trên `alpine:3.22`, chạy bằng user `app` không phải root.
 
+## 📱 Chạy ứng dụng Frontend (Flutter)
+
+Yêu cầu [Flutter SDK](https://docs.flutter.dev/get-started/install) 3.x đã cài đặt và có device/emulator đang chạy.
+
+```bash
+cd ../PaySplit-FE
+flutter pub get
+dart run build_runner build --delete-conflicting-outputs   # sinh *.g.dart / *.freezed.dart trước khi chạy
+
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/v1   # trỏ về Go API chạy local
+```
+
+| Lệnh | Ý nghĩa |
+| --- | --- |
+| `flutter run` | Chạy flavor development (API mặc định `https://dev-api.paysplit.app/v1`) |
+| `flutter run -t lib/main_staging.dart` | Chạy flavor staging |
+| `--dart-define=API_BASE_URL=<url>` | Ghi đè endpoint API của BE |
+
+> `10.0.2.2` là địa chỉ Android emulator dùng để gọi `localhost` của máy host — khớp với port `8080` mà backend đang lắng nghe. Khi chạy trên máy thật, thay bằng IP LAN của máy; iOS simulator dùng thẳng `http://localhost:8080/v1`.
+
+Chi tiết kiến trúc Flutter xem [PaySplit-FE/README.md](../PaySplit-FE/README.md).
+
 ## 🔌 Các endpoint API
 
 ### Auth & User
