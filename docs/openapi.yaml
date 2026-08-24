@@ -1609,7 +1609,7 @@ components:
         Retry-After: {schema: {type: integer}, description: Seconds until retry}
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     EmailAccepted:
-      description: Generic response that does not reveal account existence
+      description: Generic response that does not reveal account existence. The human-readable message is carried at the envelope's top-level "message", not inside "data".
       content:
         application/json:
           schema:
@@ -1617,10 +1617,7 @@ components:
               - $ref: "#/components/schemas/SuccessEnvelope"
               - type: object
                 properties:
-                  data:
-                    type: object
-                    required: [message]
-                    properties: {message: {type: string}}
+                  data: {nullable: true}
   schemas:
     GeneratePaymentRequest:
       type: object

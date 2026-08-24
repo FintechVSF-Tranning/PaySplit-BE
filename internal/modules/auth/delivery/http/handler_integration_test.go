@@ -173,6 +173,9 @@ func decodeData[T any](t *testing.T, body []byte) T {
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatal(err)
 	}
+	if !env.Success {
+		t.Fatalf("expected success envelope, got error response: %s", body)
+	}
 	return env.Data
 }
 
