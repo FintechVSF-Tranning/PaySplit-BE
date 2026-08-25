@@ -1,7 +1,7 @@
 # 0008. Group bill close v1
 
 **Date**: 2026-08-24
-**Status**: Proposed
+**Status**: In Progress
 **Target release**: V1
 
 ## Summary

@@ -32,7 +32,7 @@ type OCRCandidate struct {
 	Items             []OCRCandidateItem `json:"items"`
 	Subtotal          int64              `json:"subtotal"`
 	TotalItemDiscount int64              `json:"total_item_discount"` // Tổng giảm giá gắn theo từng món (Spec 3 AC-17)
-	GeneralDiscount   int64              `json:"general_discount"`   // Giảm giá chung của cả hóa đơn (voucher, Spec 3 AC-17)
+	GeneralDiscount   int64              `json:"general_discount"`    // Giảm giá chung của cả hóa đơn (voucher, Spec 3 AC-17)
 	ServiceCharge     int64              `json:"service_charge"`
 	VAT               int64              `json:"vat"`
 	Discount          int64              `json:"discount"` // Tổng giảm giá = TotalItemDiscount + GeneralDiscount

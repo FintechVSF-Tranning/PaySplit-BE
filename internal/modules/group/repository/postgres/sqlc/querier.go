@@ -21,6 +21,10 @@ type Querier interface {
 	FindAvailableInvite(ctx context.Context, arg FindAvailableInviteParams) (GroupInvite, error)
 	GetActiveCaptainDisplayName(ctx context.Context, groupID pgtype.UUID) (string, error)
 	GetActiveMembership(ctx context.Context, arg GetActiveMembershipParams) (GroupMember, error)
+	// ============================================================================
+	// GROUP BILL CLOSE V1 (Spec 0008): điều hướng batch của Captain và rào chắn archive
+	// ============================================================================
+	GetBillFinalizeBatchNavigation(ctx context.Context, groupID pgtype.UUID) (GetBillFinalizeBatchNavigationRow, error)
 	GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, error)
 	GetInviteByCode(ctx context.Context, code string) (GroupInvite, error)
 	GetInviteByCodeForUpdate(ctx context.Context, code string) (GroupInvite, error)

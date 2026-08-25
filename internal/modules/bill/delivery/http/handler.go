@@ -728,8 +728,33 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrIdempotencyKeyReused):
 		status = http.StatusConflict
 		code = "IDEMPOTENCY_KEY_REUSED"
+	case errors.Is(err, domain.ErrSubmissionLocked):
+		status = http.StatusConflict
+		code = "BILL_SUBMISSION_LOCKED"
+		msg = "bill submission is locked for this group"
+	case errors.Is(err, domain.ErrCaptainRequired):
+		status = http.StatusForbidden
+		code = "CAPTAIN_REQUIRED"
+		msg = "the active Captain must perform this action"
+	case errors.Is(err, domain.ErrGroupNotFound):
+		status = http.StatusNotFound
+		code = "GROUP_NOT_FOUND"
+		msg = "group not found"
+	case errors.Is(err, domain.ErrBatchNotFound):
+		status = http.StatusNotFound
+		code = "BATCH_NOT_FOUND"
+		msg = "finalize batch not found"
 	default:
 		mapped = false
+	}
+
+	var bulkErr *domain.BulkFinalizeInProgressError
+	if errors.As(err, &bulkErr) {
+		// Trả kèm ID an toàn của batch đang chạy để Captain tiếp tục với batch đó
+		// thay vì mở batch thứ hai (Spec 0008 AC-4, AC-7).
+		fields := map[string]string{"active_batch_id": bulkErr.ActiveBatchID}
+		_ = helpers.WriteAPIError(w, http.StatusConflict, "BULK_FINALIZE_IN_PROGRESS", "another bulk finalize is already in progress", fields)
+		return
 	}
 
 	if !mapped {

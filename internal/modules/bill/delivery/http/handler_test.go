@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	billhttp "paysplit-backend/internal/modules/bill/delivery/http"
 	"paysplit-backend/internal/modules/bill/domain"
@@ -28,6 +29,16 @@ type mockHandlerRepo struct {
 	bill        *domain.Bill
 	errToReturn error // when set, GetBillByID returns this raw error instead of ErrBillNotFound
 	idempotency map[string]*repository.IdempotencyRecord
+
+	// Scenario controls cho các endpoint group bill close v1 (Spec 0008).
+	lockResult *repository.LockSubmissionsResult
+	lockErr    error
+	bulkResult *repository.StartBulkFinalizeResult
+	bulkErr    error
+	batch      *domain.FinalizeBatch
+	batchItems []*domain.BatchItemResult
+	batchNext  *string
+	batchErr   error
 }
 
 func idempotencyMockKey(actorUserID uuid.UUID, operation, keyHash string) string {
@@ -57,6 +68,10 @@ func (m *mockHandlerRepo) CompleteIdempotencyKey(ctx context.Context, p reposito
 		rec.ResponseBody = p.ResponseBody
 	}
 	return nil
+}
+
+func (m *mockHandlerRepo) CompleteIdempotencyKeyInTx(ctx context.Context, tx pgx.Tx, p repository.CompleteIdempotencyParams) error {
+	return m.CompleteIdempotencyKey(ctx, p)
 }
 
 func (m *mockHandlerRepo) GetIdempotencyKey(ctx context.Context, actorUserID uuid.UUID, operation, keyHash string) (*repository.IdempotencyRecord, error) {

@@ -40,11 +40,13 @@ type ReceiptProcessor interface {
 	IsUnsupported(err error) bool
 }
 
-// JobEnqueuer là interface đẩy công việc OCR và thông báo vào hàng đợi River Queue.
+// JobEnqueuer là interface đẩy công việc OCR, thông báo và item chốt toàn bộ vào hàng đợi River Queue.
 type JobEnqueuer interface {
 	EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID, groupID uuid.UUID) error
 	EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error
 	EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notificationID string) error
+	// EnqueueBulkFinalizeItemTx đẩy một job xử lý item batch chốt toàn bộ trong cùng transaction (Spec 0008 AC-4).
+	EnqueueBulkFinalizeItemTx(ctx context.Context, tx pgx.Tx, batchID, billID, groupID uuid.UUID) error
 }
 
 // Service quản lý toàn bộ nghiệp vụ của module Bill và OCR.
@@ -162,6 +164,18 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 	member, err := s.repo.GetGroupMember(ctx, req.GroupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden
+	}
+
+	// Spec 0008 Bill creation gate: pre-check rẻ tiền trạng thái khóa gửi hóa đơn
+	// TRƯỚC khi xử lý và upload ảnh, để request vào nhóm đã khóa tốn ít tài nguyên.
+	// Trạng thái sẽ được kiểm tra lại bên trong transaction tạo bill sau khi giữ
+	// khóa nhóm (nguồn sự thật cuối cùng).
+	lockedAt, lockErr := s.repo.GetGroupSubmissionLock(ctx, req.GroupID)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	if lockedAt != nil {
+		return nil, domain.ErrSubmissionLocked
 	}
 
 	if len(req.Files) > 5 {
@@ -330,6 +344,28 @@ func (s *Service) CreateBill(ctx context.Context, callerUserID uuid.UUID, req Cr
 		},
 	})
 	if err != nil {
+		// Spec 0008 AC-2: nếu nhóm bị khóa giữa hai lần kiểm tra (pre-check và
+		// recheck trong transaction), request không tạo bill và các ảnh attempt
+		// đã upload vào hàng đợi dọn dẹp bền vững thay vì chỉ xóa best-effort.
+		if errors.Is(err, domain.ErrSubmissionLocked) && len(uploadedKeys) > 0 {
+			for _, key := range uploadedKeys {
+				if cleanupErr := s.repo.EnqueueMediaCleanup(ctx, key, "bill_image"); cleanupErr != nil {
+					// Nếu không ghi được cleanup bền vững, chỉ được trả về sau khi
+					// xóa trực tiếp thành công. Nếu cả hai cách đều lỗi, giữ lỗi cleanup
+					// trong chuỗi để caller có thể retry thay vì âm thầm rò rỉ ảnh riêng tư.
+					if s.storage == nil {
+						return nil, errors.Join(fmt.Errorf("create bill in repo: %w", err), fmt.Errorf("enqueue cleanup for %s: %w", key, cleanupErr))
+					}
+					if deleteErr := s.storage.Delete(ctx, key); deleteErr != nil {
+						return nil, errors.Join(
+							fmt.Errorf("create bill in repo: %w", err),
+							fmt.Errorf("persist cleanup for %s: %w", key, cleanupErr),
+							fmt.Errorf("delete rejected upload %s: %w", key, deleteErr),
+						)
+					}
+				}
+			}
+		}
 		return nil, fmt.Errorf("create bill in repo: %w", err)
 	}
 
@@ -823,12 +859,51 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 
 	// 5. Đối soát lại và chạy phân bổ, cùng một hàm mà đường đọc và review dùng. Người dùng đã thấy
 	// đúng những mã chặn này ở bước xem trước, nên không có bất ngờ ở bước chốt sổ (Spec 3 AC-9, AC-10).
+	allocations, err := validateAllocationForFinalize(bill, activeSet)
+	if err != nil {
+		return nil, err
+	}
+
+	plan := s.buildFinalizationPlan(bill, groupID, member.ID, allocations, memberUserMap)
+
+	return s.repo.FinalizeBill(ctx, repository.FinalizeBillParams{
+		BillID:          billID,
+		GroupID:         groupID,
+		ExpectedVersion: expectedVersion,
+		Shares:          plan.shares,
+		Debts:           plan.debts,
+		ActorMemberID:   member.ID,
+		Notifications:   plan.notifications,
+		BeforeCommit:    plan.beforeCommit,
+	})
+}
+
+// validateAllocationForFinalize chạy đối soát và phân bổ bằng đúng hàm mà đường
+// đọc và review dùng; có mã chặn thì trả về lỗi ổn định tương ứng. Dùng chung cho
+// finalize đơn lẻ và item batch chốt toàn bộ (Spec 0008 Batch item transaction bước 6).
+func validateAllocationForFinalize(bill *domain.Bill, activeSet map[uuid.UUID]bool) ([]*MemberAllocation, error) {
 	allocations, blockers := evaluateAllocation(bill, activeSet)
 	if len(blockers) > 0 {
 		recordBlockerMetric(blockers)
 		return nil, blockersToError(blockers)
 	}
+	return allocations, nil
+}
 
+// finalizationPlan là kết quả dựng sẵn của phần tính toán chốt sổ: shares, debts,
+// notifications và hook enqueue gửi thông báo trong transaction.
+type finalizationPlan struct {
+	shares        []*domain.BillShare
+	debts         []*repository.Debt
+	notifications []*repository.NotificationParam
+	beforeCommit  func(ctx context.Context, tx pgx.Tx) error
+}
+
+// buildFinalizationPlan biến kết quả phân bổ Hamilton thành snapshot shares,
+// debts và thông báo cho từng thành viên. Hàm thuần túy, không IO, dùng chung
+// cho finalize đơn lẻ và item batch chốt toàn bộ (Spec 0008 Batch item transaction).
+func (s *Service) buildFinalizationPlan(bill *domain.Bill, groupID, actorMemberID uuid.UUID, allocations []*MemberAllocation, memberUserMap map[uuid.UUID]uuid.UUID) *finalizationPlan {
+	billID := bill.ID
 	shares := make([]*domain.BillShare, 0, len(allocations))
 	debts := make([]*repository.Debt, 0, len(allocations))
 	notifications := make([]*repository.NotificationParam, 0, len(allocations))
@@ -901,16 +976,7 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		}
 	}
 
-	return s.repo.FinalizeBill(ctx, repository.FinalizeBillParams{
-		BillID:          billID,
-		GroupID:         groupID,
-		ExpectedVersion: expectedVersion,
-		Shares:          shares,
-		Debts:           debts,
-		ActorMemberID:   member.ID,
-		Notifications:   notifications,
-		BeforeCommit:    beforeCommit,
-	})
+	return &finalizationPlan{shares: shares, debts: debts, notifications: notifications, beforeCommit: beforeCommit}
 }
 
 // VoidBill hủy bỏ hóa đơn đã chốt và đóng các khoản nợ liên quan (Spec 3 AC-11).

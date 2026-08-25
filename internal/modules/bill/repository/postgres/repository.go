@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -48,6 +49,19 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		return nil, err
 	}
 	q := sqlc.New(tx)
+
+	// Spec 0008 AC-2: kiểm tra lại khóa gửi hóa đơn sau khi giữ khóa nhóm. Đây là
+	// nguồn sự thật cuối cùng: nếu nhóm đã bị khóa thì không bill, OCR job hay
+	// activity nào được commit; các ảnh attempt sẽ do lớp usecase đưa vào hàng
+	// đợi dọn dẹp bền vững.
+	groupLockedAt, err := q.GetGroupSubmissionLock(ctx, pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("read submission lock in create tx: %w", err)
+	}
+	if groupLockedAt.Valid {
+		return nil, domain.ErrSubmissionLocked
+	}
+
 	// 1. Tạo bản ghi bills
 	var billDate pgtype.Date
 	if p.Bill.BillDate != nil {
@@ -241,8 +255,12 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 
 // GetBillByID lấy thông tin chi tiết một hóa đơn (bao gồm cả images, items, assignments, shares).
 func (r *postgresRepository) GetBillByID(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error) {
-	q := sqlc.New(r.pool)
+	return loadBillByID(ctx, sqlc.New(r.pool), id, groupID)
+}
 
+// loadBillByID đọc đầy đủ bill kèm ảnh, món, phân bổ và shares bằng một Querier
+// đã gắn với pool hoặc transaction bất kỳ.
+func loadBillByID(ctx context.Context, q *sqlc.Queries, id, groupID uuid.UUID) (*domain.Bill, error) {
 	dbBill, err := q.GetBillByID(ctx, sqlc.GetBillByIDParams{
 		ID:      pgtype.UUID{Bytes: id, Valid: true},
 		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
@@ -704,6 +722,29 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 	if err = lockActiveBillGroup(ctx, tx, p.GroupID); err != nil {
 		return nil, err
 	}
+
+	result, err := r.finalizeCore(ctx, tx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit finalize bill tx: %w", err)
+	}
+	return result, nil
+}
+
+// FinalizeBillInTx chạy phần ghi của finalize bên trong một transaction do caller
+// sở hữu (batch item worker). Caller phải đã khóa dòng nhóm và dòng bill trước khi
+// gọi; hàm này không mở hay commit transaction (Spec 0008 Batch item transaction).
+func (r *postgresRepository) FinalizeBillInTx(ctx context.Context, tx pgx.Tx, p repository.FinalizeBillParams) (*domain.Bill, error) {
+	return r.finalizeCore(ctx, tx, p)
+}
+
+// finalizeCore là phần ghi dùng chung của hai đường finalize: cập nhật bill sang
+// finalized, ghi đè snapshot shares, sinh debts, tạo notifications, chạy hook
+// beforeCommit và ghi activity finalized_bill (Spec 3 AC-9).
+func (r *postgresRepository) finalizeCore(ctx context.Context, tx pgx.Tx, p repository.FinalizeBillParams) (*domain.Bill, error) {
 	q := sqlc.New(tx)
 
 	// 1. Cập nhật status bill thành finalized
@@ -800,10 +841,6 @@ func (r *postgresRepository) FinalizeBill(ctx context.Context, p repository.Fina
 		Description:   desc,
 		Metadata:      metaBytes,
 	})
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit finalize bill tx: %w", err)
-	}
 
 	result := toDomainBill(&dbBill)
 	result.Shares = createdShares
@@ -1512,6 +1549,18 @@ func (r *postgresRepository) ReleaseIdempotencyKey(ctx context.Context, actorUse
 }
 
 func (r *postgresRepository) CompleteIdempotencyKey(ctx context.Context, p repository.CompleteIdempotencyParams) error {
+	return completeIdempotencyKey(ctx, r.pool, p)
+}
+
+func (r *postgresRepository) CompleteIdempotencyKeyInTx(ctx context.Context, tx pgx.Tx, p repository.CompleteIdempotencyParams) error {
+	return completeIdempotencyKey(ctx, tx, p)
+}
+
+type idempotencyExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func completeIdempotencyKey(ctx context.Context, execer idempotencyExecer, p repository.CompleteIdempotencyParams) error {
 	query := `
 		UPDATE bill_idempotency_keys
 		SET state = 'completed',
@@ -1526,9 +1575,12 @@ func (r *postgresRepository) CompleteIdempotencyKey(ctx context.Context, p repos
 		resID = pgtype.UUID{Bytes: *p.ResourceID, Valid: true}
 	}
 
-	_, err := r.pool.Exec(ctx, query, p.ActorUserID, p.Operation, p.KeyHash, p.ResponseCode, p.ResponseBody, resID)
+	tag, err := execer.Exec(ctx, query, p.ActorUserID, p.Operation, p.KeyHash, p.ResponseCode, p.ResponseBody, resID)
 	if err != nil {
 		return fmt.Errorf("complete idempotency key: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("complete idempotency key: reservation not found")
 	}
 	return nil
 }

@@ -437,7 +437,119 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/CaptainRequired"}
         "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/GroupHasUnsettledObligations"}
+        "409":
+          description: "GROUP_HAS_UNSETTLED_OBLIGATIONS when bills or debts remain, or BULK_FINALIZE_IN_PROGRESS with the safe active_batch_id while a bulk finalize batch is queued or processing (spec 0008 AC-7)"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/GroupUnsettledObligationsError"}
+                  - {$ref: "#/components/schemas/Error"}
+  /api/v1/groups/{groupId}/bills/lock-submissions:
+    post:
+      summary: One way lock that stops new bill submission for the group (spec 0008)
+      operationId: lockBillSubmissions
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+          description: Optional; a repeated key with the same group replays the original 200 response.
+      responses:
+        "200":
+          description: The group is locked now or was already locked; replay of an already locked group returns the same state without a new activity
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/LockSubmissionsResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/groups/{groupId}/bills/finalize-all:
+    post:
+      summary: Start one asynchronous bulk finalize batch over every open draft (spec 0008)
+      description: >-
+        Locks bill submission immediately inside the start transaction, captures every bill still in
+        draft or reviewed status with its version and review state, then processes each captured bill
+        independently through River. Returns 202 with the batch summary; read progress through the
+        batch detail endpoint.
+      operationId: startBulkFinalize
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+          description: Optional; the same key with the same group returns the same batch, reuse for another group conflicts.
+      responses:
+        "202":
+          description: Batch created (or replayed) and item jobs enqueued; zero-target batches complete immediately with both terminal times set
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/StartBulkFinalizeResponse"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409":
+          description: "BULK_FINALIZE_IN_PROGRESS with the safe active_batch_id, or idempotency conflicts"
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+  /api/v1/groups/{groupId}/bill-finalize-batches/{batchId}:
+    get:
+      summary: Read a bulk finalize batch summary and one page of item results (spec 0008)
+      operationId: getBillFinalizeBatch
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: batchId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: cursor
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, default: 20, maximum: 100}
+      responses:
+        "200":
+          description: Batch summary plus items ordered by (created_at, bill_id) ascending; a deleted bill keeps its stable failure code and a null display name
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/BatchDetailResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{id}/invites:
     get:
       operationId: listGroupInvites
@@ -857,7 +969,7 @@ paths:
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "409":
-          description: "Idempotency-Key reused with a different request body (IDEMPOTENCY_KEY_REUSED), or the same key is still being processed (IDEMPOTENCY_IN_PROGRESS)"
+          description: "Idempotency-Key reused with a different request body (IDEMPOTENCY_KEY_REUSED), the same key is still being processed (IDEMPOTENCY_IN_PROGRESS), or the group's bill submission is locked so no new bill may be created (BILL_SUBMISSION_LOCKED)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     get:
       summary: List bills in a group with cursor pagination
@@ -1916,12 +2028,14 @@ components:
         currency: {type: string, enum: [VND], description: Optional; only VND is accepted in v1}
     Group:
       type: object
-      required: [id, name, currency, created_at]
+      required: [id, name, currency, created_at, bill_submission_locked]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
         currency: {type: string, enum: [VND]}
         created_at: {type: string, format: date-time}
+        bill_submission_locked: {type: boolean, description: "True when the Captain has locked new bill submission for this group (spec 0008); the lock is one way in v1"}
+        bill_submission_locked_at: {type: string, format: date-time, nullable: true, description: PostgreSQL time recorded when the lock was applied; null while the group is open}
     RenameGroupRequest:
       type: object
       required: [name]
@@ -1988,6 +2102,56 @@ components:
         members: {type: array, items: {$ref: "#/components/schemas/Member"}}
         balances: {type: array, items: {$ref: "#/components/schemas/Balance"}}
         caller_role: {type: string, enum: [captain, member]}
+        active_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: ID of the queued or processing bulk finalize batch; omitted for ordinary members (spec 0008)"}
+        latest_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: newest batch by (created_at, id); omitted for ordinary members"}
+    LockSubmissionsResponse:
+      type: object
+      required: [bill_submission_locked, bill_submission_locked_at]
+      properties:
+        bill_submission_locked: {type: boolean}
+        bill_submission_locked_at: {type: string, format: date-time}
+    BulkFinalizeBatch:
+      type: object
+      required: [id, group_id, requested_by_member_id, status, target_count, finalized_count, failed_count, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        requested_by_member_id: {type: string, format: uuid, description: Audit actor who started the batch; completion notification goes to the current active Captain instead}
+        status: {type: string, enum: [queued, processing, completed]}
+        target_count: {type: integer, minimum: 0}
+        finalized_count: {type: integer, minimum: 0}
+        failed_count: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        started_at: {type: string, format: date-time, nullable: true}
+        completed_at: {type: string, format: date-time, nullable: true}
+    BulkFinalizeItem:
+      type: object
+      required: [bill_id, bill_version, captured_reviewed, status]
+      properties:
+        bill_id: {type: string, format: uuid}
+        bill_display_name: {type: string, nullable: true, description: Current merchant name when the bill row still exists; null after a hard delete}
+        bill_version: {type: integer, description: Version captured at batch start; the exact version rules of spec 0003 apply to this version}
+        captured_reviewed: {type: boolean, description: Whether the captured version was reviewed at capture time}
+        status: {type: string, enum: [pending, finalized, failed]}
+        error_code: {type: string, nullable: true, description: "Stable redacted code: BILL_DELETED, VERSION_CONFLICT, BILL_ALREADY_VOIDED, BILL_NOT_READY, DISCOUNT_NOT_ALLOCATABLE, or BANK_ACCOUNT_REQUIRED"}
+        processed_at: {type: string, format: date-time, nullable: true}
+    StartBulkFinalizeResponse:
+      type: object
+      required: [batch, bill_submission_locked, bill_submission_locked_at, captured_reviewed_count, captured_unreviewed_count]
+      properties:
+        batch: {$ref: "#/components/schemas/BulkFinalizeBatch"}
+        bill_submission_locked: {type: boolean}
+        bill_submission_locked_at: {type: string, format: date-time}
+        captured_reviewed_count: {type: integer, description: Captured bills whose version was already reviewed}
+        captured_unreviewed_count: {type: integer, description: Captured drafts that will be reviewed and finalized during processing}
+    BatchDetailResponse:
+      type: object
+      required: [batch, items]
+      properties:
+        batch: {$ref: "#/components/schemas/BulkFinalizeBatch"}
+        items: {type: array, items: {$ref: "#/components/schemas/BulkFinalizeItem"}}
+        next_cursor: {type: string}
     CreateInviteRequest:
       type: object
       additionalProperties: false
