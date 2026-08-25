@@ -6,15 +6,43 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // maxJSONBodySize protects the server from clients sending unbounded JSON
 // request bodies. Authentication and regular API payloads should fit in 1 MiB.
 const maxJSONBodySize int64 = 64 << 10
 
-// WriteJSON writes data as a JSON response. The payload is marshaled before
-// the status code is committed so the caller can handle encoding failures.
+// defaultSuccessMessage là thông điệp mặc định cho mọi response thành công khi
+// handler không truyền thông điệp riêng.
+const defaultSuccessMessage = "Thành công"
+
+// successBody là vỏ bọc chuẩn cho mọi response thành công của API.
+type successBody struct {
+	Success bool   `json:"success"`
+	Data    any    `json:"data"`
+	Message string `json:"message"`
+}
+
+// WriteJSON writes data wrapped in the standard success envelope
+// ({"success":true,"data":...,"message":...}) using the default message.
 func WriteJSON(w http.ResponseWriter, status int, data any) error {
+	return WriteJSONMessage(w, status, data, defaultSuccessMessage)
+}
+
+// WriteJSONMessage behaves like WriteJSON but lets the handler override the
+// envelope message shown to the client.
+func WriteJSONMessage(w http.ResponseWriter, status int, data any, message string) error {
+	if strings.TrimSpace(message) == "" {
+		message = defaultSuccessMessage
+	}
+	return WriteRawJSON(w, status, successBody{Success: true, Data: data, Message: message})
+}
+
+// WriteRawJSON writes a payload verbatim, without the success envelope. It is
+// reserved for infrastructure endpoints (health probes) and for the error
+// writer, which supplies its own envelope.
+func WriteRawJSON(w http.ResponseWriter, status int, data any) error {
 	body, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("marshal JSON response: %w", err)

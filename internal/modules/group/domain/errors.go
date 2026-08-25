@@ -40,6 +40,14 @@ var (
 	ErrCaptainTransferConflict = errors.New("captain transfer conflict")
 )
 
+// BulkFinalizeInProgressError chặn archive nhóm khi còn một batch chốt toàn bộ
+// đang queued hoặc processing (Spec 0008 AC-7, bất biến 6), kèm ID batch an toàn.
+type BulkFinalizeInProgressError struct {
+	ActiveBatchID string
+}
+
+func (e *BulkFinalizeInProgressError) Error() string { return "bulk finalize already in progress" }
+
 // OpenDebtsError carries the payable and receivable totals that block a
 // member's exit, so the handler can expose them as error.fields (spec 0002
 // AC-6).

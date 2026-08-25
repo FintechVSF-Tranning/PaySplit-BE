@@ -113,12 +113,15 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var unreadResp struct {
+	type unreadCountBody struct {
 		UnreadCount int64 `json:"unread_count"`
 	}
+	var unreadResp struct {
+		Data unreadCountBody `json:"data"`
+	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &unreadResp)
-	if unreadResp.UnreadCount != 0 {
-		t.Errorf("expected 0 unread, got %d", unreadResp.UnreadCount)
+	if unreadResp.Data.UnreadCount != 0 {
+		t.Errorf("expected 0 unread, got %d", unreadResp.Data.UnreadCount)
 	}
 
 	// 2. Create 3 notifications for user1
@@ -161,8 +164,8 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &unreadResp)
-	if unreadResp.UnreadCount != 3 {
-		t.Errorf("expected 3 unread, got %d", unreadResp.UnreadCount)
+	if unreadResp.Data.UnreadCount != 3 {
+		t.Errorf("expected 3 unread, got %d", unreadResp.Data.UnreadCount)
 	}
 
 	// 4. List notifications with pagination
@@ -173,7 +176,7 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var listResp struct {
+	type notificationsPage struct {
 		Items []struct {
 			ID     string  `json:"id"`
 			Title  string  `json:"title"`
@@ -187,12 +190,15 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 			TotalPages int   `json:"total_pages"`
 		} `json:"meta"`
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &listResp)
-	if listResp.Meta.TotalItems != 3 {
-		t.Errorf("expected total_items=3, got %d", listResp.Meta.TotalItems)
+	var listResp struct {
+		Data notificationsPage `json:"data"`
 	}
-	if len(listResp.Items) != 2 {
-		t.Fatalf("expected 2 items on page 1, got %d", len(listResp.Items))
+	_ = json.Unmarshal(rec.Body.Bytes(), &listResp)
+	if listResp.Data.Meta.TotalItems != 3 {
+		t.Errorf("expected total_items=3, got %d", listResp.Data.Meta.TotalItems)
+	}
+	if len(listResp.Data.Items) != 2 {
+		t.Fatalf("expected 2 items on page 1, got %d", len(listResp.Data.Items))
 	}
 
 	// 5. Mark single notification as read
@@ -210,8 +216,8 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	_ = json.Unmarshal(rec.Body.Bytes(), &unreadResp)
-	if unreadResp.UnreadCount != 2 {
-		t.Errorf("expected 2 unread after single read, got %d", unreadResp.UnreadCount)
+	if unreadResp.Data.UnreadCount != 2 {
+		t.Errorf("expected 2 unread after single read, got %d", unreadResp.Data.UnreadCount)
 	}
 
 	// 6. Mark all as read
@@ -229,8 +235,8 @@ func TestNotificationHTTP_EndToEndFlow(t *testing.T) {
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	_ = json.Unmarshal(rec.Body.Bytes(), &unreadResp)
-	if unreadResp.UnreadCount != 0 {
-		t.Errorf("expected 0 unread after mark all, got %d", unreadResp.UnreadCount)
+	if unreadResp.Data.UnreadCount != 0 {
+		t.Errorf("expected 0 unread after mark all, got %d", unreadResp.Data.UnreadCount)
 	}
 
 	// 7. Test unauthorized without bearer token

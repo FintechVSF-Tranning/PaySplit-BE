@@ -88,7 +88,7 @@ func Normalize(rawBytes []byte) (*domain.OCRCandidate, error) {
 	// 3. Chuẩn hóa items và gộp các dòng khuyến mãi theo món liền trước (Spec 3 AC-15, AC-16)
 	items := make([]domain.OCRCandidateItem, 0, len(raw.Items))
 	var calculatedSubtotal int64
-	var orphanItemDiscount int64    // Dòng khuyến mãi không có món liền trước (Case B)
+	var orphanItemDiscount int64     // Dòng khuyến mãi không có món liền trước (Case B)
 	var exceededExcessDiscount int64 // Phần giảm giá vượt quá giá gốc của chính món đó
 	for _, rawItem := range raw.Items {
 		itemMap, ok := rawItem.(map[string]any)

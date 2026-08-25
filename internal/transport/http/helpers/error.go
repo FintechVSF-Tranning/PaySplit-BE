@@ -7,11 +7,12 @@ import "net/http"
 type ErrorDetail struct {
 	Code    string            `json:"code"`
 	Message string            `json:"message"`
-	Fields  map[string]string `json:"fields,omitempty"`
+	Fields  map[string]string `json:"details,omitempty"`
 }
 
 type errorBody struct {
-	Error ErrorDetail `json:"error"`
+	Success bool        `json:"success"`
+	Error   ErrorDetail `json:"error"`
 }
 
 // WriteError writes a consistent JSON error response using the shared JSON
@@ -22,5 +23,5 @@ func WriteError(w http.ResponseWriter, status int, message string) error {
 }
 
 func WriteAPIError(w http.ResponseWriter, status int, code, message string, fields map[string]string) error {
-	return WriteJSON(w, status, errorBody{Error: ErrorDetail{Code: code, Message: message, Fields: fields}})
+	return WriteRawJSON(w, status, errorBody{Success: false, Error: ErrorDetail{Code: code, Message: message, Fields: fields}})
 }

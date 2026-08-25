@@ -436,6 +436,31 @@ func (e *Enqueuer) EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notific
 	return err
 }
 
+// BulkFinalizeItemArgs định nghĩa payload công việc xử lý một item batch chốt toàn bộ (Spec 0008 AC-4).
+type BulkFinalizeItemArgs struct {
+	BatchID string `json:"batch_id"`
+	BillID  string `json:"bill_id"`
+	GroupID string `json:"group_id"`
+}
+
+// Kind định danh loại job trong River Queue.
+func (BulkFinalizeItemArgs) Kind() string { return "bill_bulk_finalize_item" }
+
+// EnqueueBulkFinalizeItemTx đẩy job xử lý item batch vào River Queue trong cùng
+// database transaction tx, bảo đảm một item chỉ tồn tại khi batch đã commit (Spec 0008 AC-4).
+func (e *Enqueuer) EnqueueBulkFinalizeItemTx(ctx context.Context, tx pgx.Tx, batchID, billID, groupID uuid.UUID) error {
+	if e == nil || e.client == nil {
+		return nil
+	}
+
+	_, err := e.client.InsertTx(ctx, tx, BulkFinalizeItemArgs{
+		BatchID: batchID.String(),
+		BillID:  billID.String(),
+		GroupID: groupID.String(),
+	}, nil)
+	return err
+}
+
 func stitchReceiptImages(images [][]byte) ([]byte, error) {
 	if len(images) == 0 {
 		return nil, errors.New("empty images")

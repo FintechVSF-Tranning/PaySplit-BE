@@ -30,7 +30,7 @@ func (w timeoutResponseWriter) Unwrap() http.ResponseWriter {
 // their resources promptly. Streaming endpoints (such as SSE /events) are exempt.
 func Timeout(duration time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		const timeoutBody = `{"error":{"code":"REQUEST_TIMEOUT","message":"request timeout"}}` + "\n"
+		const timeoutBody = `{"success":false,"error":{"code":"REQUEST_TIMEOUT","message":"request timeout"}}` + "\n"
 		timeoutHandler := http.TimeoutHandler(next, duration, timeoutBody)
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

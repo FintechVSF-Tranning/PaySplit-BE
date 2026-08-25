@@ -13,6 +13,7 @@ SELECT display_name FROM users WHERE id = $1;
 
 -- name: ListActiveGroupsForUser :many
 SELECT g.id, g.name, g.currency, g.created_by, g.created_at,
+       g.bill_submission_locked_at,
        m.id AS membership_id, m.role,
        (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count
 FROM group_members m
@@ -171,3 +172,16 @@ WHERE a.group_id = $1
        OR (a.created_at, a.id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
 ORDER BY a.created_at DESC, a.id DESC
 LIMIT $2;
+
+-- ============================================================================
+-- GROUP BILL CLOSE V1 (Spec 0008): điều hướng batch của Captain và rào chắn archive
+-- ============================================================================
+
+-- name: GetBillFinalizeBatchNavigation :one
+SELECT
+    (SELECT b.id FROM group_bill_finalize_batches b
+     WHERE b.group_id = $1 AND b.status IN ('queued', 'processing')
+     ORDER BY b.created_at ASC LIMIT 1) AS active_batch_id,
+    (SELECT b.id FROM group_bill_finalize_batches b
+     WHERE b.group_id = $1
+     ORDER BY b.created_at DESC, b.id DESC LIMIT 1) AS latest_batch_id;

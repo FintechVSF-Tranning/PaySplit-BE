@@ -11,11 +11,15 @@ import (
 )
 
 type Querier interface {
+	CaptureOpenBills(ctx context.Context, groupID pgtype.UUID) ([]CaptureOpenBillsRow, error)
+	CompleteFinalizeBatch(ctx context.Context, arg CompleteFinalizeBatchParams) (int64, error)
+	CountActiveBatchesForGroup(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	// Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
 	// tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
 	CountActiveOCRJobs(ctx context.Context) (int64, error)
 	CountManualOCRAttemptsInWindow(ctx context.Context, arg CountManualOCRAttemptsInWindowParams) (int64, error)
 	CountNonAwaitingDebtsByBillID(ctx context.Context, billID pgtype.UUID) (int64, error)
+	CountPendingBatchItems(ctx context.Context, batchID pgtype.UUID) (int64, error)
 	CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error)
 	// ============================================================================
 	// BILL IMAGES
@@ -45,17 +49,37 @@ type Querier interface {
 	DeleteBillShares(ctx context.Context, billID pgtype.UUID) error
 	DeleteDraftBill(ctx context.Context, arg DeleteDraftBillParams) (int64, error)
 	FinalizeBill(ctx context.Context, arg FinalizeBillParams) (Bill, error)
+	GetActiveCaptainMembership(ctx context.Context, groupID pgtype.UUID) (GroupMember, error)
+	GetActiveFinalizeBatch(ctx context.Context, groupID pgtype.UUID) ([]GroupBillFinalizeBatch, error)
 	GetActiveOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetBillByID(ctx context.Context, arg GetBillByIDParams) (Bill, error)
 	GetBillByIDForUpdate(ctx context.Context, arg GetBillByIDForUpdateParams) (Bill, error)
 	GetBillOnlyByID(ctx context.Context, id pgtype.UUID) (GetBillOnlyByIDRow, error)
+	// Rào chắn archive với batch đang chạy được kiểm tra trong code (DisbandGroup
+	// của module group) ngay sau khi giữ khóa nhóm, không dùng trigger.
+	// ============================================================================
+	// BATCH ITEM WORKER SUPPORT (đọc trong transaction của item)
+	// ============================================================================
+	GetBillStateForBatch(ctx context.Context, arg GetBillStateForBatchParams) (GetBillStateForBatchRow, error)
+	GetFinalizeBatchByID(ctx context.Context, arg GetFinalizeBatchByIDParams) (GroupBillFinalizeBatch, error)
 	GetGroupMember(ctx context.Context, arg GetGroupMemberParams) (GroupMember, error)
 	GetGroupMemberUser(ctx context.Context, arg GetGroupMemberUserParams) (GetGroupMemberUserRow, error)
+	// ============================================================================
+	// GROUP BILL CLOSE V1 (Spec 0008)
+	// Khóa gửi hóa đơn một chiều, batch chốt toàn bộ và item xử lý từng bill.
+	// ============================================================================
+	GetGroupSubmissionLock(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
+	GetLatestFinalizeBatch(ctx context.Context, groupID pgtype.UUID) (GroupBillFinalizeBatch, error)
 	GetLatestOCRJobByBillID(ctx context.Context, billID pgtype.UUID) (OcrJob, error)
 	GetOCRJobByID(ctx context.Context, id pgtype.UUID) (OcrJob, error)
+	IncrementBatchFailedCount(ctx context.Context, id pgtype.UUID) (int64, error)
+	IncrementBatchFinalizedCount(ctx context.Context, id pgtype.UUID) (int64, error)
+	InsertFinalizeBatch(ctx context.Context, arg InsertFinalizeBatchParams) (GroupBillFinalizeBatch, error)
+	InsertFinalizeItem(ctx context.Context, arg InsertFinalizeItemParams) (int64, error)
 	InsertGroupActivity(ctx context.Context, arg InsertGroupActivityParams) (GroupActivity, error)
 	InsertMediaCleanupJob(ctx context.Context, arg InsertMediaCleanupJobParams) error
 	ListActiveGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GroupMember, error)
+	ListBatchItemsPage(ctx context.Context, arg ListBatchItemsPageParams) ([]ListBatchItemsPageRow, error)
 	ListBillImages(ctx context.Context, billID pgtype.UUID) ([]BillImage, error)
 	ListBillItemAssignmentsByBill(ctx context.Context, billID pgtype.UUID) ([]BillItemAssignment, error)
 	ListBillItemAssignmentsByItem(ctx context.Context, billItemID pgtype.UUID) ([]BillItemAssignment, error)
@@ -64,7 +88,13 @@ type Querier interface {
 	ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error)
 	ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error)
 	ListDebtsByBillIDForUpdate(ctx context.Context, billID pgtype.UUID) ([]Debt, error)
+	LockBatchItemForUpdate(ctx context.Context, arg LockBatchItemForUpdateParams) (GroupBillFinalizeItem, error)
+	LockBatchRowForUpdate(ctx context.Context, id pgtype.UUID) (GroupBillFinalizeBatch, error)
+	MarkBatchItemFailed(ctx context.Context, arg MarkBatchItemFailedParams) (int64, error)
+	MarkBatchItemFinalized(ctx context.Context, arg MarkBatchItemFinalizedParams) (int64, error)
+	PromoteBatchToProcessing(ctx context.Context, id pgtype.UUID) (int64, error)
 	ReviewBill(ctx context.Context, arg ReviewBillParams) (Bill, error)
+	SetGroupSubmissionLockedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	UpdateDraftBill(ctx context.Context, arg UpdateDraftBillParams) (Bill, error)
 	UpdateOCRJobFailed(ctx context.Context, arg UpdateOCRJobFailedParams) (OcrJob, error)
 	UpdateOCRJobProcessing(ctx context.Context, id pgtype.UUID) (OcrJob, error)

@@ -111,10 +111,12 @@ func TestGetUnreadCountEndpoint(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var res map[string]int64
-	_ = json.Unmarshal(w.Body.Bytes(), &res)
-	if res["unread_count"] != 7 {
-		t.Errorf("expected unread count 7, got %d", res["unread_count"])
+	var env struct {
+		Data map[string]int64 `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	if env.Data["unread_count"] != 7 {
+		t.Errorf("expected unread count 7, got %d", env.Data["unread_count"])
 	}
 }
 

@@ -134,12 +134,13 @@ type Debt struct {
 }
 
 type Group struct {
-	ID        pgtype.UUID        `json:"id"`
-	Name      string             `json:"name"`
-	Currency  string             `json:"currency"`
-	CreatedBy pgtype.UUID        `json:"created_by"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	Status    interface{}        `json:"status"`
+	ID                     pgtype.UUID        `json:"id"`
+	Name                   string             `json:"name"`
+	Currency               string             `json:"currency"`
+	CreatedBy              pgtype.UUID        `json:"created_by"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	Status                 interface{}        `json:"status"`
+	BillSubmissionLockedAt pgtype.Timestamptz `json:"bill_submission_locked_at"`
 }
 
 type GroupActivity struct {
@@ -151,6 +152,32 @@ type GroupActivity struct {
 	Metadata      []byte             `json:"metadata"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	ActorKind     interface{}        `json:"actor_kind"`
+}
+
+type GroupBillFinalizeBatch struct {
+	ID                  pgtype.UUID        `json:"id"`
+	GroupID             pgtype.UUID        `json:"group_id"`
+	RequestedByMemberID pgtype.UUID        `json:"requested_by_member_id"`
+	Status              interface{}        `json:"status"`
+	TargetCount         int32              `json:"target_count"`
+	FinalizedCount      int32              `json:"finalized_count"`
+	FailedCount         int32              `json:"failed_count"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	StartedAt           pgtype.Timestamptz `json:"started_at"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+}
+
+type GroupBillFinalizeItem struct {
+	BatchID          pgtype.UUID        `json:"batch_id"`
+	BillID           pgtype.UUID        `json:"bill_id"`
+	BillVersion      int32              `json:"bill_version"`
+	CapturedReviewed bool               `json:"captured_reviewed"`
+	Status           interface{}        `json:"status"`
+	ErrorCode        pgtype.Text        `json:"error_code"`
+	ProcessedAt      pgtype.Timestamptz `json:"processed_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type GroupInvite struct {

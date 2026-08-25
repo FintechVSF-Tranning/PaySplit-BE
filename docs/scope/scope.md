@@ -17,6 +17,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 4   | Split and settlement v1              | Slice 4 | in-progress |
 | 5   | Admin v1                             | Slice 5 | in-progress |
 | 6   | Notification and background queue v1 | Slice 6 | done        |
+| 7   | Group bill close v1                  | Slice 7 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -156,6 +157,27 @@ Provide Firebase Cloud Messaging push notification dispatch, PostgreSQL backed R
 - [x] Document it: `/document notification and background queue v1`
 
 Spec [0006](../specs/0006-notification-queue-v1/index.md) · code in `internal/modules/notification/`, `internal/platform/queue/river/`, `internal/platform/notification/fcm/`, and `internal/bootstrap/`
+
+## Slice 7: Group bill close
+
+### 7. Group bill close v1 · in-progress
+
+Provide a one way Captain lock that stops new bill submission for a group, an asynchronous bulk finalize batch that captures every current draft with its version and review state, per bill independent processing through the existing review and finalize rules, durable retry safe batch results with cursor paginated items, stable failure codes, and a Captain completion notification.
+
+**Done when:** all ten acceptance criteria in spec 0008 pass against PostgreSQL 18, a locked group rejects every manual or image bill create with `409 BILL_SUBMISSION_LOCKED`, locking is idempotent and one way in V1, at most one queued or processing batch exists per group, each captured bill finalizes or fails independently without rolling back others, completed counters reconcile with terminal item rows, finalized bills stay immutable, and archived groups plus non Captain callers cannot reach the new actions. The Flutter surfaces of AC-9 live in the PaySplit-FE companion repo and are tracked there.
+
+- [x] Design it (spec): `/architect group bill close v1`
+- [x] Build it: `/develop group bill close v1`
+  - [x] One way submission lock: migration column, public group policy fields, Captain lock endpoint with idempotent activity, manual and image create gate with cleanup race coverage (satisfies AC-1, AC-2, AC-3, AC-10)
+  - [x] Bulk finalize schema and start: batch and item tables, active batch and disband guards, River job args, capture and start transaction returning 202, and batch detail API (satisfies AC-4, AC-6, AC-7)
+  - [x] Item processing: existing review and finalize rules inside each item transaction, stable failures, count reconciliation, and Captain completion notification (satisfies AC-5, AC-6, AC-7)
+  - [x] Hardening: metrics, redaction checks, concurrency coverage, OpenAPI, and end to end verification (satisfies AC-2, AC-8, AC-10)
+- [x] Verify it: `/check verify group bill close v1`
+- [x] Test it: `/test group bill close v1`
+- [x] Review it (fresh model): `/check review group bill close v1`
+- [ ] Document it: `/document group bill close v1`
+
+Spec [0008](../specs/0008-group-bill-close-v1/index.md) · code in `internal/modules/group/`, `internal/modules/bill/`, `internal/platform/metrics/`, and `internal/bootstrap/`
 
 ## Deferred
 

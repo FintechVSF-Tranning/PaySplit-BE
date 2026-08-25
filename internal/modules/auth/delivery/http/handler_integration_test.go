@@ -123,10 +123,7 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("refresh status %d body %s", response.Code, response.Body.String())
 	}
-	var rotated tokenBody
-	if err = json.Unmarshal(response.Body.Bytes(), &rotated); err != nil {
-		t.Fatal(err)
-	}
+	rotated := decodeData[tokenBody](t, response.Body.Bytes())
 	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/refresh", `{"refresh_token":"`+second.RefreshToken+`","device_id":"`+deviceTwo+`"}`, "")
 	if response.Code != stdhttp.StatusUnauthorized {
 		t.Fatalf("refresh replay status %d body %s", response.Code, response.Body.String())
@@ -164,16 +161,31 @@ type tokenBody struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// envelope[T] bóc trường "data" khỏi vỏ bọc success chuẩn của API.
+type envelope[T any] struct {
+	Success bool `json:"success"`
+	Data    T    `json:"data"`
+}
+
+func decodeData[T any](t *testing.T, body []byte) T {
+	t.Helper()
+	var env envelope[T]
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	if !env.Success {
+		t.Fatalf("expected success envelope, got error response: %s", body)
+	}
+	return env.Data
+}
+
 func signIn(t *testing.T, handler stdhttp.Handler, email, device string) tokenBody {
 	t.Helper()
 	response := request(t, handler, stdhttp.MethodPost, "/api/v1/auth/sign-in", `{"email":"`+email+`","password":"StrongPass1","device_id":"`+device+`","device_name":"integration"}`, "")
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("sign in status %d body %s", response.Code, response.Body.String())
 	}
-	var body tokenBody
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
+	body := decodeData[tokenBody](t, response.Body.Bytes())
 	if body.AccessToken == "" || body.RefreshToken == "" {
 		t.Fatal("missing token pair")
 	}

@@ -48,9 +48,9 @@ type Bill struct {
 	Subtotal           int64       `json:"subtotal"`
 	ServiceCharge      int64       `json:"service_charge"`
 	VAT                int64       `json:"vat"`
-	Discount           int64       `json:"discount"` // Tổng giảm giá = TotalItemDiscount + GeneralDiscount
+	Discount           int64       `json:"discount"`            // Tổng giảm giá = TotalItemDiscount + GeneralDiscount
 	TotalItemDiscount  int64       `json:"total_item_discount"` // Giảm giá gắn theo từng món (Spec 3 AC-17)
-	GeneralDiscount    int64       `json:"general_discount"`   // Giảm giá chung/voucher của cả hóa đơn (Spec 3 AC-17)
+	GeneralDiscount    int64       `json:"general_discount"`    // Giảm giá chung/voucher của cả hóa đơn (Spec 3 AC-17)
 	Total              int64       `json:"total"`
 	SplitMethod        SplitMethod `json:"split_method"`
 	MismatchCodes      []string    `json:"mismatch_codes"`
