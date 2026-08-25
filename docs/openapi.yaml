@@ -2193,12 +2193,36 @@ components:
         net_balance: {type: string, description: Decimal VND string; positive means the member is owed}
     GroupListItem:
       type: object
-      required: [group, caller_membership_id, caller_role, active_member_count]
+      description: >-
+        One group card. Every display field is built in a single query so the
+        group list never needs a follow-up GET /groups/{id} per group.
+      required: [group, caller_membership_id, caller_role, active_member_count,
+                 caller_net_balance, pending_bill_count, last_activity]
       properties:
         group: {$ref: "#/components/schemas/Group"}
         caller_membership_id: {type: string, format: uuid}
         caller_role: {type: string, enum: [captain, member]}
         active_member_count: {type: integer}
+        caller_net_balance:
+          type: string
+          pattern: '^-?[0-9]+$'
+          description: >-
+            The caller's net VND balance in this group, sent as a string so large
+            values survive JSON parsing. Positive means owed to the caller,
+            negative means the caller owes, 0 when the group has no open debts.
+        pending_bill_count:
+          type: integer
+          description: Bills that are neither finalized nor voided, the same definition the disband guard uses
+        last_activity:
+          nullable: true
+          description: The group's most recent activity; null when the group has none
+          allOf: [{$ref: "#/components/schemas/ActivitySummary"}]
+    ActivitySummary:
+      type: object
+      required: [description, created_at]
+      properties:
+        description: {type: string, description: Vietnamese description already rendered by the backend}
+        created_at: {type: string, format: date-time}
     CreateGroupResponse:
       type: object
       required: [group, membership]

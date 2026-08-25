@@ -43,3 +43,7 @@ bin/
 # Test receipt images (contain personal/sensitive spending data)
 testdata/bills/*
 !testdata/bills/.gitkeep
+
+# Database dumps (chứa email thật, hash mật khẩu bcrypt và token phiên)
+backups/
+*.dump

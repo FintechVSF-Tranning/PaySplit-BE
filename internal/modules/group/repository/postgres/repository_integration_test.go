@@ -1242,3 +1242,83 @@ func TestListActivities_RejectsAnUndecodableCursor(t *testing.T) {
 		t.Fatalf("error = %v, want ErrInvalidCursor", err)
 	}
 }
+
+// --- Group list display fields (báo cáo đối chiếu Nhóm mục 3.1 - 3.3) -----
+
+// ListGroups phải dựng đủ dữ liệu một thẻ nhóm trong đúng một truy vấn: emoji,
+// số dư ròng của caller, số hóa đơn chưa chốt và hoạt động gần nhất.
+func TestListGroups_ReturnsDisplayFieldsForTheGroupCard(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cleanup := newCleanup(t, pool)
+	repo := New(pool)
+
+	captainID := createUser(t, ctx, pool, cleanup, "Captain")
+	group, captainMembership := mustCreateGroup(t, ctx, repo, cleanup, "Đà Lạt", captainID)
+
+	// Một hóa đơn draft (chưa chốt) và một hóa đơn đã chốt: chỉ hóa đơn draft
+	// được đếm vào pending_bill_count.
+	var draftBillID string
+	if err := pool.QueryRow(ctx, `INSERT INTO bills (group_id, creditor_member_id, status, total) VALUES ($1,$2,'draft',90000) RETURNING id`,
+		group.ID, captainMembership.ID).Scan(&draftBillID); err != nil {
+		t.Fatalf("insert draft bill: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO bills (group_id, creditor_member_id, status, total, finalized_at) VALUES ($1,$2,'finalized',10000,now())`,
+		group.ID, captainMembership.ID); err != nil {
+		t.Fatalf("insert finalized bill: %v", err)
+	}
+
+	// Caller là chủ nợ 30000 nên số dư ròng của caller phải là +30000.
+	debtorUserID := createUser(t, ctx, pool, cleanup, "Debtor")
+	var debtorMembershipID string
+	if err := pool.QueryRow(ctx, `INSERT INTO group_members (group_id, user_id, role, status) VALUES ($1,$2,'member','active') RETURNING id`,
+		group.ID, debtorUserID).Scan(&debtorMembershipID); err != nil {
+		t.Fatalf("insert debtor membership: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO debts (group_id, bill_id, debtor_member_id, creditor_member_id, amount, status) VALUES ($1,$2,$3,$4,30000,'awaiting')`,
+		group.ID, draftBillID, debtorMembershipID, captainMembership.ID); err != nil {
+		t.Fatalf("insert debt: %v", err)
+	}
+
+	items, _, err := repo.ListGroups(ctx, repository.ListGroupsParams{UserID: captainID, Limit: 10})
+	if err != nil {
+		t.Fatalf("list groups: %v", err)
+	}
+	var item *domain.GroupListItem
+	for i := range items {
+		if items[i].Group.ID == group.ID {
+			item = &items[i]
+			break
+		}
+	}
+	if item == nil {
+		t.Fatalf("group %s missing from the caller's list", group.ID)
+	}
+	if item.CallerNetBalance != 30000 {
+		t.Errorf("CallerNetBalance = %d, want 30000 (caller is the creditor)", item.CallerNetBalance)
+	}
+	if item.PendingBillCount != 1 {
+		t.Errorf("PendingBillCount = %d, want 1 (finalized bills excluded)", item.PendingBillCount)
+	}
+	if item.LastActivity == nil {
+		t.Fatal("LastActivity = nil, want the group_created activity")
+	}
+	if item.LastActivity.Description == "" || item.LastActivity.CreatedAt.IsZero() {
+		t.Errorf("LastActivity = %+v, want a populated description and timestamp", *item.LastActivity)
+	}
+
+	// Nhóm mới của một người khác chưa có công nợ hay hóa đơn: các trường hiển
+	// thị phải về 0 thay vì lỗi scan.
+	loneUserID := createUser(t, ctx, pool, cleanup, "Lone")
+	lone, _ := mustCreateGroup(t, ctx, repo, cleanup, "Nhóm trống", loneUserID)
+	loneItems, _, err := repo.ListGroups(ctx, repository.ListGroupsParams{UserID: loneUserID, Limit: 10})
+	if err != nil {
+		t.Fatalf("list lone groups: %v", err)
+	}
+	if len(loneItems) != 1 || loneItems[0].Group.ID != lone.ID {
+		t.Fatalf("lone list = %+v, want exactly the new group", loneItems)
+	}
+	if loneItems[0].CallerNetBalance != 0 || loneItems[0].PendingBillCount != 0 {
+		t.Errorf("empty group counters = (%d, %d), want (0, 0)", loneItems[0].CallerNetBalance, loneItems[0].PendingBillCount)
+	}
+}

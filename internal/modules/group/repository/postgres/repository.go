@@ -130,6 +130,10 @@ func (r *postgresRepository) ListGroups(ctx context.Context, p repository.ListGr
 			v := row.BillSubmissionLockedAt.Time
 			submissionLockedAt = &v
 		}
+		lastActivity, decodeErr := decodeActivitySummary(row.LastActivity)
+		if decodeErr != nil {
+			return nil, nil, decodeErr
+		}
 		items = append(items, domain.GroupListItem{
 			Group: domain.Group{
 				ID:                     uuid.UUID(row.ID.Bytes).String(),
@@ -143,6 +147,9 @@ func (r *postgresRepository) ListGroups(ctx context.Context, p repository.ListGr
 			CallerMembershipID: uuid.UUID(row.MembershipID.Bytes).String(),
 			CallerRole:         fmt.Sprint(row.Role),
 			ActiveMemberCount:  int(row.ActiveMemberCount),
+			CallerNetBalance:   row.CallerNetBalance,
+			PendingBillCount:   int(row.PendingBillCount),
+			LastActivity:       lastActivity,
 		})
 	}
 
@@ -1175,6 +1182,22 @@ func mapMembership(m dbgen.GroupMember) *domain.Membership {
 }
 
 func pgUUID(v uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: v, Valid: true} }
+
+// decodeActivitySummary đọc cột jsonb last_activity của ListActiveGroupsForUser.
+// Cột là NULL (raw rỗng) khi nhóm chưa có hoạt động nào.
+func decodeActivitySummary(raw []byte) (*domain.ActivitySummary, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var decoded struct {
+		Description string    `json:"description"`
+		CreatedAt   time.Time `json:"created_at"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("decode last_activity: %w", err)
+	}
+	return &domain.ActivitySummary{Description: decoded.Description, CreatedAt: decoded.CreatedAt}, nil
+}
 
 func mapWriteError(err error) error {
 	var pgErr *pgconn.PgError
