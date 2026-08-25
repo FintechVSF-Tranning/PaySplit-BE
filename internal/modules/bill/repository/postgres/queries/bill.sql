@@ -37,20 +37,66 @@ WHERE id = $1 AND group_id = $2
 FOR UPDATE;
 
 -- name: ListBillsByGroup :many
-SELECT * FROM bills
-WHERE group_id = $1
-ORDER BY created_at DESC
+SELECT
+    sqlc.embed(b),
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status = 'settled'
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+ORDER BY b.created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListBillsByGroupCursor :many
-SELECT * FROM bills
-WHERE group_id = $1
+SELECT
+    sqlc.embed(b),
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status = 'settled'
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
   AND (
     $2::timestamptz IS NULL 
-    OR created_at < $2 
-    OR (created_at = $2 AND id < $3)
+    OR b.created_at < $2
+    OR (b.created_at = $2 AND b.id < $3)
   )
-ORDER BY created_at DESC, id DESC
+ORDER BY b.created_at DESC, b.id DESC
 LIMIT $4;
 
 -- name: UpdateDraftBill :one

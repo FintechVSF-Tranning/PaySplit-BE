@@ -136,17 +136,27 @@ func (m *mockHandlerRepo) GetGroupMemberUser(ctx context.Context, memberID, grou
 	}, nil
 }
 
-func (m *mockHandlerRepo) ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
+func (m *mockHandlerRepo) ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error) {
 	if m.bill != nil {
-		return []*domain.Bill{m.bill}, nil
+		return []*domain.BillListItem{{
+			Bill:             m.bill,
+			PayerDisplayName: "Nguyễn An",
+			PaidMemberCount:  2,
+			MemberCount:      3,
+		}}, nil
 	}
-	return []*domain.Bill{}, nil
+	return []*domain.BillListItem{}, nil
 }
 
 func (m *mockHandlerRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
-	bills := []*domain.Bill{}
+	bills := []*domain.BillListItem{}
 	if m.bill != nil {
-		bills = append(bills, m.bill)
+		bills = append(bills, &domain.BillListItem{
+			Bill:             m.bill,
+			PayerDisplayName: "Nguyễn An",
+			PaidMemberCount:  2,
+			MemberCount:      3,
+		})
 	}
 	return &repository.ListBillsCursorResult{
 		Bills: bills,
@@ -780,6 +790,53 @@ func TestCreateBill_Multipart_BodyExceedsMaxBytesReader_ReturnsPayloadTooLarge(t
 	}
 }
 
+func TestListBills_ReturnsPayerAndPaymentProgress(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	repo := &mockHandlerRepo{
+		member: &repository.GroupMember{
+			ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "member", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: uuid.New(), GroupID: groupID, CreditorMemberID: uuid.New(),
+			Status: domain.BillStatusFinalized, SplitMethod: domain.SplitMethodEven,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		},
+	}
+	service := usecase.NewService(repo, &mockHandlerOCR{}, &mockHandlerStorage{}, &mockHandlerProcessor{}, nil)
+	handler := billhttp.NewHandler(service, nil)
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ctx := authmw.WithAuthContext(req.Context(), userID.String(), "s-1", "user")
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/?group_id="+groupID.String(), nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Bills []domain.BillListItem `json:"bills"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(envelope.Data.Bills) != 1 {
+		t.Fatalf("expected one bill, got %d", len(envelope.Data.Bills))
+	}
+	summary := envelope.Data.Bills[0]
+	if summary.PayerDisplayName != "Nguyễn An" || summary.PaidMemberCount != 2 || summary.MemberCount != 3 {
+		t.Fatalf("unexpected bill summary: %+v", summary)
+	}
+}
+
 func TestCalculateBreakdown_Handler_Success(t *testing.T) {
 	groupID := uuid.New()
 	userID := uuid.New()
@@ -833,7 +890,7 @@ func TestCalculateBreakdown_Handler_Success(t *testing.T) {
 	}
 
 	var envelope struct {
-		Success bool                              `json:"success"`
+		Success bool                               `json:"success"`
 		Data    usecase.CalculateBreakdownResponse `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {

@@ -60,7 +60,7 @@ type ListBillsCursorParams struct {
 
 // ListBillsCursorResult chứa kết quả phân trang cursor cho danh sách bill.
 type ListBillsCursorResult struct {
-	Bills      []*domain.Bill
+	Bills      []*domain.BillListItem
 	NextCursor *string
 }
 
@@ -202,7 +202,7 @@ type Repository interface {
 	GetBillByIDForUpdate(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error)
 
 	// ListBillsByGroup lấy danh sách hóa đơn trong nhóm có phân trang offset (legacy).
-	ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error)
+	ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error)
 
 	// ListBillsByGroupCursor lấy danh sách hóa đơn trong nhóm theo cursor pagination (created_at DESC, id DESC).
 	ListBillsByGroupCursor(ctx context.Context, params ListBillsCursorParams) (*ListBillsCursorResult, error)

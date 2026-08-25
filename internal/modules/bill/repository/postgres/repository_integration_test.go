@@ -104,6 +104,77 @@ func setupTestUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	return userID
 }
 
+func TestIntegration_ListBillsIncludesPayerAndPaymentProgress(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, debtorID := setupTestGroupAndMembers(t, pool)
+	ctx := context.Background()
+
+	finalizedID := uuid.New()
+	draftID := uuid.New()
+	for _, bill := range []*domain.Bill{
+		{
+			ID: finalizedID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Total: 200000, SplitMethod: domain.SplitMethodEven,
+		},
+		{
+			ID: draftID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Total: 50000, SplitMethod: domain.SplitMethodEven,
+		},
+	} {
+		if _, err := repo.CreateBill(ctx, repository.CreateBillParams{Bill: bill}); err != nil {
+			t.Fatalf("CreateBill() error = %v", err)
+		}
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE bills SET status='finalized', finalized_at=now() WHERE id=$1`, finalizedID); err != nil {
+		t.Fatalf("finalize fixture bill: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO bill_shares(id,bill_id,group_id,member_id,final_amount)
+		VALUES ($1,$2,$3,$4,100000),($5,$2,$3,$6,100000)`,
+		uuid.New(), finalizedID, groupID, creditorID, uuid.New(), debtorID); err != nil {
+		t.Fatalf("insert share fixtures: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO debts(id,group_id,bill_id,debtor_member_id,creditor_member_id,amount,status)
+		VALUES ($1,$2,$3,$4,$5,100000,'awaiting')`,
+		uuid.New(), groupID, finalizedID, debtorID, creditorID); err != nil {
+		t.Fatalf("insert debt fixture: %v", err)
+	}
+
+	page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+		GroupID: groupID,
+		Limit:   20,
+	})
+	if err != nil {
+		t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+	}
+	byID := make(map[uuid.UUID]*domain.BillListItem, len(page.Bills))
+	for _, item := range page.Bills {
+		byID[item.ID] = item
+	}
+	finalized := byID[finalizedID]
+	if finalized == nil {
+		t.Fatal("finalized bill missing from list")
+	}
+	if finalized.PayerDisplayName != "User 1" || finalized.PaidMemberCount != 1 || finalized.MemberCount != 2 {
+		t.Fatalf("unexpected finalized summary: %+v", finalized)
+	}
+	draft := byID[draftID]
+	if draft == nil || draft.PaidMemberCount != 0 || draft.MemberCount != 0 {
+		t.Fatalf("unexpected draft summary: %+v", draft)
+	}
+
+	legacy, err := repo.ListBillsByGroup(ctx, groupID, 20, 0)
+	if err != nil {
+		t.Fatalf("ListBillsByGroup() error = %v", err)
+	}
+	if len(legacy) != 2 {
+		t.Fatalf("legacy list length = %d, want 2", len(legacy))
+	}
+}
+
 func TestIntegration_CreateBillRejectsArchivedGroup_AC9(t *testing.T) {
 	pool := testPool(t)
 	repo := postgres.New(pool)
