@@ -417,7 +417,20 @@ const listActiveGroupsForUser = `-- name: ListActiveGroupsForUser :many
 SELECT g.id, g.name, g.currency, g.created_by, g.created_at,
        g.bill_submission_locked_at,
        m.id AS membership_id, m.role,
-       (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count
+       (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count,
+       -- Số dư ròng của chính caller trong nhóm; v_member_balances chỉ có hàng
+       -- khi thành viên có công nợ nên COALESCE về 0 cho nhóm chưa phát sinh.
+       COALESCE((SELECT b.net_balance FROM v_member_balances b WHERE b.member_id = m.id), 0)::bigint AS caller_net_balance,
+       -- Hóa đơn chưa chốt, dùng chung định nghĩa với CountUnfinishedBills.
+       (SELECT count(*) FROM bills bi WHERE bi.group_id = g.id AND bi.status NOT IN ('finalized', 'voided')) AS pending_bill_count,
+       -- Hoạt động gần nhất, NULL khi nhóm chưa có hoạt động nào. Gói thành
+       -- jsonb thay vì hai cột phẳng vì sqlc suy cột phẳng lấy từ subquery
+       -- thành NOT NULL (description là NOT NULL trong bảng) và sẽ vỡ khi
+       -- scan NULL. Truy vấn dùng idx_group_activities_timeline.
+       (SELECT jsonb_build_object('description', a.description, 'created_at', a.created_at)
+        FROM group_activities a
+        WHERE a.group_id = g.id
+        ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS last_activity
 FROM group_members m
 JOIN groups g ON g.id = m.group_id
 WHERE m.user_id = $1
@@ -446,8 +459,13 @@ type ListActiveGroupsForUserRow struct {
 	MembershipID           pgtype.UUID        `json:"membership_id"`
 	Role                   interface{}        `json:"role"`
 	ActiveMemberCount      int64              `json:"active_member_count"`
+	CallerNetBalance       int64              `json:"caller_net_balance"`
+	PendingBillCount       int64              `json:"pending_bill_count"`
+	LastActivity           []byte             `json:"last_activity"`
 }
 
+// Mỗi hàng mang đủ dữ liệu cho một thẻ nhóm ở FE nên danh sách không cần
+// gọi thêm GET /groups/{id} cho từng nhóm (báo cáo đối chiếu mục 3.2, 3.3).
 func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listActiveGroupsForUser,
 		arg.UserID,
@@ -472,6 +490,9 @@ func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGro
 			&i.MembershipID,
 			&i.Role,
 			&i.ActiveMemberCount,
+			&i.CallerNetBalance,
+			&i.PendingBillCount,
+			&i.LastActivity,
 		); err != nil {
 			return nil, err
 		}

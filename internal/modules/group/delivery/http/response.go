@@ -47,6 +47,17 @@ type groupListItemResponse struct {
 	CallerMembershipID string        `json:"caller_membership_id"`
 	CallerRole         string        `json:"caller_role"`
 	ActiveMemberCount  int           `json:"active_member_count"`
+	// CallerNetBalance là số dư ròng VND của caller, trả dạng chuỗi giống
+	// balanceResponse để client không mất chính xác khi parse số lớn.
+	CallerNetBalance string `json:"caller_net_balance"`
+	PendingBillCount int    `json:"pending_bill_count"`
+	// LastActivity null khi nhóm chưa có hoạt động nào.
+	LastActivity *activitySummaryResponse `json:"last_activity"`
+}
+
+type activitySummaryResponse struct {
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 func newGroupResponse(g domain.Group) groupResponse {
@@ -76,12 +87,21 @@ func newBalanceResponse(b domain.Balance) balanceResponse {
 }
 
 func newGroupListItemResponse(item domain.GroupListItem) groupListItemResponse {
-	return groupListItemResponse{
+	resp := groupListItemResponse{
 		Group:              newGroupResponse(item.Group),
 		CallerMembershipID: item.CallerMembershipID,
 		CallerRole:         item.CallerRole,
 		ActiveMemberCount:  item.ActiveMemberCount,
+		CallerNetBalance:   strconv.FormatInt(item.CallerNetBalance, 10),
+		PendingBillCount:   item.PendingBillCount,
 	}
+	if item.LastActivity != nil {
+		resp.LastActivity = &activitySummaryResponse{
+			Description: item.LastActivity.Description,
+			CreatedAt:   item.LastActivity.CreatedAt,
+		}
+	}
+	return resp
 }
 
 type inviteResponse struct {

@@ -34,6 +34,8 @@ type Querier interface {
 	GetUserDisplayName(ctx context.Context, id pgtype.UUID) (string, error)
 	IncrementInviteUse(ctx context.Context, id pgtype.UUID) error
 	InsertMembership(ctx context.Context, arg InsertMembershipParams) (GroupMember, error)
+	// Mỗi hàng mang đủ dữ liệu cho một thẻ nhóm ở FE nên danh sách không cần
+	// gọi thêm GET /groups/{id} cho từng nhóm (báo cáo đối chiếu mục 3.2, 3.3).
 	ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error)
 	ListActiveMembers(ctx context.Context, groupID pgtype.UUID) ([]ListActiveMembersRow, error)
 	ListAvailableInvites(ctx context.Context, arg ListAvailableInvitesParams) ([]GroupInvite, error)
