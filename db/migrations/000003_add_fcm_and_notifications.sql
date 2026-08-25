@@ -22,6 +22,11 @@ ALTER TABLE notifications
 
 -- 3. Bổ sung các CHECK constraints cho bảng notifications
 ALTER TABLE notifications
+    DROP CONSTRAINT IF EXISTS notifications_type_length,
+    DROP CONSTRAINT IF EXISTS notifications_title_length,
+    DROP CONSTRAINT IF EXISTS notifications_body_length;
+
+ALTER TABLE notifications
     ADD CONSTRAINT notifications_type_length CHECK (char_length(btrim(type)) BETWEEN 1 AND 60),
     ADD CONSTRAINT notifications_title_length CHECK (char_length(btrim(title)) BETWEEN 1 AND 255),
     ADD CONSTRAINT notifications_body_length CHECK (char_length(btrim(body)) BETWEEN 1 AND 1000);
