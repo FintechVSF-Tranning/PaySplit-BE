@@ -1009,6 +1009,63 @@ paths:
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
 
+  /api/v1/bills/calculate:
+    post:
+      summary: Preview and calculate provisional bill breakdown without persisting
+      operationId: calculateBillBreakdown
+      tags: [Bills]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: group_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+          description: ID của nhóm (tuỳ chọn nếu đã có trong request body)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creditor_member_id]
+              properties:
+                group_id: {type: string, format: uuid}
+                creditor_member_id: {type: string, format: uuid}
+                subtotal: {type: integer, minimum: 0}
+                service_charge: {type: integer, minimum: 0}
+                vat: {type: integer, minimum: 0}
+                discount: {type: integer, minimum: 0}
+                total: {type: integer, minimum: 0}
+                split_method:
+                  type: string
+                  enum: [item_ratio, even]
+                items:
+                  type: array
+                  items: {$ref: "#/components/schemas/CreateBillItemRequest"}
+      responses:
+        "200":
+          description: "Calculation succeeded"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, example: true}
+                  message: {type: string, example: "Thành công"}
+                  data:
+                    type: object
+                    required: [total, is_balanced, breakdown]
+                    properties:
+                      total: {type: integer, example: 760000}
+                      is_balanced: {type: boolean, example: true}
+                      breakdown:
+                        type: array
+                        items: {$ref: "#/components/schemas/MemberAllocation"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
   /api/v1/bills/{id}:
     get:
       summary: Get bill detail with breakdown and image URLs
@@ -1257,6 +1314,66 @@ paths:
         "422":
           description: "OCR candidate failed validation (OCR_CANDIDATE_INVALID)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
+  /api/v1/bills/{id}/calculate:
+    post:
+      summary: Preview and calculate provisional bill breakdown for an existing bill
+      operationId: calculateExistingBillBreakdown
+      tags: [Bills]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creditor_member_id]
+              properties:
+                group_id: {type: string, format: uuid}
+                creditor_member_id: {type: string, format: uuid}
+                subtotal: {type: integer, minimum: 0}
+                service_charge: {type: integer, minimum: 0}
+                vat: {type: integer, minimum: 0}
+                discount: {type: integer, minimum: 0}
+                total: {type: integer, minimum: 0}
+                split_method:
+                  type: string
+                  enum: [item_ratio, even]
+                items:
+                  type: array
+                  items: {$ref: "#/components/schemas/CreateBillItemRequest"}
+      responses:
+        "200":
+          description: "Calculation succeeded"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, example: true}
+                  message: {type: string, example: "Thành công"}
+                  data:
+                    type: object
+                    required: [total, is_balanced, breakdown]
+                    properties:
+                      total: {type: integer, example: 760000}
+                      is_balanced: {type: boolean, example: true}
+                      breakdown:
+                        type: array
+                        items: {$ref: "#/components/schemas/MemberAllocation"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /api/v1/bills/{id}/review:
     post:

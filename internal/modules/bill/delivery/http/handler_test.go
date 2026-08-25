@@ -117,6 +117,10 @@ func (m *mockHandlerRepo) GetBillOnlyByID(ctx context.Context, id uuid.UUID) (*d
 	return nil, domain.ErrBillNotFound
 }
 
+func (m *mockHandlerRepo) GetLatestOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error) {
+	return nil, domain.ErrOcrJobNotFound
+}
+
 func (m *mockHandlerRepo) GetGroupMemberUser(ctx context.Context, memberID, groupID uuid.UUID) (*repository.GroupMemberWithUser, error) {
 	bankCode := "970422"
 	bankAccount := "0123456789"
@@ -773,5 +777,70 @@ func TestCreateBill_Multipart_BodyExceedsMaxBytesReader_ReturnsPayloadTooLarge(t
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status 413 Payload Too Large, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCalculateBreakdown_Handler_Success(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	member2ID := uuid.New()
+
+	repo := &mockHandlerRepo{
+		member: &repository.GroupMember{ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+	}
+
+	service := usecase.NewService(repo, &mockHandlerOCR{}, &mockHandlerStorage{}, &mockHandlerProcessor{}, nil)
+	handler := billhttp.NewHandler(service, nil)
+
+	r := chi.NewRouter()
+	handler.RegisterRoutes(r, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ctx := authmw.WithAuthContext(req.Context(), userID.String(), "s-1", "user")
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	})
+
+	payload := map[string]any{
+		"group_id":           groupID,
+		"creditor_member_id": creditorID,
+		"subtotal":           100000,
+		"service_charge":     10000,
+		"vat":                10000,
+		"discount":           20000,
+		"total":              100000,
+		"items": []map[string]any{
+			{
+				"name":       "Item 1",
+				"line_total": 100000,
+				"assignments": []map[string]any{
+					{"member_id": creditorID, "weight": "1.0"},
+					{"member_id": member2ID, "weight": "1.0"},
+				},
+			},
+		},
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/calculate", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var envelope struct {
+		Success bool                              `json:"success"`
+		Data    usecase.CalculateBreakdownResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !envelope.Success || len(envelope.Data.Breakdown) != 2 {
+		t.Fatalf("expected success with 2 breakdown items, got %v", envelope)
 	}
 }

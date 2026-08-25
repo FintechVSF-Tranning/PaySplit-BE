@@ -158,6 +158,13 @@ func (m *mockServiceRepo) GetActiveOCRJobByBillID(ctx context.Context, billID uu
 	return nil, nil
 }
 
+func (m *mockServiceRepo) GetLatestOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error) {
+	if m.ocrJob != nil {
+		return m.ocrJob, nil
+	}
+	return nil, domain.ErrOcrJobNotFound
+}
+
 func (m *mockServiceRepo) CountManualOCRAttemptsInWindow(ctx context.Context, billID uuid.UUID, since time.Time) (int64, error) {
 	return m.manualAttempts, nil
 }
@@ -2419,5 +2426,102 @@ func TestCreateBill_LockLookupError_SurfacesToCaller(t *testing.T) {
 
 	if _, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{GroupID: groupID}); !errors.Is(err, sentinel) {
 		t.Fatalf("CreateBill() error = %v, want the underlying lock lookup error", err)
+	}
+}
+
+func TestCalculateBreakdown_Success(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	creditorID := uuid.New()
+	member2ID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		activeMembers: []*repository.GroupMember{
+			{ID: creditorID, GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+			{ID: member2ID, GroupID: groupID, UserID: uuid.New(), Role: "member", Status: "active"},
+		},
+	}
+
+	service := usecase.NewService(repo, nil, &mockStorage{}, &mockProcessor{}, nil)
+
+	req := usecase.CalculateBreakdownRequest{
+		GroupID:          groupID,
+		CreditorMemberID: creditorID,
+		Subtotal:         100000,
+		ServiceCharge:    10000,
+		VAT:              10000,
+		Discount:         20000,
+		Total:            100000,
+		Items: []usecase.CreateBillItemRequest{
+			{
+				Name:      "Món 1",
+				LineTotal: 100000,
+				Assignments: []usecase.CreateItemAssignmentRequest{
+					{MemberID: creditorID, Weight: "1.0"},
+					{MemberID: member2ID, Weight: "1.0"},
+				},
+			},
+		},
+	}
+
+	res, err := service.CalculateBreakdown(context.Background(), userID, req)
+	if err != nil {
+		t.Fatalf("CalculateBreakdown() unexpected error = %v", err)
+	}
+
+	if res == nil || len(res.Breakdown) != 2 {
+		t.Fatalf("CalculateBreakdown() got %v, want 2 member allocations", res)
+	}
+
+	if !res.IsBalanced {
+		t.Fatalf("CalculateBreakdown() is_balanced = false, want true")
+	}
+
+	if res.Total != 100000 {
+		t.Errorf("CalculateBreakdown() total = %d, want 100000", res.Total)
+	}
+}
+
+func TestCalculateBreakdown_ForbiddenWhenNotMember(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: nil, // not a member
+	}
+
+	service := usecase.NewService(repo, nil, &mockStorage{}, &mockProcessor{}, nil)
+
+	req := usecase.CalculateBreakdownRequest{
+		GroupID:          groupID,
+		CreditorMemberID: uuid.New(),
+		Subtotal:         100000,
+	}
+
+	_, err := service.CalculateBreakdown(context.Background(), userID, req)
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("CalculateBreakdown() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestCalculateBreakdown_MissingCreditor(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member: &repository.GroupMember{ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "member", Status: "active"},
+	}
+
+	service := usecase.NewService(repo, nil, &mockStorage{}, &mockProcessor{}, nil)
+
+	req := usecase.CalculateBreakdownRequest{
+		GroupID:          groupID,
+		CreditorMemberID: uuid.Nil,
+	}
+
+	_, err := service.CalculateBreakdown(context.Background(), userID, req)
+	if !errors.Is(err, domain.ErrCreditorRequired) {
+		t.Fatalf("CalculateBreakdown() error = %v, want ErrCreditorRequired", err)
 	}
 }

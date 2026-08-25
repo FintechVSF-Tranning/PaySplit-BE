@@ -135,6 +135,7 @@ type BillDetailResponse struct {
 	Bill       *domain.Bill        `json:"bill"`
 	Breakdown  []*MemberAllocation `json:"breakdown,omitempty"`
 	SignedURLs map[string]string   `json:"signed_urls,omitempty"`
+	OCRJob     *domain.OCRJob      `json:"ocr_job,omitempty"`
 }
 
 type UpdateDraftRequest struct {
@@ -148,6 +149,38 @@ type UpdateDraftRequest struct {
 	Total         int64                   `json:"total"`
 	SplitMethod   domain.SplitMethod      `json:"split_method"`
 	Items         []CreateBillItemRequest `json:"items"`
+}
+
+type EnrichedMemberAllocation struct {
+	MemberID           uuid.UUID  `json:"member_id"`
+	UserID             *uuid.UUID `json:"user_id,omitempty"`
+	DisplayName        string     `json:"display_name,omitempty"`
+	AvatarURL          *string    `json:"avatar_url,omitempty"`
+	ItemSubtotal       int64      `json:"item_subtotal"`
+	ServiceChargeShare int64      `json:"service_charge_share"`
+	VATShare           int64      `json:"vat_share"`
+	DiscountShare      int64      `json:"discount_share"`
+	RoundingAdjustment int64      `json:"rounding_adjustment"`
+	FinalAmount        int64      `json:"final_amount"`
+	IsCreditor         bool       `json:"is_creditor"`
+}
+
+type CalculateBreakdownRequest struct {
+	GroupID          uuid.UUID               `json:"group_id"`
+	CreditorMemberID uuid.UUID               `json:"creditor_member_id"`
+	Subtotal         int64                   `json:"subtotal"`
+	ServiceCharge    int64                   `json:"service_charge"`
+	VAT              int64                   `json:"vat"`
+	Discount         int64                   `json:"discount"`
+	Total            int64                   `json:"total"`
+	SplitMethod      domain.SplitMethod      `json:"split_method"`
+	Items            []CreateBillItemRequest `json:"items"`
+}
+
+type CalculateBreakdownResponse struct {
+	Total      int64                       `json:"total"`
+	IsBalanced bool                        `json:"is_balanced"`
+	Breakdown  []*EnrichedMemberAllocation `json:"breakdown"`
 }
 
 // ============================================================================
@@ -426,10 +459,106 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 		platformmetrics.RecordBillPreview(outcome, time.Since(previewStart))
 	}
 
+	var latestOCRJob *domain.OCRJob
+	if job, jobErr := s.repo.GetLatestOCRJobByBillID(ctx, billID); jobErr == nil {
+		latestOCRJob = job
+	}
+
 	return &BillDetailResponse{
 		Bill:       bill,
 		Breakdown:  breakdown,
 		SignedURLs: signedURLs,
+		OCRJob:     latestOCRJob,
+	}, nil
+}
+
+// CalculateBreakdown tính toán phân bổ số tiền từng người theo thuật toán Floor Allocation mà không lưu DB.
+func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID, req CalculateBreakdownRequest) (*CalculateBreakdownResponse, error) {
+	if req.GroupID == uuid.Nil {
+		return nil, domain.ErrInvalidInput
+	}
+	if req.CreditorMemberID == uuid.Nil {
+		return nil, domain.ErrCreditorRequired
+	}
+	if req.Subtotal < 0 || req.ServiceCharge < 0 || req.VAT < 0 || req.Discount < 0 || req.Total < 0 {
+		return nil, fmt.Errorf("%w: monetary values must be non-negative", domain.ErrInvalidInput)
+	}
+
+	// 1. Kiểm tra caller có thuộc nhóm không
+	member, err := s.repo.GetGroupMember(ctx, req.GroupID, callerUserID)
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
+	}
+
+	// 2. Chuyển đổi danh sách món sang ItemInput
+	items := make([]ItemInput, 0, len(req.Items))
+	var itemsTotal int64
+	for _, it := range req.Items {
+		var assignments []ItemAssignmentInput
+		for _, a := range it.Assignments {
+			ratio, _ := strconv.ParseFloat(a.Weight, 64)
+			assignments = append(assignments, ItemAssignmentInput{
+				MemberID: a.MemberID,
+				Ratio:    ratio,
+			})
+		}
+		itemsTotal += it.LineTotal
+		items = append(items, ItemInput{
+			LineTotal:   it.LineTotal,
+			Assignments: assignments,
+		})
+	}
+
+	// 3. Thực thi thuật toán CalculateFloorAllocation
+	allocInput := AllocationInput{
+		CreditorID:    req.CreditorMemberID,
+		Subtotal:      req.Subtotal,
+		ServiceCharge: req.ServiceCharge,
+		VAT:           req.VAT,
+		Discount:      req.Discount,
+		Total:         req.Total,
+		Items:         items,
+	}
+
+	allocations, err := CalculateFloorAllocation(allocInput)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Lấy thông tin thành viên active trong nhóm để enrich UserID
+	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, req.GroupID)
+	memberMap := make(map[uuid.UUID]*repository.GroupMember)
+	if err == nil {
+		for _, m := range activeMembers {
+			memberMap[m.ID] = m
+		}
+	}
+
+	enriched := make([]*EnrichedMemberAllocation, 0, len(allocations))
+	var sumFinal int64
+	for _, a := range allocations {
+		sumFinal += a.FinalAmount
+		e := &EnrichedMemberAllocation{
+			MemberID:           a.MemberID,
+			ItemSubtotal:       a.ItemSubtotal,
+			ServiceChargeShare: a.ServiceChargeShare,
+			VATShare:           a.VATShare,
+			DiscountShare:      a.DiscountShare,
+			RoundingAdjustment: a.RoundingAdjustment,
+			FinalAmount:        a.FinalAmount,
+			IsCreditor:         a.MemberID == req.CreditorMemberID,
+		}
+		if gm, ok := memberMap[a.MemberID]; ok {
+			e.UserID = &gm.UserID
+		}
+		enriched = append(enriched, e)
+	}
+
+	allocTotal := itemsTotal + req.ServiceCharge + req.VAT - req.Discount
+	return &CalculateBreakdownResponse{
+		Total:      allocTotal,
+		IsBalanced: sumFinal == allocTotal,
+		Breakdown:  enriched,
 	}, nil
 }
 

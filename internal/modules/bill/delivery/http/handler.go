@@ -68,6 +68,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware func(http.Handler)
 		}
 		protected.Post("/{id}/ocr-retry", h.RetryOCR)
 		protected.Post("/{id}/apply-candidate", h.ApplyCandidate)
+		protected.Post("/calculate", h.CalculateBreakdown)
+		protected.Post("/{id}/calculate", h.CalculateBreakdown)
 		protected.Put("/{id}", h.UpdateDraftBill)
 		protected.Patch("/{id}", h.UpdateDraftBill)
 		protected.Post("/{id}/review", h.ReviewBill)
@@ -373,6 +375,44 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "apply_candidate", rawKey, http.StatusOK, resp, &billID)
 
 	_ = helpers.WriteJSON(w, http.StatusOK, resp)
+}
+
+// CalculateBreakdown xử lý POST /api/v1/bills/calculate (tính toán phân bổ tạm tính mà không lưu DB).
+func (h *Handler) CalculateBreakdown(w http.ResponseWriter, r *http.Request) {
+	callerUserID := getUserID(r)
+	if callerUserID == uuid.Nil {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "cannot read request body", nil)
+		return
+	}
+
+	var req usecase.CalculateBreakdownRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body", nil)
+		return
+	}
+
+	// Hỗ trợ truyền group_id qua query params nếu body chưa có
+	if req.GroupID == uuid.Nil {
+		if groupIDStr := r.URL.Query().Get("group_id"); groupIDStr != "" {
+			if gID, err := uuid.Parse(groupIDStr); err == nil {
+				req.GroupID = gID
+			}
+		}
+	}
+
+	result, err := h.service.CalculateBreakdown(r.Context(), callerUserID, req)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	_ = helpers.WriteJSON(w, http.StatusOK, result)
 }
 
 // UpdateDraftBill xử lý PUT /api/v1/bills/{id}?group_id=...
