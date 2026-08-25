@@ -13,6 +13,9 @@ type groupResponse struct {
 	Name      string    `json:"name"`
 	Currency  string    `json:"currency"`
 	CreatedAt time.Time `json:"created_at"`
+	// Trạng thái khóa gửi hóa đơn một chiều của V1 (Spec 0008 Public response fields).
+	BillSubmissionLocked   bool       `json:"bill_submission_locked"`
+	BillSubmissionLockedAt *time.Time `json:"bill_submission_locked_at"`
 }
 
 type membershipResponse struct {
@@ -47,7 +50,12 @@ type groupListItemResponse struct {
 }
 
 func newGroupResponse(g domain.Group) groupResponse {
-	return groupResponse{ID: g.ID, Name: g.Name, Currency: g.Currency, CreatedAt: g.CreatedAt}
+	resp := groupResponse{ID: g.ID, Name: g.Name, Currency: g.Currency, CreatedAt: g.CreatedAt}
+	if g.BillSubmissionLockedAt != nil {
+		resp.BillSubmissionLocked = true
+		resp.BillSubmissionLockedAt = g.BillSubmissionLockedAt
+	}
+	return resp
 }
 
 func newMembershipResponse(m domain.Membership) membershipResponse {

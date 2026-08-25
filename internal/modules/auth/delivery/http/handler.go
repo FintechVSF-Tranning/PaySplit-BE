@@ -43,7 +43,7 @@ func (h *Handler) SignUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := h.userResponse(out.User)
-	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "verification_email_sent": out.VerificationEmailSent, "verification_expires_at": out.VerificationExpiresAt})
+	writeJSONMessage(w, http.StatusCreated, map[string]any{"user": u, "verification_email_sent": out.VerificationEmailSent, "verification_expires_at": out.VerificationExpiresAt}, "Đăng ký thành công, vui lòng kiểm tra email để xác thực tài khoản.")
 }
 func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var req verifyEmailRequest
@@ -54,7 +54,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "active"})
+	writeJSONMessage(w, http.StatusOK, map[string]string{"status": "active"}, "Xác thực email thành công.")
 }
 func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	h.emailAction(w, r, h.service.ResendVerification)
@@ -71,7 +71,7 @@ func (h *Handler) emailAction(w http.ResponseWriter, r *http.Request, action fun
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"message": "If the account is eligible, an email will be sent."})
+	writeJSONMessage(w, http.StatusAccepted, nil, "If the account is eligible, an email will be sent.")
 }
 func (h *Handler) SignIn(w http.ResponseWriter, r *http.Request) {
 	var req signInRequest
@@ -269,6 +269,11 @@ func read(w http.ResponseWriter, r *http.Request, d any) bool {
 }
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	if err := helpers.WriteJSON(w, status, data); err != nil {
+		log.Printf("event=response_write_failed request_id=%s", chiMiddleware.GetReqID(context.Background()))
+	}
+}
+func writeJSONMessage(w http.ResponseWriter, status int, data any, message string) {
+	if err := helpers.WriteJSONMessage(w, status, data, message); err != nil {
 		log.Printf("event=response_write_failed request_id=%s", chiMiddleware.GetReqID(context.Background()))
 	}
 }

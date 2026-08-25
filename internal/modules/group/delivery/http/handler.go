@@ -85,12 +85,21 @@ func (h *Handler) GetGroupDetail(w http.ResponseWriter, r *http.Request) {
 	for _, b := range detail.Balances {
 		balances = append(balances, newBalanceResponse(b))
 	}
-	writeJSON(w, r, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"group":       newGroupResponse(detail.Group),
 		"members":     members,
 		"balances":    balances,
 		"caller_role": detail.CallerRole,
-	})
+	}
+	// Captain batch navigation (Spec 0008 Public response fields): omitted hoàn
+	// toàn cho thành viên thường để không suy ra được ID batch hay kết quả item.
+	if detail.ActiveBillFinalizeBatchID != nil {
+		resp["active_bill_finalize_batch_id"] = *detail.ActiveBillFinalizeBatchID
+	}
+	if detail.LatestBillFinalizeBatchID != nil {
+		resp["latest_bill_finalize_batch_id"] = *detail.LatestBillFinalizeBatchID
+	}
+	writeJSON(w, r, http.StatusOK, resp)
 }
 
 func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +358,12 @@ func writeDomainError(w http.ResponseWriter, err error) {
 			"open_debt_count":              strconv.FormatInt(obligations.OpenDebtCount, 10),
 		}
 		_ = helpers.WriteAPIError(w, status, code, message, fields)
+		return
+	}
+	var bulkErr *domain.BulkFinalizeInProgressError
+	if errors.As(err, &bulkErr) {
+		fields := map[string]string{"active_batch_id": bulkErr.ActiveBatchID}
+		_ = helpers.WriteAPIError(w, http.StatusConflict, "BULK_FINALIZE_IN_PROGRESS", "another bulk finalize is already in progress", fields)
 		return
 	}
 	_ = helpers.WriteAPIError(w, status, code, message, nil)

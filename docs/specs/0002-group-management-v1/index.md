@@ -3,6 +3,8 @@
 **Date**: 2026-08-17
 **Status**: In Progress (expanded 2026-08-22 for the approved member invite and group governance change request)
 
+> **V1 group bill close amendment**: [spec 0008](../0008-group-bill-close-v1/index.md) adds a one way bill submission lock. Group disband also returns `409 BULK_FINALIZE_IN_PROGRESS` while a bulk finalize batch is queued or processing, so an archived group never strands active batch work.
+
 ## Summary
 
 Group management v1 lets active members share one short invite while the Captain keeps control of invite policy, group naming, and disbandment. Eight character Base62 codes work as both manual codes and the final path segment of the app link. Short PostgreSQL transactions, active membership checks, and group scoped foreign keys protect access and financial history.

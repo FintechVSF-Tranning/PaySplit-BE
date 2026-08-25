@@ -53,6 +53,23 @@ func (m *mockRepository) GetSystemOverview(ctx context.Context) (*domain.SystemO
 	return nil, nil
 }
 
+// decodeEnvelope bóc trường "data" khỏi envelope success chuẩn của API rồi
+// giải mã vào T, dùng chung cho các test trong file này.
+func decodeEnvelope[T any](t *testing.T, body []byte) T {
+	t.Helper()
+	var env struct {
+		Success bool `json:"success"`
+		Data    T    `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !env.Success {
+		t.Fatalf("expected success=true envelope, body=%s", body)
+	}
+	return env.Data
+}
+
 func setupTestRouter(repo *mockRepository) (http.Handler, *usecase.Service) {
 	svc := usecase.NewService(repo)
 	handler := NewHandler(svc, func(k string) string { return "https://res.cloudinary.com/" + k })
@@ -96,13 +113,10 @@ func TestHandler_ListAccounts(t *testing.T) {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		var resp struct {
+		resp := decodeEnvelope[struct {
 			Items      []accountSummaryResponse `json:"items"`
 			Pagination paginationResponse       `json:"pagination"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		}](t, rec.Body.Bytes())
 		if len(resp.Items) != 1 || resp.Pagination.Total != 1 {
 			t.Errorf("unexpected items or pagination: %+v", resp)
 		}
@@ -163,10 +177,7 @@ func TestHandler_GetAccountDetail(t *testing.T) {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		var resp accountDetailResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decodeEnvelope[accountDetailResponse](t, rec.Body.Bytes())
 		if resp.ID != targetID || *resp.Bank.BankAccountNumber != "******1234" {
 			t.Errorf("unexpected account detail response: %+v", resp)
 		}
@@ -233,10 +244,7 @@ func TestHandler_UpdateAccountStatus(t *testing.T) {
 			t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 		}
 
-		var resp updateStatusResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decodeEnvelope[updateStatusResponse](t, rec.Body.Bytes())
 		if resp.Account.Status != "suspended" || resp.Warning.UnsettledDebtsCount != 1 {
 			t.Errorf("unexpected status response: %+v", resp)
 		}
@@ -305,10 +313,7 @@ func TestHandler_GetSystemOverview(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp systemOverviewResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode overview response: %v", err)
-	}
+	resp := decodeEnvelope[systemOverviewResponse](t, rec.Body.Bytes())
 	if resp.Users.Total != 100 || resp.Bills.TotalFinalized != 25 {
 		t.Errorf("unexpected system overview response: %+v", resp)
 	}

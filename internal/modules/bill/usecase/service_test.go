@@ -42,10 +42,17 @@ type mockServiceRepo struct {
 	ocrJob         *domain.OCRJob
 	manualAttempts int64
 	createdBill    *domain.Bill
+	createBillErr  error
+	cleanupErr     error
+	cleanupKeys    []string
 	updatedBill    *domain.Bill
 	finalizedBill  *domain.Bill
 	voidedBill     *domain.Bill
 	deletedDraft   bool
+
+	// Spec 0008 create gate controls.
+	submissionLockedAt *time.Time
+	lockLookupErr      error
 }
 
 func (m *mockServiceRepo) GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*repository.GroupMember, error) {
@@ -94,6 +101,9 @@ func (m *mockServiceRepo) ListActiveGroupMembers(ctx context.Context, groupID uu
 }
 
 func (m *mockServiceRepo) CreateBill(ctx context.Context, params repository.CreateBillParams) (*domain.Bill, error) {
+	if m.createBillErr != nil {
+		return nil, m.createBillErr
+	}
 	m.createdBill = params.Bill
 	m.createdBill.Images = params.Images
 	m.createdBill.Items = params.Items
@@ -211,12 +221,16 @@ func (m *mockServiceRepo) DeleteDraftBill(ctx context.Context, params repository
 }
 
 func (m *mockServiceRepo) EnqueueMediaCleanup(ctx context.Context, prefix, kind string) error {
-	return nil
+	m.cleanupKeys = append(m.cleanupKeys, prefix)
+	return m.cleanupErr
 }
 
-type mockProcessor struct{}
+type mockProcessor struct {
+	calls int
+}
 
 func (m *mockProcessor) Process(ctx context.Context, input []byte) ([]byte, error) {
+	m.calls++
 	return input, nil
 }
 func (m *mockProcessor) IsUnsupported(err error) bool { return false }
@@ -247,10 +261,22 @@ func (m *mockEnqueuer) EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, not
 	m.enqueuedCount++
 	return nil
 }
+func (m *mockEnqueuer) EnqueueBulkFinalizeItemTx(ctx context.Context, tx pgx.Tx, batchID, billID, groupID uuid.UUID) error {
+	if m.errToReturn != nil {
+		return m.errToReturn
+	}
+	m.enqueuedCount++
+	return nil
+}
 
-type mockStorage struct{}
+type mockStorage struct {
+	uploads    int
+	deleteErr  error
+	deletedIDs []string
+}
 
 func (m *mockStorage) Upload(ctx context.Context, data []byte, publicID string) (string, error) {
+	m.uploads++
 	return publicID, nil
 }
 func (m *mockStorage) SignedURL(publicID string, ttl time.Duration) (string, error) {
@@ -259,7 +285,10 @@ func (m *mockStorage) SignedURL(publicID string, ttl time.Duration) (string, err
 func (m *mockStorage) Download(ctx context.Context, publicID string) ([]byte, error) {
 	return []byte("data"), nil
 }
-func (m *mockStorage) Delete(ctx context.Context, publicID string) error { return nil }
+func (m *mockStorage) Delete(ctx context.Context, publicID string) error {
+	m.deletedIDs = append(m.deletedIDs, publicID)
+	return m.deleteErr
+}
 func (m *mockStorage) DeleteByPrefix(ctx context.Context, prefix string) error {
 	return nil
 }
@@ -2287,5 +2316,108 @@ func TestUpdateDraftBill_GeneralDiscountNegative_ReturnsInvalidInput(t *testing.
 	})
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Errorf("expected ErrInvalidInput for general_discount going negative, got %v", err)
+	}
+}
+
+// ============================================================================
+// GROUP BILL CLOSE V1 (Spec 0008): create gate chặn trước mọi công việc upload.
+// ============================================================================
+
+func TestCreateBill_SubmissionLocked_RejectsBeforeImageProcessing_AC2(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	lockedAt := time.Now().UTC()
+
+	repo := &mockServiceRepo{
+		member:             &repository.GroupMember{ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "member", Status: "active"},
+		submissionLockedAt: &lockedAt,
+	}
+	processor := &mockProcessor{}
+	storage := &mockStorage{}
+
+	service := usecase.NewService(repo, nil, storage, processor, nil)
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   1000,
+		Files:   [][]byte{[]byte("fake-image-bytes")},
+	})
+	if !errors.Is(err, domain.ErrSubmissionLocked) {
+		t.Fatalf("CreateBill() error = %v, want ErrSubmissionLocked", err)
+	}
+	if res != nil {
+		t.Fatalf("CreateBill() result = %v, want nil", res)
+	}
+	if processor.calls != 0 || storage.uploads != 0 {
+		t.Fatalf("gate ran after upload work: process=%d uploads=%d, want both 0 (pre-check must run first)", processor.calls, storage.uploads)
+	}
+}
+
+func TestCreateBill_LosesLockRace_CleanupFailureIsReturned_AC2(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	cleanupErr := errors.New("cleanup queue unavailable")
+	deleteErr := errors.New("storage delete unavailable")
+	repo := &mockServiceRepo{
+		member:        &repository.GroupMember{ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		createBillErr: domain.ErrSubmissionLocked,
+		cleanupErr:    cleanupErr,
+	}
+	storage := &mockStorage{deleteErr: deleteErr}
+	service := usecase.NewService(repo, nil, storage, &mockProcessor{}, nil)
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   1000,
+		Files:   [][]byte{[]byte("private-receipt")},
+	})
+	if res != nil {
+		t.Fatalf("CreateBill() result = %v, want nil", res)
+	}
+	if !errors.Is(err, domain.ErrSubmissionLocked) || !errors.Is(err, cleanupErr) || !errors.Is(err, deleteErr) {
+		t.Fatalf("CreateBill() error = %v, want lock, durable cleanup, and direct delete errors", err)
+	}
+	if len(repo.cleanupKeys) != 1 || len(storage.deletedIDs) == 0 {
+		t.Fatalf("cleanup attempts = queue %v, delete %v, want both paths attempted", repo.cleanupKeys, storage.deletedIDs)
+	}
+}
+
+func TestCreateBill_OpenGroup_StillCreatesBills(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	repo := &mockServiceRepo{
+		member:      &repository.GroupMember{ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		createdBill: &domain.Bill{ID: uuid.New(), GroupID: groupID, Status: domain.BillStatusDraft},
+	}
+
+	service := usecase.NewService(repo, nil, &mockStorage{}, &mockProcessor{}, nil)
+
+	res, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{
+		GroupID: groupID,
+		Total:   1000,
+	})
+	if err != nil {
+		t.Fatalf("CreateBill() unexpected error = %v", err)
+	}
+	if res.Bill == nil {
+		t.Fatal("CreateBill() bill = nil, want created draft when the group is open")
+	}
+}
+
+func TestCreateBill_LockLookupError_SurfacesToCaller(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	sentinel := errors.New("db down")
+
+	repo := &mockServiceRepo{
+		member:        &repository.GroupMember{ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "captain", Status: "active"},
+		lockLookupErr: sentinel,
+	}
+
+	service := usecase.NewService(repo, nil, &mockStorage{}, &mockProcessor{}, nil)
+
+	if _, err := service.CreateBill(context.Background(), userID, usecase.CreateBillRequest{GroupID: groupID}); !errors.Is(err, sentinel) {
+		t.Fatalf("CreateBill() error = %v, want the underlying lock lookup error", err)
 	}
 }

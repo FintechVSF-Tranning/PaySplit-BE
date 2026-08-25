@@ -189,6 +189,12 @@ func New(ctx context.Context) (*App, error) {
 	ocrWorker.SetRetryBaseDelay(cfg.OCR.RetryBaseDelay)
 	river.AddWorker(riverWorkers, ocrWorker)
 
+	// Worker xử lý từng item của batch chốt toàn bộ hóa đơn nhóm (Spec 0008 AC-5).
+	// Bundle worker bắt buộc đăng ký đủ trước khi tạo River client, nên service
+	// được gắn muộn bằng SetService sau khi billService khởi tạo xong.
+	bulkFinalizeWorker := billjobs.NewBulkFinalizeWorker()
+	river.AddWorker(riverWorkers, bulkFinalizeWorker)
+
 	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
 	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
 	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays)
@@ -218,6 +224,9 @@ func New(ctx context.Context) (*App, error) {
 	billHandler := billhttp.NewHandler(billService, billSSEHandler)
 	billHandler.SetImageLimits(cfg.BillImage.MaxBytes, cfg.BillImage.MaxCount)
 
+	// Gắn service cho worker item batch chốt toàn bộ trước khi client start (Spec 0008).
+	bulkFinalizeWorker.SetService(billService)
+
 	// 8. Khởi tạo Module Group
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
@@ -242,6 +251,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/groups", func(r chi.Router) {
 			groupHandler.RegisterGroupRoutes(r, liveAuth, inviteAttemptLimiter)
 			settlementHandler.RegisterRoutes(r, liveAuth)
+			billHandler.RegisterGroupCloseRoutes(r, liveAuth)
 		})
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })

@@ -91,4 +91,28 @@ var (
 
 	// ErrIdempotencyKeyReused trả về khi idempotency key bị tái sử dụng với request payload khác (Spec 3 AC-1, AC-9).
 	ErrIdempotencyKeyReused = errors.New("idempotency key reused with different request payload")
+
+	// ErrSubmissionLocked trả về khi nhóm đã bị khóa gửi hóa đơn mới và một request
+	// tạo bill (thủ công hoặc ảnh) vẫn cố tạo (Spec 0008 AC-2).
+	ErrSubmissionLocked = errors.New("bill submission locked")
+
+	// ErrCaptainRequired trả về khi hành động khóa gửi hóa đơn hoặc chốt toàn bộ
+	// chỉ dành cho Captain đang hoạt động nhưng caller không phải Captain (Spec 0008 AC-10).
+	ErrCaptainRequired = errors.New("active captain required")
+
+	// ErrBatchNotFound trả về khi batch chốt toàn bộ không tồn tại trong nhóm (Spec 0008 AC-6).
+	ErrBatchNotFound = errors.New("finalize batch not found")
+
+	// ErrGroupNotFound trả về khi nhóm không tồn tại hoặc caller không phải thành
+	// viên active của nhóm đang hoạt động, cho các endpoint mới của spec 0008
+	// (lock và batch) theo đúng API surface: 404 GROUP_NOT_FOUND.
+	ErrGroupNotFound = errors.New("group not found")
 )
+
+// BulkFinalizeInProgressError trả về kèm ID của batch đang queued/processing để
+// Captain có thể tiếp tục với batch đó thay vì mở batch thứ hai (Spec 0008 AC-4, AC-7).
+type BulkFinalizeInProgressError struct {
+	ActiveBatchID string
+}
+
+func (e *BulkFinalizeInProgressError) Error() string { return "bulk finalize already in progress" }

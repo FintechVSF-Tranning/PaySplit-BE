@@ -620,11 +620,14 @@ func (h *Handler) checkIdempotency(w http.ResponseWriter, r *http.Request, actor
 	}
 
 	if rec != nil && rec.State == "completed" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(rec.ResponseCode)
-		if len(rec.ResponseBody) > 0 {
-			_, _ = w.Write(rec.ResponseBody)
+		if rec.ResponseCode == http.StatusNoContent || len(rec.ResponseBody) == 0 {
+			w.WriteHeader(rec.ResponseCode)
+			return true, ""
 		}
+		// rec.ResponseBody lưu payload gốc (chính giá trị đã truyền cho
+		// helpers.WriteJSON), không phải body đã ghi ra client, nên bọc lại
+		// vào envelope success/data/message thay vì phát lại nguyên trạng.
+		_ = helpers.WriteJSON(w, rec.ResponseCode, json.RawMessage(rec.ResponseBody))
 		return true, ""
 	}
 
@@ -725,8 +728,33 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrIdempotencyKeyReused):
 		status = http.StatusConflict
 		code = "IDEMPOTENCY_KEY_REUSED"
+	case errors.Is(err, domain.ErrSubmissionLocked):
+		status = http.StatusConflict
+		code = "BILL_SUBMISSION_LOCKED"
+		msg = "bill submission is locked for this group"
+	case errors.Is(err, domain.ErrCaptainRequired):
+		status = http.StatusForbidden
+		code = "CAPTAIN_REQUIRED"
+		msg = "the active Captain must perform this action"
+	case errors.Is(err, domain.ErrGroupNotFound):
+		status = http.StatusNotFound
+		code = "GROUP_NOT_FOUND"
+		msg = "group not found"
+	case errors.Is(err, domain.ErrBatchNotFound):
+		status = http.StatusNotFound
+		code = "BATCH_NOT_FOUND"
+		msg = "finalize batch not found"
 	default:
 		mapped = false
+	}
+
+	var bulkErr *domain.BulkFinalizeInProgressError
+	if errors.As(err, &bulkErr) {
+		// Trả kèm ID an toàn của batch đang chạy để Captain tiếp tục với batch đó
+		// thay vì mở batch thứ hai (Spec 0008 AC-4, AC-7).
+		fields := map[string]string{"active_batch_id": bulkErr.ActiveBatchID}
+		_ = helpers.WriteAPIError(w, http.StatusConflict, "BULK_FINALIZE_IN_PROGRESS", "another bulk finalize is already in progress", fields)
+		return
 	}
 
 	if !mapped {

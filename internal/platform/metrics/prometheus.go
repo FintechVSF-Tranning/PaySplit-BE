@@ -167,6 +167,45 @@ var (
 	)
 	SettlementOperationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "paysplit", Subsystem: "settlement", Name: "operations_total", Help: "Settlement operations by operation and outcome."}, []string{"operation", "outcome"})
 	SettlementWorkerRunsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "paysplit", Subsystem: "settlement", Name: "worker_runs_total", Help: "Settlement background worker runs by kind and outcome."}, []string{"kind", "outcome"})
+
+	// Group Bill Close v1 (Spec 0008 Observability 1 đến 4)
+	GroupBillSubmissionLocksTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "group_bill",
+			Name:      "submission_locks_total",
+			Help:      "Total group bill submission lock attempts by outcome.",
+		},
+		[]string{"outcome"},
+	)
+	GroupBillBulkBatchesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "group_bill",
+			Name:      "bulk_batches_total",
+			Help:      "Total bulk finalize batches completed by outcome.",
+		},
+		[]string{"outcome"},
+	)
+	GroupBillBulkItemsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "group_bill",
+			Name:      "bulk_items_total",
+			Help:      "Total bulk finalize items processed by outcome.",
+		},
+		[]string{"outcome"},
+	)
+	GroupBillBulkDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "paysplit",
+			Subsystem: "group_bill",
+			Name:      "bulk_duration_seconds",
+			Help:      "Histogram of bulk finalize batch duration from creation to completion in seconds.",
+			Buckets:   []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300},
+		},
+		[]string{"outcome"},
+	)
 )
 
 var activePool *pgxpool.Pool
@@ -189,6 +228,10 @@ func init() {
 	prometheus.MustRegister(BillPreviewDuration)
 	prometheus.MustRegister(SettlementOperationsTotal)
 	prometheus.MustRegister(SettlementWorkerRunsTotal)
+	prometheus.MustRegister(GroupBillSubmissionLocksTotal)
+	prometheus.MustRegister(GroupBillBulkBatchesTotal)
+	prometheus.MustRegister(GroupBillBulkItemsTotal)
+	prometheus.MustRegister(GroupBillBulkDuration)
 }
 
 func RecordSettlementOperation(operation, outcome string) {
@@ -196,6 +239,26 @@ func RecordSettlementOperation(operation, outcome string) {
 }
 func RecordSettlementWorkerRun(kind, outcome string) {
 	SettlementWorkerRunsTotal.WithLabelValues(kind, outcome).Inc()
+}
+
+// RecordGroupBillSubmissionLock ghi nhận một lần khóa gửi hóa đơn (Spec 0008 Observability 1).
+func RecordGroupBillSubmissionLock(outcome string, _ time.Duration) {
+	GroupBillSubmissionLocksTotal.WithLabelValues(outcome).Inc()
+}
+
+// RecordGroupBillBulkBatch ghi nhận một batch chốt toàn bộ hoàn tất (Observability 2).
+func RecordGroupBillBulkBatch(outcome string) {
+	GroupBillBulkBatchesTotal.WithLabelValues(outcome).Inc()
+}
+
+// RecordGroupBillBulkItem ghi nhận kết quả xử lý một item batch (Observability 3).
+func RecordGroupBillBulkItem(outcome string) {
+	GroupBillBulkItemsTotal.WithLabelValues(outcome).Inc()
+}
+
+// ObserveGroupBillBulkDuration đo thời gian từ lúc tạo batch đến khi hoàn tất (Observability 4).
+func ObserveGroupBillBulkDuration(outcome string, duration time.Duration) {
+	GroupBillBulkDuration.WithLabelValues(outcome).Observe(duration.Seconds())
 }
 
 // Helper methods ghi nhận metrics cho Module 3

@@ -125,14 +125,20 @@ func (r *postgresRepository) ListGroups(ctx context.Context, p repository.ListGr
 
 	items := make([]domain.GroupListItem, 0, len(rows))
 	for _, row := range rows {
+		var submissionLockedAt *time.Time
+		if row.BillSubmissionLockedAt.Valid {
+			v := row.BillSubmissionLockedAt.Time
+			submissionLockedAt = &v
+		}
 		items = append(items, domain.GroupListItem{
 			Group: domain.Group{
-				ID:        uuid.UUID(row.ID.Bytes).String(),
-				Name:      row.Name,
-				Currency:  row.Currency,
-				CreatedBy: uuid.UUID(row.CreatedBy.Bytes).String(),
-				CreatedAt: row.CreatedAt.Time,
-				Status:    domain.GroupActive,
+				ID:                     uuid.UUID(row.ID.Bytes).String(),
+				Name:                   row.Name,
+				Currency:               row.Currency,
+				CreatedBy:              uuid.UUID(row.CreatedBy.Bytes).String(),
+				CreatedAt:              row.CreatedAt.Time,
+				Status:                 domain.GroupActive,
+				BillSubmissionLockedAt: submissionLockedAt,
 			},
 			CallerMembershipID: uuid.UUID(row.MembershipID.Bytes).String(),
 			CallerRole:         fmt.Sprint(row.Role),
@@ -205,12 +211,32 @@ func (r *postgresRepository) GetGroupDetail(ctx context.Context, groupID, caller
 		balances = append(balances, domain.Balance{MemberID: uuid.UUID(b.MemberID.Bytes).String(), NetBalance: b.NetBalance})
 	}
 
-	return &domain.GroupDetail{
+	callerRole := fmt.Sprint(membershipRow.Role)
+	detail := &domain.GroupDetail{
 		Group:      *mapGroup(groupRow),
 		Members:    members,
 		Balances:   balances,
-		CallerRole: fmt.Sprint(membershipRow.Role),
-	}, nil
+		CallerRole: callerRole,
+	}
+
+	// Captain batch navigation (Spec 0008 Public response fields): chỉ truy vấn
+	// khi caller là Captain active; thành viên thường không được suy ra ID batch.
+	if callerRole == domain.RoleCaptain {
+		nav, err := q.GetBillFinalizeBatchNavigation(ctx, pgUUID(gid))
+		if err != nil {
+			return nil, fmt.Errorf("get bill finalize batch navigation: %w", err)
+		}
+		if nav.ActiveBatchID.Valid {
+			v := uuid.UUID(nav.ActiveBatchID.Bytes).String()
+			detail.ActiveBillFinalizeBatchID = &v
+		}
+		if nav.LatestBatchID.Valid {
+			v := uuid.UUID(nav.LatestBatchID.Bytes).String()
+			detail.LatestBillFinalizeBatchID = &v
+		}
+	}
+
+	return detail, nil
 }
 
 func (r *postgresRepository) GetActiveMembershipRole(ctx context.Context, groupID, callerUserID string) (string, error) {
@@ -936,6 +962,16 @@ func (r *postgresRepository) DisbandGroup(ctx context.Context, groupID, callerUs
 		return domain.ErrCaptainRequired
 	}
 
+	// Spec 0008 bất biến 6: nhóm có batch chốt toàn bộ đang queued/processing
+	// không được archive; trả kèm ID batch an toàn để Captain theo dõi batch đó.
+	nav, err := q.GetBillFinalizeBatchNavigation(ctx, pgUUID(gid))
+	if err != nil {
+		return fmt.Errorf("get bill finalize batch navigation: %w", err)
+	}
+	if nav.ActiveBatchID.Valid {
+		return &domain.BulkFinalizeInProgressError{ActiveBatchID: uuid.UUID(nav.ActiveBatchID.Bytes).String()}
+	}
+
 	unfinishedBills, err := q.CountUnfinishedBills(ctx, pgUUID(gid))
 	if err != nil {
 		return fmt.Errorf("count unfinished bills: %w", err)
@@ -1107,7 +1143,7 @@ func mapInvite(i dbgen.GroupInvite) *domain.Invite {
 }
 
 func mapGroup(g dbgen.Group) *domain.Group {
-	return &domain.Group{
+	out := &domain.Group{
 		ID:        uuid.UUID(g.ID.Bytes).String(),
 		Name:      g.Name,
 		Currency:  g.Currency,
@@ -1115,6 +1151,11 @@ func mapGroup(g dbgen.Group) *domain.Group {
 		CreatedAt: g.CreatedAt.Time,
 		Status:    fmt.Sprint(g.Status),
 	}
+	if g.BillSubmissionLockedAt.Valid {
+		v := g.BillSubmissionLockedAt.Time
+		out.BillSubmissionLockedAt = &v
+	}
+	return out
 }
 
 func mapMembership(m dbgen.GroupMember) *domain.Membership {

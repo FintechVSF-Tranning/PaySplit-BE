@@ -110,11 +110,21 @@ func request(t *testing.T, handler stdhttp.Handler, method, path, body, bearer s
 	return response
 }
 
+// decodeJSON decodes the response body and, for a success envelope
+// ({"success":true,"data":{...},"message":...}), returns the "data" object
+// so existing call sites can keep indexing straight into the payload (e.g.
+// body["group"]). Error envelopes ({"success":false,"error":{...}}) have no
+// "data" key and are returned as-is so callers can still index body["error"].
 func decodeJSON(t *testing.T, response *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var body map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode JSON response: %v, body: %s", err, response.Body.String())
+	}
+	if data, ok := body["data"]; ok {
+		if m, ok := data.(map[string]any); ok {
+			return m
+		}
 	}
 	return body
 }
@@ -377,7 +387,7 @@ func TestGroupHTTP_LeaveOnOpenDebtsReturnsAmountsInErrorFields(t *testing.T) {
 	if errBody["code"] != "GROUP_MEMBER_HAS_OPEN_DEBTS" {
 		t.Fatalf("error.code = %v, want GROUP_MEMBER_HAS_OPEN_DEBTS", errBody["code"])
 	}
-	fields := errBody["fields"].(map[string]any)
+	fields := errBody["details"].(map[string]any)
 	if fields["payable_amount"] != "42000" || fields["receivable_amount"] != "0" {
 		t.Fatalf("error.fields = %+v, want payable_amount 42000 and receivable_amount 0", fields)
 	}
@@ -475,7 +485,7 @@ func TestGroupHTTP_RenameAndDisbandArchiveTheWholeGroup_AC9_AC11(t *testing.T) {
 		t.Fatalf("blocked disband status %d body %s", blocked.Code, blocked.Body.String())
 	}
 	blockedError := decodeJSON(t, blocked)["error"].(map[string]any)
-	fields := blockedError["fields"].(map[string]any)
+	fields := blockedError["details"].(map[string]any)
 	if blockedError["code"] != "GROUP_HAS_UNSETTLED_OBLIGATIONS" || fields["draft_or_reviewed_bill_count"] != "1" || fields["open_debt_count"] != "1" {
 		t.Fatalf("blocked disband error = %+v", blockedError)
 	}

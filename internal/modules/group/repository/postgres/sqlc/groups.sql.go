@@ -49,7 +49,7 @@ func (q *Queries) CountUnfinishedBills(ctx context.Context, groupID pgtype.UUID)
 const createGroup = `-- name: CreateGroup :one
 INSERT INTO groups (name, currency, created_by)
 VALUES ($1, $2, $3)
-RETURNING id, name, currency, created_by, created_at, status
+RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at
 `
 
 type CreateGroupParams struct {
@@ -68,6 +68,7 @@ func (q *Queries) CreateGroup(ctx context.Context, arg CreateGroupParams) (Group
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Status,
+		&i.BillSubmissionLockedAt,
 	)
 	return i, err
 }
@@ -215,8 +216,34 @@ func (q *Queries) GetActiveMembership(ctx context.Context, arg GetActiveMembersh
 	return i, err
 }
 
+const getBillFinalizeBatchNavigation = `-- name: GetBillFinalizeBatchNavigation :one
+
+SELECT
+    (SELECT b.id FROM group_bill_finalize_batches b
+     WHERE b.group_id = $1 AND b.status IN ('queued', 'processing')
+     ORDER BY b.created_at ASC LIMIT 1) AS active_batch_id,
+    (SELECT b.id FROM group_bill_finalize_batches b
+     WHERE b.group_id = $1
+     ORDER BY b.created_at DESC, b.id DESC LIMIT 1) AS latest_batch_id
+`
+
+type GetBillFinalizeBatchNavigationRow struct {
+	ActiveBatchID pgtype.UUID `json:"active_batch_id"`
+	LatestBatchID pgtype.UUID `json:"latest_batch_id"`
+}
+
+// ============================================================================
+// GROUP BILL CLOSE V1 (Spec 0008): điều hướng batch của Captain và rào chắn archive
+// ============================================================================
+func (q *Queries) GetBillFinalizeBatchNavigation(ctx context.Context, groupID pgtype.UUID) (GetBillFinalizeBatchNavigationRow, error) {
+	row := q.db.QueryRow(ctx, getBillFinalizeBatchNavigation, groupID)
+	var i GetBillFinalizeBatchNavigationRow
+	err := row.Scan(&i.ActiveBatchID, &i.LatestBatchID)
+	return i, err
+}
+
 const getGroupByID = `-- name: GetGroupByID :one
-SELECT id, name, currency, created_by, created_at, status FROM groups WHERE id = $1 AND status = 'active'
+SELECT id, name, currency, created_by, created_at, status, bill_submission_locked_at FROM groups WHERE id = $1 AND status = 'active'
 `
 
 func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, error) {
@@ -229,6 +256,7 @@ func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, erro
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Status,
+		&i.BillSubmissionLockedAt,
 	)
 	return i, err
 }
@@ -387,6 +415,7 @@ func (q *Queries) InsertMembership(ctx context.Context, arg InsertMembershipPara
 
 const listActiveGroupsForUser = `-- name: ListActiveGroupsForUser :many
 SELECT g.id, g.name, g.currency, g.created_by, g.created_at,
+       g.bill_submission_locked_at,
        m.id AS membership_id, m.role,
        (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count
 FROM group_members m
@@ -408,14 +437,15 @@ type ListActiveGroupsForUserParams struct {
 }
 
 type ListActiveGroupsForUserRow struct {
-	ID                pgtype.UUID        `json:"id"`
-	Name              string             `json:"name"`
-	Currency          string             `json:"currency"`
-	CreatedBy         pgtype.UUID        `json:"created_by"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	MembershipID      pgtype.UUID        `json:"membership_id"`
-	Role              interface{}        `json:"role"`
-	ActiveMemberCount int64              `json:"active_member_count"`
+	ID                     pgtype.UUID        `json:"id"`
+	Name                   string             `json:"name"`
+	Currency               string             `json:"currency"`
+	CreatedBy              pgtype.UUID        `json:"created_by"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	BillSubmissionLockedAt pgtype.Timestamptz `json:"bill_submission_locked_at"`
+	MembershipID           pgtype.UUID        `json:"membership_id"`
+	Role                   interface{}        `json:"role"`
+	ActiveMemberCount      int64              `json:"active_member_count"`
 }
 
 func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error) {
@@ -438,6 +468,7 @@ func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGro
 			&i.Currency,
 			&i.CreatedBy,
 			&i.CreatedAt,
+			&i.BillSubmissionLockedAt,
 			&i.MembershipID,
 			&i.Role,
 			&i.ActiveMemberCount,
@@ -729,7 +760,7 @@ const renameGroup = `-- name: RenameGroup :one
 UPDATE groups
 SET name = $2
 WHERE id = $1 AND status = 'active'
-RETURNING id, name, currency, created_by, created_at, status
+RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at
 `
 
 type RenameGroupParams struct {
@@ -747,6 +778,7 @@ func (q *Queries) RenameGroup(ctx context.Context, arg RenameGroupParams) (Group
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.Status,
+		&i.BillSubmissionLockedAt,
 	)
 	return i, err
 }

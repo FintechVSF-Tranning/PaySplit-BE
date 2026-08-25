@@ -2,6 +2,7 @@ package banks
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,6 +34,21 @@ func TestListBanks(t *testing.T) {
 	type bankListResponse struct {
 		Banks []Bank `json:"banks"`
 	}
+	type envelope struct {
+		Success bool             `json:"success"`
+		Data    bankListResponse `json:"data"`
+	}
+	decode := func(t *testing.T, body io.Reader) bankListResponse {
+		t.Helper()
+		var env envelope
+		if err := json.NewDecoder(body).Decode(&env); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if !env.Success {
+			t.Fatalf("expected success=true envelope")
+		}
+		return env.Data
+	}
 
 	t.Run("returns all banks by default with cache header", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/banks", nil)
@@ -50,10 +66,7 @@ func TestListBanks(t *testing.T) {
 			t.Fatalf("unexpected Content-Type header: %q", got)
 		}
 
-		var resp bankListResponse
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decode(t, rec.Body)
 		if len(resp.Banks) != len(directory.All()) {
 			t.Fatalf("expected %d banks, got %d", len(directory.All()), len(resp.Banks))
 		}
@@ -69,10 +82,7 @@ func TestListBanks(t *testing.T) {
 			t.Fatalf("expected status 200, got %d", rec.Code)
 		}
 
-		var resp bankListResponse
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decode(t, rec.Body)
 		if len(resp.Banks) == 0 || len(resp.Banks) >= len(directory.All()) {
 			t.Fatalf("unexpected filtered count: %d", len(resp.Banks))
 		}
@@ -93,10 +103,7 @@ func TestListBanks(t *testing.T) {
 			t.Fatalf("expected status 200, got %d", rec.Code)
 		}
 
-		var resp bankListResponse
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decode(t, rec.Body)
 		for _, b := range resp.Banks {
 			if b.Supported {
 				t.Fatalf("expected bank %s to be unsupported", b.Code)
@@ -114,10 +121,7 @@ func TestListBanks(t *testing.T) {
 			t.Fatalf("expected status 200, got %d", rec.Code)
 		}
 
-		var resp bankListResponse
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("failed to decode response: %v", err)
-		}
+		resp := decode(t, rec.Body)
 		if len(resp.Banks) != len(directory.All()) {
 			t.Fatalf("expected %d banks, got %d", len(directory.All()), len(resp.Banks))
 		}
