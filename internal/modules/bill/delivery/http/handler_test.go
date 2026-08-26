@@ -30,6 +30,9 @@ type mockHandlerRepo struct {
 	errToReturn error // when set, GetBillByID returns this raw error instead of ErrBillNotFound
 	idempotency map[string]*repository.IdempotencyRecord
 
+	// lastListStatuses ghi lại bộ lọc trạng thái đã đi tới repository.
+	lastListStatuses []string
+
 	// Scenario controls cho các endpoint group bill close v1 (Spec 0008).
 	lockResult *repository.LockSubmissionsResult
 	lockErr    error
@@ -148,9 +151,19 @@ func (m *mockHandlerRepo) ListBillsByGroup(ctx context.Context, groupID uuid.UUI
 	return []*domain.BillListItem{}, nil
 }
 
-func (m *mockHandlerRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
-	bills := []*domain.BillListItem{}
+func (m *mockHandlerRepo) CountBillsByGroupStatus(ctx context.Context, groupID uuid.UUID) (map[string]int64, error) {
+	counts := map[string]int64{}
 	if m.bill != nil {
+		counts[string(m.bill.Status)] = 1
+	}
+	return counts, nil
+}
+
+func (m *mockHandlerRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
+	m.lastListStatuses = params.Statuses
+
+	bills := []*domain.BillListItem{}
+	if m.bill != nil && matchesHandlerStatusFilter(m.bill.Status, params.Statuses) {
 		bills = append(bills, &domain.BillListItem{
 			Bill:             m.bill,
 			PayerDisplayName: "Nguyễn An",
@@ -161,6 +174,18 @@ func (m *mockHandlerRepo) ListBillsByGroupCursor(ctx context.Context, params rep
 	return &repository.ListBillsCursorResult{
 		Bills: bills,
 	}, nil
+}
+
+func matchesHandlerStatusFilter(status domain.BillStatus, statuses []string) bool {
+	if len(statuses) == 0 {
+		return true
+	}
+	for _, s := range statuses {
+		if s == string(status) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *mockHandlerRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
@@ -835,6 +860,95 @@ func TestListBills_ReturnsPayerAndPaymentProgress(t *testing.T) {
 	if summary.PayerDisplayName != "Nguyễn An" || summary.PaidMemberCount != 2 || summary.MemberCount != 3 {
 		t.Fatalf("unexpected bill summary: %+v", summary)
 	}
+}
+
+func TestListBills_StatusFilterAndCounts(t *testing.T) {
+	groupID := uuid.New()
+	userID := uuid.New()
+	repo := &mockHandlerRepo{
+		member: &repository.GroupMember{
+			ID: uuid.New(), GroupID: groupID, UserID: userID, Role: "member", Status: "active",
+		},
+		bill: &domain.Bill{
+			ID: uuid.New(), GroupID: groupID, CreditorMemberID: uuid.New(),
+			Status: domain.BillStatusVoided, SplitMethod: domain.SplitMethodEven,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		},
+	}
+	service := usecase.NewService(repo, &mockHandlerOCR{}, &mockHandlerStorage{}, &mockHandlerProcessor{}, nil)
+	handler := billhttp.NewHandler(service, nil)
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			ctx := authmw.WithAuthContext(req.Context(), userID.String(), "s-1", "user")
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	})
+
+	call := func(query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/?group_id="+groupID.String()+query, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	type listEnvelope struct {
+		Data struct {
+			Bills  []domain.BillListItem    `json:"bills"`
+			Counts usecase.BillStatusCounts `json:"counts"`
+		} `json:"data"`
+	}
+
+	t.Run("dạng CSV lọc đúng và trả counts toàn nhóm", func(t *testing.T) {
+		rec := call("&status=voided,draft")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var envelope listEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data.Bills) != 1 {
+			t.Fatalf("expected 1 bill, got %d", len(envelope.Data.Bills))
+		}
+		if envelope.Data.Counts.Voided != 1 || envelope.Data.Counts.Total != 1 {
+			t.Fatalf("counts sai: %+v", envelope.Data.Counts)
+		}
+		if len(repo.lastListStatuses) != 2 {
+			t.Fatalf("expected 2 statuses passed to repo, got %v", repo.lastListStatuses)
+		}
+	})
+
+	t.Run("dạng lặp param cũng được chấp nhận", func(t *testing.T) {
+		rec := call("&status=draft&status=reviewed")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if len(repo.lastListStatuses) != 2 {
+			t.Fatalf("expected 2 statuses passed to repo, got %v", repo.lastListStatuses)
+		}
+		var envelope listEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(envelope.Data.Bills) != 0 {
+			t.Fatalf("bill voided không được lọt vào bộ lọc draft/reviewed: %d", len(envelope.Data.Bills))
+		}
+	})
+
+	t.Run("trạng thái lạ trả 400", func(t *testing.T) {
+		rec := call("&status=settled")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("offset không đi kèm bộ lọc trạng thái", func(t *testing.T) {
+		rec := call("&status=draft&offset=10")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestCalculateBreakdown_Handler_Success(t *testing.T) {

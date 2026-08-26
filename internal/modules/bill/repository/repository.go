@@ -56,6 +56,12 @@ type ListBillsCursorParams struct {
 	GroupID uuid.UUID
 	Cursor  *string
 	Limit   int32
+	// Statuses lọc theo trạng thái hóa đơn. Rỗng nghĩa là "Tất cả" — giữ nguyên
+	// hành vi cho client không gửi bộ lọc.
+	Statuses []string
+	// CallerMemberID là membership của người đang xem trong nhóm, dùng để lấy
+	// phần tiền của chính họ trong từng hóa đơn.
+	CallerMemberID uuid.UUID
 }
 
 // ListBillsCursorResult chứa kết quả phân trang cursor cho danh sách bill.
@@ -206,6 +212,9 @@ type Repository interface {
 
 	// ListBillsByGroupCursor lấy danh sách hóa đơn trong nhóm theo cursor pagination (created_at DESC, id DESC).
 	ListBillsByGroupCursor(ctx context.Context, params ListBillsCursorParams) (*ListBillsCursorResult, error)
+
+	// CountBillsByGroupStatus đếm hóa đơn của nhóm theo từng trạng thái.
+	CountBillsByGroupStatus(ctx context.Context, groupID uuid.UUID) (map[string]int64, error)
 
 	// UpdateDraftBill cập nhật hóa đơn draft và ghi đè danh sách món ăn trong 1 transaction có kiểm tra version.
 	UpdateDraftBill(ctx context.Context, params UpdateDraftParams) (*domain.Bill, error)
