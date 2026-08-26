@@ -2470,12 +2470,18 @@ components:
               type: integer
               format: int64
               minimum: 0
-              description: Finalized shares already complete, including the Creditor, zero amount shares, and settled debts. Zero when progress is not applicable
+              description: >-
+                Finalized shares already complete: the Creditor's own share, zero
+                amount shares, and shares whose debt is settled or voided. A voided
+                debt counts as complete because the debtor left the group and the
+                amount was written off. Zero when progress is not applicable
             member_count:
               type: integer
               format: int64
               minimum: 0
-              description: Immutable share count for a finalized bill. Zero for draft, reviewed, and voided bills
+              description: >-
+                Immutable share count for a finalized bill, the Creditor included.
+                Zero for draft, reviewed, and voided bills
 
     BillImage:
       type: object

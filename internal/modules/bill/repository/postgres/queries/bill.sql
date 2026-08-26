@@ -48,10 +48,14 @@ JOIN group_members creditor ON creditor.id = b.creditor_member_id
 JOIN users u ON u.id = creditor.user_id
 LEFT JOIN LATERAL (
     SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
         COUNT(*) FILTER (
             WHERE shares.member_id = b.creditor_member_id
                 OR shares.final_amount = 0
-                OR debts.status = 'settled'
+                OR debts.status IN ('settled', 'voided')
         ) AS paid_member_count,
         COUNT(*) AS member_count
     FROM bill_shares shares
@@ -77,10 +81,14 @@ JOIN group_members creditor ON creditor.id = b.creditor_member_id
 JOIN users u ON u.id = creditor.user_id
 LEFT JOIN LATERAL (
     SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
         COUNT(*) FILTER (
             WHERE shares.member_id = b.creditor_member_id
                 OR shares.final_amount = 0
-                OR debts.status = 'settled'
+                OR debts.status IN ('settled', 'voided')
         ) AS paid_member_count,
         COUNT(*) AS member_count
     FROM bill_shares shares

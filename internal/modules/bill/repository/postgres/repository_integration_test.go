@@ -173,6 +173,69 @@ func TestIntegration_ListBillsIncludesPayerAndPaymentProgress(t *testing.T) {
 	if len(legacy) != 2 {
 		t.Fatalf("legacy list length = %d, want 2", len(legacy))
 	}
+
+	// Khoản nợ chuyển trạng thái thì tiến độ phải chạy theo. 'voided' (thành viên
+	// rời nhóm, Spec 0002 AC-6) cũng tính là đã xong, nếu không hóa đơn sẽ kẹt
+	// dưới 100% vĩnh viễn.
+	paymentID := uuid.New()
+	// reference_code là UNIQUE toàn cục và các integration test không dọn dữ liệu,
+	// nên phải sinh mã mới mỗi lần chạy. Bảng chữ cái theo constraint ^PAY[A-HJ-NP-Z2-9]{8}$.
+	const refAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	refCode := []byte("PAY")
+	for _, b := range paymentID[:8] {
+		refCode = append(refCode, refAlphabet[int(b)%len(refAlphabet)])
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payments(id,group_id,debtor_member_id,creditor_member_id,amount,reference_code,status,
+			submitted_at,image_object_key,recipient_bank_code,recipient_bank_name,
+			recipient_account_number,recipient_account_holder)
+		VALUES ($1,$2,$3,$4,100000,$5,'pending_confirmation',
+			now(),'proofs/test.jpg','970415','Vietinbank','0123456789','USER ONE')`,
+		paymentID, groupID, debtorID, creditorID, string(refCode)); err != nil {
+		t.Fatalf("insert payment fixture: %v", err)
+	}
+
+	for _, tc := range []struct {
+		status    string
+		paymentID any
+		settledAt any
+		voidedAt  any
+		wantPaid  int64
+	}{
+		{status: "awaiting", wantPaid: 1},
+		{status: "pending_confirmation", paymentID: paymentID, wantPaid: 1},
+		{status: "settled", paymentID: paymentID, settledAt: time.Now(), wantPaid: 2},
+		{status: "voided", voidedAt: time.Now(), wantPaid: 2},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, `
+				UPDATE debts SET status=$2, payment_id=$3, settled_at=$4, voided_at=$5
+				WHERE bill_id=$1`,
+				finalizedID, tc.status, tc.paymentID, tc.settledAt, tc.voidedAt); err != nil {
+				t.Fatalf("set debt status %s: %v", tc.status, err)
+			}
+			page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+				GroupID: groupID,
+				Limit:   20,
+			})
+			if err != nil {
+				t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+			}
+			var got *domain.BillListItem
+			for _, item := range page.Bills {
+				if item.ID == finalizedID {
+					got = item
+				}
+			}
+			if got == nil {
+				t.Fatal("finalized bill missing from list")
+			}
+			if got.PaidMemberCount != tc.wantPaid || got.MemberCount != 2 {
+				t.Fatalf("debt status %s: paid/member = %d/%d, want %d/2",
+					tc.status, got.PaidMemberCount, got.MemberCount, tc.wantPaid)
+			}
+		})
+	}
 }
 
 func TestIntegration_CreateBillRejectsArchivedGroup_AC9(t *testing.T) {
