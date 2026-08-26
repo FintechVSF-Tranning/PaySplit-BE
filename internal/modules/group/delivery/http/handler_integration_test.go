@@ -65,7 +65,7 @@ func testHandler(t *testing.T) (stdhttp.Handler, *pgxpool.Pool) {
 	liveAuth := authmw.Auth(fakeVerifier{}, fakeSessions{})
 	router.Route("/api/v1", func(api chi.Router) {
 		api.Route("/groups", func(r chi.Router) {
-			handler.RegisterGroupRoutes(r, liveAuth, authmw.RateLimitByAccountAndIP(10000, time.Minute))
+			handler.RegisterGroupRoutes(r, nil, liveAuth, authmw.RateLimitByAccountAndIP(10000, time.Minute))
 		})
 	})
 	return router, pool

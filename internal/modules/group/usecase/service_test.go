@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"paysplit-backend/internal/modules/group/domain"
 	"paysplit-backend/internal/modules/group/repository"
@@ -31,6 +32,9 @@ type fakeRepo struct {
 	renameGroupFn         func(ctx context.Context, groupID, callerUserID, name string) (*domain.Group, error)
 	disbandGroupFn        func(ctx context.Context, groupID, callerUserID string) error
 	listActivitiesFn      func(context.Context, repository.ListActivitiesParams) ([]domain.Activity, *string, error)
+	getSyncCursorFn       func(ctx context.Context, groupID, callerUserID string) (domain.SyncCursor, error)
+	listEventsSinceFn     func(ctx context.Context, groupID string, since int64, limit int) ([]domain.SyncEvent, error)
+	deleteEventsBeforeFn  func(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 func (f *fakeRepo) CreateGroup(ctx context.Context, p repository.CreateGroupParams) (*domain.Group, *domain.Membership, error) {
@@ -116,6 +120,25 @@ func (f *fakeRepo) ListActivities(ctx context.Context, p repository.ListActiviti
 		f.t.Fatal("ListActivities called but not expected: validation should have short-circuited")
 	}
 	return f.listActivitiesFn(ctx, p)
+}
+
+func (f *fakeRepo) GetSyncCursor(ctx context.Context, groupID, callerUserID string) (domain.SyncCursor, error) {
+	if f.getSyncCursorFn == nil {
+		f.t.Fatal("GetSyncCursor called but not expected: validation should have short-circuited")
+	}
+	return f.getSyncCursorFn(ctx, groupID, callerUserID)
+}
+func (f *fakeRepo) ListEventsSince(ctx context.Context, groupID string, since int64, limit int) ([]domain.SyncEvent, error) {
+	if f.listEventsSinceFn == nil {
+		f.t.Fatal("ListEventsSince called but not expected: the cursor should have forced a snapshot")
+	}
+	return f.listEventsSinceFn(ctx, groupID, since, limit)
+}
+func (f *fakeRepo) DeleteEventsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if f.deleteEventsBeforeFn == nil {
+		f.t.Fatal("DeleteEventsBefore called but not expected")
+	}
+	return f.deleteEventsBeforeFn(ctx, cutoff)
 }
 
 func newTestService(t *testing.T, repo *fakeRepo) *Service {

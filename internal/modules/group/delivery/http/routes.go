@@ -6,7 +6,11 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func (h *Handler) RegisterGroupRoutes(router chi.Router, liveAuth, inviteAttempts func(http.Handler) http.Handler) {
+// RegisterGroupRoutes mounts the group module under /api/v1/groups.
+//
+// sse có thể nil ở môi trường không bật realtime (ví dụ test); khi đó route
+// /events không được đăng ký và client tự rơi về đường poll /sync.
+func (h *Handler) RegisterGroupRoutes(router chi.Router, sse *SSEHandler, liveAuth, inviteAttempts func(http.Handler) http.Handler) {
 	if inviteAttempts == nil {
 		panic("group invite attempt limiter must not be nil")
 	}
@@ -25,5 +29,11 @@ func (h *Handler) RegisterGroupRoutes(router chi.Router, liveAuth, inviteAttempt
 		protected.Delete("/{id}/members/{memberId}", h.LeaveOrRemoveMember)
 		protected.Put("/{id}/members/{memberId}/role", h.TransferRole)
 		protected.Get("/{id}/activities", h.ListActivities)
+		protected.Get("/{id}/sync", h.SyncGroup)
+		if sse != nil {
+			// Hậu tố /events được middleware Timeout miễn trừ; đổi tên route là
+			// stream bị cắt sau 15 giây.
+			protected.Get("/{id}/events", sse.StreamGroupEvents)
+		}
 	})
 }

@@ -28,6 +28,7 @@ type Config struct {
 	OCR        OCRConfig
 	BillImage  BillImageConfig
 	BillSSE    BillSSEConfig
+	GroupSync  GroupSyncConfig
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
 }
@@ -138,6 +139,16 @@ type BillImageConfig struct {
 type BillSSEConfig struct {
 	HeartbeatInterval time.Duration
 	MaxConnectionAge  time.Duration
+}
+
+// GroupSyncConfig chứa cấu hình đồng bộ realtime của nhóm: stream SSE và thời
+// gian giữ nhật ký group_events. Client tụt xa hơn EventRetention sẽ nhận
+// snapshot thay vì delta, nên đây cũng là ngưỡng offline tối đa còn được phục
+// vụ bằng đường rẻ.
+type GroupSyncConfig struct {
+	HeartbeatInterval time.Duration
+	MaxConnectionAge  time.Duration
+	EventRetention    time.Duration
 }
 
 type SettlementConfig struct {
@@ -325,6 +336,19 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	groupSSEHeartbeat, err := durationEnv("GROUP_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	groupSSEMaxAge, err := durationEnv("GROUP_SSE_MAX_CONNECTION_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	groupEventRetention, err := durationEnv("GROUP_EVENT_RETENTION_DAYS", 7, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
 	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
@@ -398,6 +422,11 @@ func Load() (*Config, error) {
 		BillSSE: BillSSEConfig{
 			HeartbeatInterval: billSSEHeartbeat,
 			MaxConnectionAge:  billSSEMaxAge,
+		},
+		GroupSync: GroupSyncConfig{
+			HeartbeatInterval: groupSSEHeartbeat,
+			MaxConnectionAge:  groupSSEMaxAge,
+			EventRetention:    groupEventRetention,
 		},
 		Metrics: MetricsConfig{
 			Enabled:     boolEnv("METRICS_ENABLED", true),
@@ -493,6 +522,12 @@ func (c *Config) Validate() error {
 	}
 	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
 		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
+	}
+	if c.GroupSync.HeartbeatInterval <= 0 || c.GroupSync.MaxConnectionAge <= 0 || c.GroupSync.EventRetention <= 0 {
+		return errors.New("group sync settings must be positive")
+	}
+	if c.GroupSync.HeartbeatInterval >= c.GroupSync.MaxConnectionAge {
+		return errors.New("GROUP_SSE_HEARTBEAT_INTERVAL must be less than GROUP_SSE_MAX_CONNECTION_AGE")
 	}
 	vietQRURL, err := url.ParseRequestURI(c.Settlement.VietQRServiceBaseURL)
 	if err != nil || (vietQRURL.Scheme != "http" && vietQRURL.Scheme != "https") || vietQRURL.Host == "" {
