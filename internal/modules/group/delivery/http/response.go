@@ -104,6 +104,64 @@ func newGroupListItemResponse(item domain.GroupListItem) groupListItemResponse {
 	return resp
 }
 
+// renderEventPayload đổi avatar_object_key thành avatar_url trước khi payload
+// rời server, đúng một quy tắc với newMemberResponse. Repository cố tình chỉ
+// lưu object key vì nó không biết cách dựng URL.
+func (h *Handler) renderEventPayload(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		// Payload hỏng thì vẫn phải phát sự kiện: client chỉ cần version để
+		// biết nó đang thiếu gì và tự gọi /sync.
+		return map[string]any{}
+	}
+	if member, ok := payload["member"].(map[string]any); ok {
+		key, _ := member["avatar_object_key"].(string)
+		delete(member, "avatar_object_key")
+		if key != "" {
+			member["avatar_url"] = h.avatarURL(key)
+		} else {
+			member["avatar_url"] = nil
+		}
+	}
+	return payload
+}
+
+// newGroupDetailResponse dựng body chi tiết nhóm dùng chung cho GET /groups/{id}
+// và cho sự kiện snapshot trên stream SSE, để hai đường không bao giờ lệch shape.
+func (h *Handler) newGroupDetailResponse(detail domain.GroupDetail) map[string]any {
+	members := make([]memberResponse, 0, len(detail.Members))
+	for _, m := range detail.Members {
+		members = append(members, h.newMemberResponse(m))
+	}
+	balances := make([]balanceResponse, 0, len(detail.Balances))
+	for _, b := range detail.Balances {
+		balances = append(balances, newBalanceResponse(b))
+	}
+	resp := map[string]any{
+		"group":       newGroupResponse(detail.Group),
+		"members":     members,
+		"balances":    balances,
+		"caller_role": detail.CallerRole,
+		// Client dùng field này để đánh dấu "tôi" trong members mà không phải
+		// suy đoán từ vai trò.
+		"caller_membership_id": detail.CallerMembershipID,
+		// version là điểm xuất phát client lưu lại cho stream và cho catch-up.
+		"version": detail.Version,
+	}
+	// Captain batch navigation (Spec 0008 Public response fields): omitted hoàn
+	// toàn cho thành viên thường để không suy ra được ID batch hay kết quả item.
+	if detail.ActiveBillFinalizeBatchID != nil {
+		resp["active_bill_finalize_batch_id"] = *detail.ActiveBillFinalizeBatchID
+	}
+	if detail.LatestBillFinalizeBatchID != nil {
+		resp["latest_bill_finalize_batch_id"] = *detail.LatestBillFinalizeBatchID
+	}
+	return resp
+}
+
 type inviteResponse struct {
 	ID        string    `json:"id"`
 	Code      string    `json:"code"`

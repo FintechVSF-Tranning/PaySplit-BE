@@ -200,3 +200,31 @@ SELECT
     (SELECT b.id FROM group_bill_finalize_batches b
      WHERE b.group_id = $1
      ORDER BY b.created_at DESC, b.id DESC LIMIT 1) AS latest_batch_id;
+
+-- name: BumpRosterVersion :one
+UPDATE groups SET roster_version = roster_version + 1 WHERE id = $1 RETURNING roster_version;
+
+-- name: InsertGroupEvent :exec
+INSERT INTO group_events (group_id, version, event_type, payload) VALUES ($1, $2, $3, $4);
+
+-- name: GetGroupSyncCursor :one
+SELECT g.roster_version::bigint AS current_version,
+       COALESCE((SELECT MIN(e.version) FROM group_events e WHERE e.group_id = g.id), 0)::bigint AS oldest_version
+FROM groups g
+WHERE g.id = $1;
+
+-- name: ListGroupEventsSince :many
+SELECT version, event_type, payload, created_at
+FROM group_events
+WHERE group_id = $1 AND version > $2
+ORDER BY version ASC
+LIMIT $3;
+
+-- name: GetMemberSnapshot :one
+SELECT m.id AS membership_id, m.user_id, u.display_name, u.avatar_object_key, m.role, m.joined_at
+FROM group_members m
+JOIN users u ON u.id = m.user_id
+WHERE m.id = $1 AND m.group_id = $2;
+
+-- name: DeleteGroupEventsBefore :execrows
+DELETE FROM group_events WHERE created_at < $1;

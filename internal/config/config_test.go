@@ -85,6 +85,21 @@ func TestValidateRejectsInvalidBillImage(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidGroupSync(t *testing.T) {
+	cfg := validConfig()
+	cfg.GroupSync.EventRetention = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error for a non-positive group event retention")
+	}
+
+	cfg = validConfig()
+	cfg.GroupSync.HeartbeatInterval = 20 * time.Minute
+	cfg.GroupSync.MaxConnectionAge = 15 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected an error when the group heartbeat outlives the connection")
+	}
+}
+
 func TestValidateRejectsInvalidBillSSE(t *testing.T) {
 	cfg := validConfig()
 	cfg.BillSSE.HeartbeatInterval = 0
@@ -154,6 +169,7 @@ func validConfig() *Config {
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
+		GroupSync:  GroupSyncConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute, EventRetention: 7 * 24 * time.Hour},
 		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3, StalledConfirmationAge: 48 * time.Hour},
 	}
 }

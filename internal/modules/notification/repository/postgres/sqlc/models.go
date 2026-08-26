@@ -141,6 +141,7 @@ type Group struct {
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 	Status                 interface{}        `json:"status"`
 	BillSubmissionLockedAt pgtype.Timestamptz `json:"bill_submission_locked_at"`
+	RosterVersion          int64              `json:"roster_version"`
 }
 
 type GroupActivity struct {
@@ -178,6 +179,14 @@ type GroupBillFinalizeItem struct {
 	ProcessedAt      pgtype.Timestamptz `json:"processed_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GroupEvent struct {
+	GroupID   pgtype.UUID        `json:"group_id"`
+	Version   int64              `json:"version"`
+	EventType string             `json:"event_type"`
+	Payload   []byte             `json:"payload"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type GroupInvite struct {

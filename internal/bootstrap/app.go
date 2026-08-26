@@ -27,6 +27,7 @@ import (
 	billpostgres "paysplit-backend/internal/modules/bill/repository/postgres"
 	billusecase "paysplit-backend/internal/modules/bill/usecase"
 	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
+	groupjobs "paysplit-backend/internal/modules/group/jobs"
 	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
 	groupusecase "paysplit-backend/internal/modules/group/usecase"
 	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
@@ -231,6 +232,10 @@ func New(ctx context.Context) (*App, error) {
 	groupRepo := grouppostgres.New(db)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
+	// Hub nhóm nhận sự kiện qua pg_notify do chính transaction của mutation phát,
+	// nên nó chỉ cần lắng nghe — không có đường phát nào đi vòng qua nhật ký.
+	groupHub := grouphttp.NewHub(db)
+	groupSSEHandler := grouphttp.NewSSEHandler(groupHandler, groupHub, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
 	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.RateLimitRequestsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
@@ -249,7 +254,7 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) {
-			groupHandler.RegisterGroupRoutes(r, liveAuth, inviteAttemptLimiter)
+			groupHandler.RegisterGroupRoutes(r, groupSSEHandler, liveAuth, inviteAttemptLimiter)
 			settlementHandler.RegisterRoutes(r, liveAuth)
 			billHandler.RegisterGroupCloseRoutes(r, liveAuth)
 		})
@@ -286,6 +291,15 @@ func New(ctx context.Context) (*App, error) {
 
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
+
+	app.workers.Add(1)
+	go func() { defer app.workers.Done(); _ = groupHub.StartPostgresListener(workerCtx) }()
+
+	app.workers.Add(1)
+	go func() {
+		defer app.workers.Done()
+		groupjobs.RunEventRetention(workerCtx, groupRepo, cfg.GroupSync.EventRetention, 24*time.Hour)
+	}()
 
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); billjobs.PollQueueDepth(workerCtx, billRepo, 15*time.Second) }()

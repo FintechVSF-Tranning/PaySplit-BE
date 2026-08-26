@@ -776,6 +776,89 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/groups/{id}/sync:
+    get:
+      summary: Catch up a client's local group state
+      description: |
+        Đường catch-up nguội của giao thức đồng bộ nhóm. Client gửi version nó
+        đang giữ; server trả các sự kiện còn thiếu (mode=delta) hoặc toàn bộ
+        trạng thái (mode=snapshot) khi client tụt quá xa, chưa có version, hoặc
+        gửi version lớn hơn version hiện tại của nhóm.
+
+        Dùng khi mở app lạnh, app resume, mạng vừa nối lại, bị push đánh thức,
+        hoặc khi client không dùng được SSE và phải poll.
+      operationId: syncGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: since
+          in: query
+          description: Version client đang giữ. Bỏ trống hoặc 0 luôn cho ra snapshot.
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: Delta hoặc snapshot, tùy khoảng cách giữa since và version hiện tại
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/GroupSyncResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/groups/{id}/events:
+    get:
+      summary: Stream group events via Server-Sent Events (SSE)
+      description: |
+        Kênh nóng của giao thức đồng bộ nhóm. Không bọc SuccessEnvelope: response
+        là text/event-stream.
+
+        Sự kiện đầu tiên luôn là `snapshot` (khi client tụt quá xa hoặc chưa có
+        version) hoặc chuỗi sự kiện còn thiếu; client đã bắt kịp nhận một sự
+        kiện `sync` rỗng.
+
+        Thân của mỗi frame sự kiện nhật ký mang đúng shape với phần tử `events`
+        của `/sync` (`GroupSyncEvent`: {version, type, data}), nên client dùng
+        lại một hàm giải mã cho cả hai kênh. Trường `id:` của frame cũng là
+        version, dành cho client dùng EventSource chuẩn.
+
+        Ngoài ra: `heartbeat` mỗi 15 giây và `close` kèm `reason` khi kết nối
+        chạm tuổi thọ tối đa (`max_connection_age`), khi nhóm bị giải tán
+        (`group_archived`), hoặc khi chính caller không còn là thành viên
+        (`membership_ended`).
+
+        Client phải mở lại kết nối với `since` bằng version cuối cùng đã áp;
+        version nhảy cóc nghĩa là đã sót sự kiện và phải gọi `/sync`.
+      operationId: streamGroupEvents
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: since
+          in: query
+          description: Version client đang giữ. Bỏ trống hoặc 0 sẽ nhận snapshot.
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /api/v1/notifications:
     get:
       operationId: listNotifications
@@ -2237,14 +2320,49 @@ components:
         next_cursor: {type: string, nullable: true}
     GroupDetailResponse:
       type: object
-      required: [group, members, balances, caller_role]
+      required: [group, members, balances, caller_role, caller_membership_id, version]
       properties:
         group: {$ref: "#/components/schemas/Group"}
         members: {type: array, items: {$ref: "#/components/schemas/Member"}}
         balances: {type: array, items: {$ref: "#/components/schemas/Balance"}}
         caller_role: {type: string, enum: [captain, member]}
+        caller_membership_id: {type: string, format: uuid, description: "membership_id của chính người gọi, để client đánh dấu \"tôi\" trong members mà không phải suy từ vai trò"}
+        version: {type: integer, format: int64, minimum: 0, description: "roster_version của nhóm tại thời điểm đọc. Client lưu lại làm điểm xuất phát cho /events và /sync; danh sách members trong cùng response là trạng thái tại đúng version này."}
         active_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: ID of the queued or processing bulk finalize batch; omitted for ordinary members (spec 0008)"}
         latest_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: newest batch by (created_at, id); omitted for ordinary members"}
+    GroupSyncEvent:
+      type: object
+      required: [version, type, data, created_at]
+      properties:
+        version: {type: integer, format: int64, minimum: 1, description: Thứ tự đơn điệu tăng trong phạm vi một nhóm, liền mạch và đúng thứ tự commit}
+        type:
+          type: string
+          enum: [member_joined, member_reactivated, member_left, member_removed, captain_transferred, group_renamed, group_archived]
+        data:
+          type: object
+          description: |
+            Payload phụ thuộc type. member_joined/member_reactivated mang
+            {member, active_member_count}; member_left/member_removed mang
+            {membership_id, user_id, actor_membership_id, active_member_count};
+            captain_transferred mang {previous_captain_membership_id,
+            current_captain_membership_id}; group_renamed mang {old_name, name}.
+            Có thể là object rỗng khi envelope bị cắt vì vượt giới hạn payload
+            của kênh đẩy — khi đó client gọi /sync để lấy nội dung đầy đủ.
+        created_at: {type: string, format: date-time}
+    GroupSyncResponse:
+      type: object
+      required: [version, mode]
+      properties:
+        version: {type: integer, format: int64, minimum: 0, description: Version client nên lưu lại sau khi áp xong response này}
+        mode: {type: string, enum: [delta, snapshot]}
+        events:
+          type: array
+          description: Chỉ có khi mode=delta. Sắp xếp theo version tăng dần, liền mạch từ since+1.
+          items: {$ref: "#/components/schemas/GroupSyncEvent"}
+        snapshot:
+          allOf:
+            - $ref: "#/components/schemas/GroupDetailResponse"
+          description: Chỉ có khi mode=snapshot. Client thay toàn bộ state cục bộ bằng nội dung này.
     LockSubmissionsResponse:
       type: object
       required: [bill_submission_locked, bill_submission_locked_at]

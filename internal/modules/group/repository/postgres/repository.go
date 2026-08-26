@@ -172,7 +172,19 @@ func (r *postgresRepository) GetGroupDetail(ctx context.Context, groupID, caller
 		return nil, domain.ErrGroupNotFound
 	}
 
-	q := dbgen.New(r.pool)
+	// Snapshot phải nhất quán: roster_version và danh sách thành viên bắt buộc
+	// đến từ cùng một ảnh chụp MVCC. Ở mức READ COMMITTED mỗi câu lệnh có ảnh
+	// chụp riêng, nên một mutation xen vào giữa hai câu lệnh sẽ tạo ra snapshot
+	// mang version N nhưng đã chứa thành viên của version N+1 — client sau đó
+	// bỏ qua event N+1 và giữ state sai. REPEATABLE READ read-only loại bỏ khe
+	// hở đó mà không khóa gì.
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin group detail snapshot: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := dbgen.New(tx)
 	groupRow, err := q.GetGroupByID(ctx, pgUUID(gid))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrGroupNotFound
@@ -222,8 +234,11 @@ func (r *postgresRepository) GetGroupDetail(ctx context.Context, groupID, caller
 	detail := &domain.GroupDetail{
 		Group:      *mapGroup(groupRow),
 		Members:    members,
+		Version:    groupRow.RosterVersion,
 		Balances:   balances,
 		CallerRole: callerRole,
+
+		CallerMembershipID: uuid.UUID(membershipRow.ID.Bytes).String(),
 	}
 
 	// Captain batch navigation (Spec 0008 Public response fields): chỉ truy vấn
@@ -647,7 +662,23 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 	if err != nil {
 		return nil, fmt.Errorf("load member display name: %w", err)
 	}
-	if err = insertActivity(ctx, tx, uuid.UUID(groupID.Bytes), membership.ID, actionType, fmt.Sprintf("%s %s the group", displayName, verb), map[string]any{"member_id": uuid.UUID(membership.ID.Bytes).String()}); err != nil {
+	gidValue := uuid.UUID(groupID.Bytes)
+	if err = insertActivity(ctx, tx, gidValue, membership.ID, actionType, fmt.Sprintf("%s %s the group", displayName, verb), map[string]any{"member_id": uuid.UUID(membership.ID.Bytes).String()}); err != nil {
+		return nil, err
+	}
+
+	memberPayload, err := memberEventPayload(ctx, q, gidValue, membership.ID)
+	if err != nil {
+		return nil, err
+	}
+	count, err := activeMemberCount(ctx, q, gidValue)
+	if err != nil {
+		return nil, err
+	}
+	if err = emitGroupEvent(ctx, tx, gidValue, actionType, map[string]any{
+		"member":              memberPayload,
+		"active_member_count": count,
+	}); err != nil {
 		return nil, err
 	}
 
@@ -773,6 +804,19 @@ func (r *postgresRepository) LeaveOrRemoveMember(ctx context.Context, groupID, t
 		return err
 	}
 
+	count, err := activeMemberCount(ctx, q, gid)
+	if err != nil {
+		return err
+	}
+	if err = emitGroupEvent(ctx, tx, gid, actionType, map[string]any{
+		"membership_id":       uuid.UUID(target.ID.Bytes).String(),
+		"user_id":             uuid.UUID(target.UserID.Bytes).String(),
+		"actor_membership_id": uuid.UUID(actor.ID.Bytes).String(),
+		"active_member_count": count,
+	}); err != nil {
+		return err
+	}
+
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit leave or remove member: %w", err)
 	}
@@ -870,6 +914,12 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 	if err = insertActivity(ctx, tx, gid, caller.ID, "captain_transferred", fmt.Sprintf("%s transferred the Captain role", displayName), meta); err != nil {
 		return nil, err
 	}
+	if err = emitGroupEvent(ctx, tx, gid, domain.EventCaptainTransfer, map[string]any{
+		"previous_captain_membership_id": previousID,
+		"current_captain_membership_id":  currentID,
+	}); err != nil {
+		return nil, err
+	}
 
 	if err = tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit transfer captain: %w", err)
@@ -926,6 +976,12 @@ func (r *postgresRepository) RenameGroup(ctx context.Context, groupID, callerUse
 	if err = insertActivity(ctx, tx, gid, caller.ID, "group_renamed", fmt.Sprintf("%s đã đổi tên nhóm thành %q", actorName, name), map[string]any{
 		"old_name": current.Name,
 		"new_name": name,
+	}); err != nil {
+		return nil, err
+	}
+	if err = emitGroupEvent(ctx, tx, gid, domain.EventGroupRenamed, map[string]any{
+		"old_name": current.Name,
+		"name":     name,
 	}); err != nil {
 		return nil, err
 	}
@@ -1013,6 +1069,13 @@ func (r *postgresRepository) DisbandGroup(ctx context.Context, groupID, callerUs
 		return fmt.Errorf("archive group: %w", err)
 	}
 	if err = insertActivity(ctx, tx, gid, caller.ID, "group_archived", fmt.Sprintf("%s archived the group", actorName), map[string]any{
+		"member_count_deactivated": memberTag.RowsAffected(),
+	}); err != nil {
+		return err
+	}
+	// Nhóm đã archived nên emitGroupEvent không còn khóa được dòng qua
+	// LockActiveGroup; khóa vẫn đang do chính transaction này giữ từ đầu.
+	if err = emitGroupEvent(ctx, tx, gid, domain.EventGroupArchived, map[string]any{
 		"member_count_deactivated": memberTag.RowsAffected(),
 	}); err != nil {
 		return err
