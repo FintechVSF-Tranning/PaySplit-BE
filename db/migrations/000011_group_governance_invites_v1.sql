@@ -39,7 +39,7 @@ END $$;
 -- +goose StatementEnd
 
 ALTER TABLE groups
-    ADD COLUMN status group_status NOT NULL DEFAULT 'active';
+    ADD COLUMN IF NOT EXISTS status group_status NOT NULL DEFAULT 'active';
 
 -- +goose StatementBegin
 DO $$ BEGIN ALTER TYPE activity_type ADD VALUE IF NOT EXISTS 'group_renamed'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -83,6 +83,7 @@ END $$;
 -- +goose StatementEnd
 
 ALTER TABLE group_invites
+    DROP CONSTRAINT IF EXISTS group_invites_code_base62_check,
     ADD CONSTRAINT group_invites_code_base62_check
     CHECK (code ~ '^[A-Za-z0-9]{8}$') NOT VALID;
 ALTER TABLE group_invites

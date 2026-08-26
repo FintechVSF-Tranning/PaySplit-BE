@@ -1182,9 +1182,32 @@ func (q *Queries) ListBillShares(ctx context.Context, billID pgtype.UUID) ([]Bil
 }
 
 const listBillsByGroup = `-- name: ListBillsByGroup :many
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id, total_item_discount, general_discount FROM bills
-WHERE group_id = $1
-ORDER BY created_at DESC
+SELECT
+    b.id, b.group_id, b.creditor_member_id, b.status, b.merchant_name, b.bill_date, b.image_object_key, b.subtotal, b.service_charge, b.vat, b.discount, b.total, b.mismatch_warning, b.version, b.created_at, b.finalized_at, b.updated_at, b.replaces_bill_id, b.voided_at, b.split_method, b.mismatch_codes, b.reviewed_at, b.reviewed_by_member_id, b.total_item_discount, b.general_discount,
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status = 'settled'
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+ORDER BY b.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -1194,41 +1217,51 @@ type ListBillsByGroupParams struct {
 	Offset  int32       `json:"offset"`
 }
 
-func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error) {
+type ListBillsByGroupRow struct {
+	Bill             Bill   `json:"bill"`
+	PayerDisplayName string `json:"payer_display_name"`
+	PaidMemberCount  int64  `json:"paid_member_count"`
+	MemberCount      int64  `json:"member_count"`
+}
+
+func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]ListBillsByGroupRow, error) {
 	rows, err := q.db.Query(ctx, listBillsByGroup, arg.GroupID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Bill
+	var items []ListBillsByGroupRow
 	for rows.Next() {
-		var i Bill
+		var i ListBillsByGroupRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.GroupID,
-			&i.CreditorMemberID,
-			&i.Status,
-			&i.MerchantName,
-			&i.BillDate,
-			&i.ImageObjectKey,
-			&i.Subtotal,
-			&i.ServiceCharge,
-			&i.Vat,
-			&i.Discount,
-			&i.Total,
-			&i.MismatchWarning,
-			&i.Version,
-			&i.CreatedAt,
-			&i.FinalizedAt,
-			&i.UpdatedAt,
-			&i.ReplacesBillID,
-			&i.VoidedAt,
-			&i.SplitMethod,
-			&i.MismatchCodes,
-			&i.ReviewedAt,
-			&i.ReviewedByMemberID,
-			&i.TotalItemDiscount,
-			&i.GeneralDiscount,
+			&i.Bill.ID,
+			&i.Bill.GroupID,
+			&i.Bill.CreditorMemberID,
+			&i.Bill.Status,
+			&i.Bill.MerchantName,
+			&i.Bill.BillDate,
+			&i.Bill.ImageObjectKey,
+			&i.Bill.Subtotal,
+			&i.Bill.ServiceCharge,
+			&i.Bill.Vat,
+			&i.Bill.Discount,
+			&i.Bill.Total,
+			&i.Bill.MismatchWarning,
+			&i.Bill.Version,
+			&i.Bill.CreatedAt,
+			&i.Bill.FinalizedAt,
+			&i.Bill.UpdatedAt,
+			&i.Bill.ReplacesBillID,
+			&i.Bill.VoidedAt,
+			&i.Bill.SplitMethod,
+			&i.Bill.MismatchCodes,
+			&i.Bill.ReviewedAt,
+			&i.Bill.ReviewedByMemberID,
+			&i.Bill.TotalItemDiscount,
+			&i.Bill.GeneralDiscount,
+			&i.PayerDisplayName,
+			&i.PaidMemberCount,
+			&i.MemberCount,
 		); err != nil {
 			return nil, err
 		}
@@ -1241,14 +1274,37 @@ func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupPara
 }
 
 const listBillsByGroupCursor = `-- name: ListBillsByGroupCursor :many
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id, total_item_discount, general_discount FROM bills
-WHERE group_id = $1
+SELECT
+    b.id, b.group_id, b.creditor_member_id, b.status, b.merchant_name, b.bill_date, b.image_object_key, b.subtotal, b.service_charge, b.vat, b.discount, b.total, b.mismatch_warning, b.version, b.created_at, b.finalized_at, b.updated_at, b.replaces_bill_id, b.voided_at, b.split_method, b.mismatch_codes, b.reviewed_at, b.reviewed_by_member_id, b.total_item_discount, b.general_discount,
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status = 'settled'
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
   AND (
     $2::timestamptz IS NULL 
-    OR created_at < $2 
-    OR (created_at = $2 AND id < $3)
+    OR b.created_at < $2
+    OR (b.created_at = $2 AND b.id < $3)
   )
-ORDER BY created_at DESC, id DESC
+ORDER BY b.created_at DESC, b.id DESC
 LIMIT $4
 `
 
@@ -1259,7 +1315,14 @@ type ListBillsByGroupCursorParams struct {
 	Limit   int32              `json:"limit"`
 }
 
-func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error) {
+type ListBillsByGroupCursorRow struct {
+	Bill             Bill   `json:"bill"`
+	PayerDisplayName string `json:"payer_display_name"`
+	PaidMemberCount  int64  `json:"paid_member_count"`
+	MemberCount      int64  `json:"member_count"`
+}
+
+func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]ListBillsByGroupCursorRow, error) {
 	rows, err := q.db.Query(ctx, listBillsByGroupCursor,
 		arg.GroupID,
 		arg.Column2,
@@ -1270,35 +1333,38 @@ func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGro
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Bill
+	var items []ListBillsByGroupCursorRow
 	for rows.Next() {
-		var i Bill
+		var i ListBillsByGroupCursorRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.GroupID,
-			&i.CreditorMemberID,
-			&i.Status,
-			&i.MerchantName,
-			&i.BillDate,
-			&i.ImageObjectKey,
-			&i.Subtotal,
-			&i.ServiceCharge,
-			&i.Vat,
-			&i.Discount,
-			&i.Total,
-			&i.MismatchWarning,
-			&i.Version,
-			&i.CreatedAt,
-			&i.FinalizedAt,
-			&i.UpdatedAt,
-			&i.ReplacesBillID,
-			&i.VoidedAt,
-			&i.SplitMethod,
-			&i.MismatchCodes,
-			&i.ReviewedAt,
-			&i.ReviewedByMemberID,
-			&i.TotalItemDiscount,
-			&i.GeneralDiscount,
+			&i.Bill.ID,
+			&i.Bill.GroupID,
+			&i.Bill.CreditorMemberID,
+			&i.Bill.Status,
+			&i.Bill.MerchantName,
+			&i.Bill.BillDate,
+			&i.Bill.ImageObjectKey,
+			&i.Bill.Subtotal,
+			&i.Bill.ServiceCharge,
+			&i.Bill.Vat,
+			&i.Bill.Discount,
+			&i.Bill.Total,
+			&i.Bill.MismatchWarning,
+			&i.Bill.Version,
+			&i.Bill.CreatedAt,
+			&i.Bill.FinalizedAt,
+			&i.Bill.UpdatedAt,
+			&i.Bill.ReplacesBillID,
+			&i.Bill.VoidedAt,
+			&i.Bill.SplitMethod,
+			&i.Bill.MismatchCodes,
+			&i.Bill.ReviewedAt,
+			&i.Bill.ReviewedByMemberID,
+			&i.Bill.TotalItemDiscount,
+			&i.Bill.GeneralDiscount,
+			&i.PayerDisplayName,
+			&i.PaidMemberCount,
+			&i.MemberCount,
 		); err != nil {
 			return nil, err
 		}

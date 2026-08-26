@@ -69,6 +69,15 @@ type Bill struct {
 	Shares []*BillShare `json:"shares,omitempty"`
 }
 
+// BillListItem bổ sung dữ liệu hiển thị và tiến độ thanh toán cho danh sách bill.
+// Các trường của Bill được giữ ở top level để contract hiện tại tương thích ngược.
+type BillListItem struct {
+	*Bill
+	PayerDisplayName string `json:"payer_display_name"`
+	PaidMemberCount  int64  `json:"paid_member_count"`
+	MemberCount      int64  `json:"member_count"`
+}
+
 // BillImage đại diện cho một ảnh chụp hóa đơn được lưu trên Cloudinary (Spec 3 AC-1).
 type BillImage struct {
 	ID        uuid.UUID `json:"id"`

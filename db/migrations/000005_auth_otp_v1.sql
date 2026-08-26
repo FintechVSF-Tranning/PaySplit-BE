@@ -4,7 +4,10 @@
 -- ---------------------------------------------------------------------------
 -- +goose StatementBegin
 ALTER TABLE user_tokens 
-    ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;
+
+ALTER TABLE user_tokens
+    DROP CONSTRAINT IF EXISTS user_token_attempt_count_non_negative,
     ADD CONSTRAINT user_token_attempt_count_non_negative CHECK (attempt_count >= 0);
 -- +goose StatementEnd
 

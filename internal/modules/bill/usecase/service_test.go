@@ -145,9 +145,14 @@ func (m *mockServiceRepo) GetGroupMemberUser(ctx context.Context, memberID, grou
 }
 
 func (m *mockServiceRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
-	bills := []*domain.Bill{}
+	bills := []*domain.BillListItem{}
 	if m.bill != nil {
-		bills = append(bills, m.bill)
+		bills = append(bills, &domain.BillListItem{
+			Bill:             m.bill,
+			PayerDisplayName: "Nguyễn An",
+			PaidMemberCount:  2,
+			MemberCount:      3,
+		})
 	}
 	return &repository.ListBillsCursorResult{
 		Bills: bills,
@@ -1182,6 +1187,9 @@ func TestListBillsCursor_Success(t *testing.T) {
 	}
 	if len(res.Bills) != 1 {
 		t.Errorf("expected 1 bill, got %d", len(res.Bills))
+	}
+	if res.Bills[0].PayerDisplayName != "Nguyễn An" || res.Bills[0].PaidMemberCount != 2 || res.Bills[0].MemberCount != 3 {
+		t.Fatalf("unexpected bill summary: %+v", res.Bills[0])
 	}
 }
 

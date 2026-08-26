@@ -563,7 +563,7 @@ func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID
 }
 
 // ListBills lấy danh sách hóa đơn trong nhóm có phân trang (offset legacy).
-func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
+func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden

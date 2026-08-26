@@ -353,7 +353,7 @@ func (r *postgresRepository) GetBillByIDForUpdate(ctx context.Context, id, group
 }
 
 // ListBillsByGroup lấy danh sách hóa đơn trong nhóm có phân trang (mới nhất trước).
-func (r *postgresRepository) ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
+func (r *postgresRepository) ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -371,9 +371,14 @@ func (r *postgresRepository) ListBillsByGroup(ctx context.Context, groupID uuid.
 		return nil, fmt.Errorf("list bills by group: %w", err)
 	}
 
-	results := make([]*domain.Bill, 0, len(rows))
+	results := make([]*domain.BillListItem, 0, len(rows))
 	for _, row := range rows {
-		results = append(results, toDomainBill(&row))
+		results = append(results, &domain.BillListItem{
+			Bill:             toDomainBill(&row.Bill),
+			PayerDisplayName: row.PayerDisplayName,
+			PaidMemberCount:  row.PaidMemberCount,
+			MemberCount:      row.MemberCount,
+		})
 	}
 	return results, nil
 }
@@ -415,14 +420,19 @@ func (r *postgresRepository) ListBillsByGroupCursor(ctx context.Context, p repos
 		rows = rows[:limit]
 	}
 
-	bills := make([]*domain.Bill, 0, len(rows))
+	bills := make([]*domain.BillListItem, 0, len(rows))
 	for _, row := range rows {
-		bills = append(bills, toDomainBill(&row))
+		bills = append(bills, &domain.BillListItem{
+			Bill:             toDomainBill(&row.Bill),
+			PayerDisplayName: row.PayerDisplayName,
+			PaidMemberCount:  row.PaidMemberCount,
+			MemberCount:      row.MemberCount,
+		})
 	}
 
 	var nextCursor *string
 	if hasMore && len(bills) > 0 {
-		last := bills[len(bills)-1]
+		last := bills[len(bills)-1].Bill
 		c := encodeCursor(last.CreatedAt, last.ID.String())
 		nextCursor = &c
 	}

@@ -40,7 +40,7 @@ The cross child contract is that every bill scoped row carries `group_id`, every
 9. **AC-9**: Captain finalize is synchronous and idempotent. In one short PostgreSQL transaction it locks the bill, validates the current version, state, review, assignments, totals, active assignees, and the Creditor bank profile, then writes immutable member share snapshots, positive debts for non Creditor members, one activity, and durable notification jobs. A retry returns the original result and concurrent finalize or edit receives a stable conflict.
 10. **AC-10**: Final member shares sum exactly to bill total, because the Creditor final amount is computed as bill total minus the sum of every other member final amount. No member final amount is negative. A member discount share is capped at what that member owes, and the cut portion moves to the Creditor. Two distinct conditions are rejected rather than clamped, each with its own error code: a discount larger than the whole bill, and a discount that is valid in total but concentrated on members who cannot absorb it, so the cascade pushes the Creditor below zero. A member with zero final amount keeps a share snapshot but gets no debt. If subtotal is zero, all service charge and VAT belong to the Creditor and no debt is created for those amounts.
 11. **AC-11**: A finalized bill, its items, assignments, images, share snapshots, and debts are immutable. The Captain can idempotently void it only while every debt is `awaiting` and has no payment. Void keeps all history, marks the bill and debts `voided`, records a reason and activity, and permits one later draft to reference it through `replaces_bill_id`.
-12. **AC-12**: Bill listing uses cursor pagination ordered by `(created_at DESC, id DESC)`. Bill detail returns the draft or immutable breakdown, current version, review state, OCR jobs, assignments, share snapshots, and debt summary without exposing raw provider responses or permanent asset URLs.
+12. **AC-12**: Bill listing uses cursor pagination ordered by `(created_at DESC, id DESC)`. Every list item preserves the existing bill fields and adds `payer_display_name`, `paid_member_count`, and `member_count`. For a finalized bill, `member_count` is the immutable share count, while `paid_member_count` counts the Creditor, every zero amount share, and every non Creditor debt in `settled`. Draft, reviewed, and voided bills return `0/0`. Bill detail returns the draft or immutable breakdown, current version, review state, OCR jobs, assignments, share snapshots, and debt summary without exposing raw provider responses or permanent asset URLs.
 13. **AC-13**: The Creditor or Captain can idempotently delete a draft. Bill owned rows are removed atomically, while the completed idempotency record, a group activity with a redacted bill ID, and cleanup payload remain. Stored assets enter the durable media cleanup flow. A partial upload, process interruption, or failed bill transaction is recoverable through the reserved operation prefix.
 14. **AC-14**: Standard bill reads and writes meet the 200 ms server target, preview calculation meets 50 ms for 100 items and 50 members, and successful OCR measures no more than 10 seconds from River job start to committed succeeded state. Metrics use the names and bounded labels defined here for queue depth, provider latency and failures, stale applies, mismatch blocks, finalize latency, and cleanup failures. Logs redact images, signed URLs, API keys, raw OCR, bank account numbers, and item text.
 
@@ -96,7 +96,7 @@ All routes require the live bearer session from spec 0001 and are mounted under 
 | Endpoint | Method | Key inputs | Key outputs | Auth | Key errors |
 |---|---|---|---|---|---|
 | `/bills` | `POST` | `Idempotency-Key`, optional `replaces_bill_id`; either JSON manual draft or ordered multipart files plus JSON draft | manual `201` or image `202`: bill ID, version `1`, status, reconciliation, optional OCR job ID and state | active member | `400 INVALID_IMAGE`, `409 IDEMPOTENCY_IN_PROGRESS`, `409 IDEMPOTENCY_KEY_REUSED`, `409 INVALID_REPLACEMENT`, `503 STORAGE_UNAVAILABLE` |
-| `/bills` | `GET` | cursor, limit up to 50, optional status | bill ID, merchant, bill date, total, status, Creditor summary, item count, image count, OCR state, review state, created time, next cursor | active member | `400 INVALID_CURSOR`, `404 GROUP_NOT_FOUND` |
+| `/bills` | `GET` | cursor, limit up to 50, optional status | Existing bill fields plus `payer_display_name`, `paid_member_count`, `member_count`, and next cursor. Counts are aggregate group data and never expose another member's individual debt status | active member | `400 INVALID_CURSOR`, `404 GROUP_NOT_FOUND` |
 | `/bills/{billId}` | `GET` | bill ID | common bill fields; draft items, assignments, reconciliation, preview and safe OCR candidates; or finalized shares and debt summary; five minute image URLs | active member | `404 BILL_NOT_FOUND` |
 | `/bills/{billId}` | `PUT` | version, reported bill fields, complete items with client UUIDs, complete assignments | new version, `computed_subtotal`, `computed_total`, mismatch codes, preview | Creditor or Captain | `400 INVALID_DRAFT`, `409 VERSION_CONFLICT`, `409 BILL_IMMUTABLE` |
 | `/bills/{billId}` | `DELETE` | version, `Idempotency-Key` | `204` | Creditor or Captain | `409 BILL_IMMUTABLE`, `409 VERSION_CONFLICT` |
@@ -133,6 +133,9 @@ SSE `snapshot` carries bill version and current OCR summaries. `ocr.updated` car
 | Review | reviewer and reviewed version | Authenticated active member plus locked bill version |
 | Finalize | participant snapshot | Active assignment members plus the Creditor, even when their final amount is zero |
 | Read bill | member display data | Current display name and avatar from the user linked through `group_members`; immutable money and membership IDs remain from bill rows |
+| List bills | payer display name | Current `users.display_name` joined through the bill's immutable `creditor_member_id` and its `group_members.user_id` |
+| List bills | participant count | Count of immutable `bill_member_shares` for a finalized bill. Draft, reviewed, and voided bills use zero because payment progress is not applicable |
+| List bills | paid participant count | Count of finalized shares whose member is the Creditor, whose immutable final amount is zero, or whose matching debt status is `settled`. `awaiting`, `pending_confirmation`, and `voided` debts are not paid |
 | Finalize | debt fields | Group and bill IDs from the bill, debtor from each positive non Creditor share, creditor from the bill, amount from final amount, constant status `awaiting`, null payment and settlement fields |
 | Finalize | bank eligibility | Complete bank code from the embedded VietQR directory plus account number and holder constraints from spec 0001, read from the Creditor profile at finalize time. No bank snapshot is stored |
 | Finalize | notification jobs | One job for every member in `bill_member_shares`, including the Creditor, with bill ID, group ID, final amount, Creditor ID, and activity ID |
@@ -205,7 +208,7 @@ Receipt images, OCR responses, item text, and bank details are sensitive. Cloudi
 7. Void an unpaid bill, preserve history, void its debts, then create one linked replacement. Reject void after any debt enters a payment, verifies **AC-11**.
 8. Fail after Cloudinary stores one of several images, then prove durable cleanup removes every orphan, verifies **AC-13**.
 9. Load 100 items and 50 members, verify exact totals and target latency with metrics and redacted logs, verifies **AC-6**, **AC-10**, and **AC-14**.
-10. Paginate bills with duplicate timestamps, read draft and finalized detail, refresh an expired image URL, and reconnect SSE from a current snapshot, verifies **AC-12**.
+10. Paginate bills with duplicate timestamps, verify payer names and exact `0/0`, partial, and complete payment counts without per bill queries, read draft and finalized detail, refresh an expired image URL, and reconnect SSE from a current snapshot, verifies **AC-12**.
 
 ## Build plan
 
@@ -218,6 +221,7 @@ The project uses Tracer Bullet. Each slice crosses migration, sqlc, repository, 
 5. Add finalize. Add immutable share snapshots, bank eligibility, ordered locking, floor allocation, positive debt creation, activity and notification inserts, idempotent response replay, and concurrent integration coverage, satisfies **AC-7**, **AC-9**, **AC-10**, and **AC-14**.
 6. Add void and replacement. Extend bill and debt states, add safe void checks, replacement uniqueness, durable history, draft deletion, cleanup, and activity behavior, satisfies **AC-11** and **AC-13**.
 7. Finish the operational contract. Complete OpenAPI, environment validation, metrics, structured redaction, provider and storage failure tests, SSE reconnect tests, module documentation, and end to end verification of every criterion, satisfies **AC-1** through **AC-14**.
+8. Enrich both cursor and legacy bill list reads in one PostgreSQL query. Join the Creditor display name and aggregate immutable shares with debt settlement status, preserve pagination and the existing JSON shape, update sqlc, OpenAPI, handler tests, and PostgreSQL integration coverage, satisfies the extended **AC-12**.
 
 ## Consequences
 
@@ -235,6 +239,7 @@ The project uses Tracer Bullet. Each slice crosses migration, sqlc, repository, 
 3. Reading live Creditor bank data means a later profile change can redirect a future QR, and deleting bank data can block Module 4.
 4. SSE uses current state snapshots rather than replay, so clients learn the latest state but not every transient progress event.
 5. A zero subtotal bill assigns all service charge and VAT to the Creditor, which is simple but may not match every real receipt.
+6. Aggregate payment counts intentionally expose group level completion to every active group member, but never identify which other member has or has not paid.
 
 **Neutral**:
 

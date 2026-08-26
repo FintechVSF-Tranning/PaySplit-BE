@@ -1002,7 +1002,7 @@ paths:
                         properties:
                           bills:
                             type: array
-                            items: {$ref: "#/components/schemas/Bill"}
+                            items: {$ref: "#/components/schemas/BillListItem"}
                           next_cursor: {type: string}
         "400":
           description: "Validation failed (VALIDATION_FAILED), or an invalid cursor was supplied (INVALID_CURSOR)"
@@ -2456,6 +2456,26 @@ components:
         shares: {type: array, items: {$ref: "#/components/schemas/BillShare"}}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+
+    BillListItem:
+      allOf:
+        - $ref: "#/components/schemas/Bill"
+        - type: object
+          required: [payer_display_name, paid_member_count, member_count]
+          properties:
+            payer_display_name:
+              type: string
+              description: Current display name of the bill Creditor
+            paid_member_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Finalized shares already complete, including the Creditor, zero amount shares, and settled debts. Zero when progress is not applicable
+            member_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: Immutable share count for a finalized bill. Zero for draft, reviewed, and voided bills
 
     BillImage:
       type: object
