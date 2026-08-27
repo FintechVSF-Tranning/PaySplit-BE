@@ -9,7 +9,7 @@ Tài liệu này mô tả chi tiết kiến trúc, mô hình dữ liệu, cơ ch
 Module Bill & OCR v1 chịu trách nhiệm:
 1. **Tạo hóa đơn (Bill Draft)**: Tạo hóa đơn thủ công (`201`) hoặc tải lên tối đa 5 ảnh biên lai (`202`, xử lý OCR bất đồng bộ). Người tạo hóa đơn luôn là Creditor (người đã ứng tiền chi trả).
 2. **Trích xuất dữ liệu bằng OCR (LlamaExtract)**: Xử lý ảnh biên lai qua River Queue, gửi tới provider LlamaExtract để trích xuất merchant, ngày, danh sách món, phí dịch vụ, VAT, giảm giá và tổng tiền. Kết quả OCR (candidate) không tự động ghi đè bản nháp; người dùng phải chủ động "áp dụng" (apply) kết quả.
-3. **Phân bổ theo tỷ lệ (Item Ratio Allocation)**: Mỗi món hàng được gán cho một hoặc nhiều thành viên nhóm với tỷ lệ (`weight`/`share_ratio`) dương, tổng bằng 1. Preview tính toán số tiền mỗi người bằng số học số nguyên VND, chia sàn cho mọi thành viên, và dồn toàn bộ phần dư cho Creditor.
+3. **Phân bổ theo tỷ lệ (Item Ratio Allocation)**: Mỗi món hàng được gán cho một hoặc nhiều thành viên nhóm với tỷ lệ (`weight`/`share_ratio`) dương, tổng bằng 1. Preview cộng phần chính xác của từng thành viên qua mọi món bằng phân số, chỉ làm tròn một lần, rồi phân phối VND còn dư theo Largest Remainder.
 4. **Xét duyệt tường minh (Review)**: Creditor hoặc Captain xác nhận một phiên bản (`version`) cụ thể của hóa đơn đã sẵn sàng để chốt sổ. Bất kỳ thay đổi nào sau đó (sửa món, sửa gán, áp dụng OCR mới) đều xóa trạng thái đã duyệt.
 5. **Chốt sổ hóa đơn (Finalize)**: Captain chốt hóa đơn trong một transaction PostgreSQL ngắn, tạo snapshot bất biến `bill_shares`, tạo `debts` cho từng thành viên không phải Creditor, ghi activity và job thông báo.
 6. **Hủy và thay thế (Void & Replace)**: Captain có thể hủy một hóa đơn đã chốt sổ nhưng chưa có khoản nợ nào bắt đầu thanh toán. Lịch sử được giữ nguyên; một hóa đơn nháp mới có thể tham chiếu `replaces_bill_id` tới hóa đơn đã hủy.
@@ -74,15 +74,16 @@ Hệ thống dùng River Queue (PostgreSQL-backed job queue) để xử lý OCR 
 
 ---
 
-## 4. Phân bổ tỷ lệ và thuật toán chia sàn
+## 4. Phân bổ tỷ lệ và làm tròn sau khi cộng
 
 * Mỗi `bill_items` có một hoặc nhiều `bill_item_assignments`, với `weight` (tỷ lệ, `numeric`) dương, tổng theo từng món phải bằng đúng 1.
-* **Đọc chi tiết, Review và Finalize dùng chung một hàm** `evaluateAllocation` (`internal/modules/bill/usecase/reconciliation.go`), hàm này chạy toàn bộ phần đối soát rồi gọi `CalculateFloorAllocation` (`internal/modules/bill/usecase/allocation.go`). Nhờ vậy số hiển thị trước khi chốt sổ, điều kiện chặn ở bước review, và số ghi nhận sau khi chốt sổ luôn nói cùng một điều.
-* Số tiền mỗi món được phân bổ bằng số học số nguyên VND: nhân `line_total × weight` rồi làm tròn xuống. Phần dư **không** được chia lẻ cho ai. Thuật toán chạy hai lượt: lượt một tính phần của mọi thành viên không phải Creditor, lượt hai tính phần của Creditor bằng tổng tính được trừ đi tổng của những người còn lại. Nhờ vậy tổng luôn khớp theo cấu trúc chứ không nhờ một vòng phân phối phải luôn viết đúng.
+* **Đọc chi tiết, Review và Finalize dùng chung một hàm** `evaluateAllocation` (`internal/modules/bill/usecase/reconciliation.go`), hàm này chạy toàn bộ phần đối soát rồi gọi `CalculateAllocation` (`internal/modules/bill/usecase/allocation.go`). Nhờ vậy số hiển thị trước khi chốt sổ, điều kiện chặn ở bước review, và số ghi nhận sau khi chốt sổ luôn nói cùng một điều.
+* Mỗi phần món được biểu diễn bằng `math/big.Rat` từ VND nguyên và trọng số nguyên. Hệ thống cộng mọi phần chính xác của một thành viên trước, sau đó mới lấy phần nguyên một lần. Không dùng `float32` hoặc `float64` cho phép tính tiền.
+* Sau khi có tổng chính xác, hệ thống sắp xếp phần lẻ giảm dần và phát từng 1 VND còn lại. Nếu phần lẻ bằng nhau, UUID byte chuẩn tăng dần quyết định người nhận. Creditor không có ưu tiên làm tròn.
 * Nếu phần giảm giá chia cho một thành viên lớn hơn số tiền họ phải trả, phần đó bị chặn trần để `final_amount` của họ đúng bằng 0, và phần bị cắt rơi về Creditor. Không bao giờ kẹp kết quả cuối về 0, vì chính việc kẹp đó từng làm tổng vượt quá hóa đơn.
-* `rounding_adjustment` bằng 0 với mọi thành viên thường. Chỉ Creditor mang giá trị khác 0, và nó có thể âm khi phần dư giảm giá lấn át.
-* Chia đều (equal split) so sánh UUID thành viên theo thứ tự byte tăng dần (canonical order) trong cả Go và PostgreSQL. Phần dư tiền thì luôn về Creditor, nên không cần quy tắc phá hòa. Hóa đơn chưa có Creditor bị từ chối phân bổ.
-* Phí dịch vụ, VAT và giảm giá được chia sàn theo tỷ trọng subtotal của từng thành viên trên tổng subtotal của hóa đơn. Nếu subtotal bằng 0, toàn bộ phí dịch vụ, VAT và giảm giá thuộc về Creditor, và nhánh này không đi qua vòng chặn trần.
+* `rounding_adjustment = final_amount - (item_subtotal + service_charge_share + vat_share - discount_share)`. Giá trị này có thể thuộc bất kỳ thành viên nào và chỉ được tính đúng một lần.
+* `split_method = even` vẫn chỉ là tiện ích ghi trọng số đều cho các món đã chọn. Nó không biến chia theo món thành chia đều toàn hóa đơn.
+* Phí dịch vụ, VAT và giảm giá dùng tỷ trọng subtotal chính xác của từng thành viên trên tổng tiền món. Nếu subtotal bằng 0, toàn bộ phí dịch vụ, VAT và giảm giá thuộc về Creditor, và nhánh này không đi qua vòng chặn trần.
 * Phân bổ dùng tổng **tính được** từ chính các thành phần, không dùng `total` khai báo trên bản nháp. Bản nháp có thể lưu `total` lệch (OCR đọc sai, người dùng nhập thiếu), và khoản lệch đó không được phép rơi lên đầu Creditor. Tầng đối soát báo lệch bằng mã `TOTAL_MISMATCH` riêng.
 * Khi đọc chi tiết một hóa đơn `draft` hoặc `reviewed`, các mã chặn được tính lại tại thời điểm đọc và trả về trong `mismatch_codes`, gộp với cảnh báo OCR đã lưu. `breakdown` chỉ có mặt khi danh sách đó rỗng, nên một breakdown vắng mặt luôn kèm lý do. Bảy mã: `ITEM_UNASSIGNED`, `INACTIVE_MEMBER_ASSIGNED`, `DISCOUNT_EXCEEDS_BILL`, `SUBTOTAL_MISMATCH`, `TOTAL_MISMATCH`, `DISCOUNT_NOT_ALLOCATABLE`, `CREDITOR_REQUIRED`.
 
@@ -159,7 +160,7 @@ Gán món hàng cho thành viên theo tỷ lệ:
 Snapshot bất biến số tiền cuối cùng mỗi thành viên phải trả, chỉ được ghi khi finalize:
 * `id`, `bill_id`, `group_id`, `member_id`
 * `item_subtotal`, `service_charge_share`, `vat_share`, `discount_share`, `rounding_adjustment`, `final_amount` (BIGINT)
-* `rounding_adjustment` bằng 0 với mọi thành viên thường; chỉ Creditor mang giá trị khác 0 và giá trị đó có thể âm
+* `rounding_adjustment` giữ phương trình thành phần bằng `final_amount` và có thể thuộc bất kỳ thành viên nào
 * `Σ final_amount` luôn bằng đúng `bills.total`; `Σ` các `final_amount` dương của thành viên không phải Creditor bằng tổng `debts` của hóa đơn
 * *Unique*: `(bill_id, member_id)` — ghi cho tất cả thành viên có gán, kể cả khi `final_amount = 0`
 
@@ -260,7 +261,7 @@ Hai worker dọn dẹp ở mục 2 và 3 được đăng ký qua `jobs.RegisterR
 ## 10. Vị trí logic nghiệp vụ chính
 
 * **Đối soát dùng chung**: `internal/modules/bill/usecase/reconciliation.go:43` (`evaluateAllocation`), dùng bởi đọc chi tiết, review và chốt sổ
-* **Phân bổ chia sàn**: `internal/modules/bill/usecase/allocation.go:93` (`CalculateFloorAllocation`), helper `floorShare`
+* **Phân bổ chính xác**: `internal/modules/bill/usecase/allocation.go` (`CalculateAllocation`), dùng `math/big.Rat` và Largest Remainder
 * **Chốt sổ (Finalize)**: `internal/modules/bill/usecase/service.go:724` (`FinalizeBill`, wrapper đo metric) gọi `finalizeBillImpl:735` — kiểm tra vai trò Captain, version, trạng thái, yêu cầu tài khoản ngân hàng, chạy `evaluateAllocation`, ghi `bill_shares` + `debts` + notification, commit qua `repo.FinalizeBill`
 * **Hủy hóa đơn (Void)**: `internal/modules/bill/usecase/service.go:877` (`VoidBill`) — chỉ Captain, lý do 1-500 ký tự, yêu cầu `status = finalized` và mọi debt còn `awaiting`
 * **OCR Worker**: `internal/modules/bill/jobs/ocr_worker.go` — `Work` (dòng 121-257), `NextRetry` (dòng 85)

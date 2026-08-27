@@ -205,12 +205,12 @@ print("TONG:",s,"| khop total?",s==b["total"])'
 ```
 total: 100001 | creditor: <M1>
 mismatch_codes: []
-  CREDITOR   final= 50001 adj= 1
-  thanh vien final= 50000 adj= 0
+  <member UUID nhỏ hơn> final= 50001 adj= 1
+  <member UUID lớn hơn> final= 50000 adj= 0
 TONG: 100001 | khop total? True
 ```
 
-Đây là điều cần nhìn: 100001 chia đôi ra 50000 mỗi người, dư 1 đồng, và **1 đồng đó về Creditor**. `rounding_adjustment` bằng 1 ở Creditor và 0 ở người kia. Tổng khớp tuyệt đối.
+Đây là điều cần nhìn: 100001 chia đôi có 1 đồng dư. Đồng đó đi theo phần lẻ lớn nhất, và khi phần lẻ hòa thì UUID byte tăng dần quyết định người nhận. Creditor không được ưu tiên. Tổng vẫn khớp tuyệt đối.
 
 ---
 

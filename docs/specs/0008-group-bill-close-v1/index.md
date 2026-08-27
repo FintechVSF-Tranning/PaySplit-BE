@@ -74,7 +74,7 @@ The batch state matrix is constrained. A `queued` batch has no start or completi
 
 ```text
 group bill submission
-open -> locked
+open <-> locked (Switch On/Off)
 
 bulk finalize batch
 queued -> processing -> completed
@@ -84,7 +84,7 @@ pending -> finalized
 pending -> failed
 ```
 
-There is no `locked -> open` transition in V1.
+Captain có thể khóa (`POST /groups/{groupId}/bills/lock-submissions`) và mở khóa lại (`POST /groups/{groupId}/bills/unlock-submissions`) bất cứ lúc nào.
 
 ### End to end V1 flow
 
@@ -148,6 +148,7 @@ Image create performs a cheap authorized policy read before Cloudinary upload, t
 | Endpoint | Method | Key inputs | Key outputs | Auth | Key errors |
 |---|---|---|---|---|---|
 | `/api/v1/groups/{groupId}/bills/lock-submissions` | `POST` | `Idempotency-Key` | lock state and lock time | active Captain | `403 CAPTAIN_REQUIRED`, `404 GROUP_NOT_FOUND`, idempotency conflicts |
+| `/api/v1/groups/{groupId}/bills/unlock-submissions` | `POST` | - | `bill_submission_locked: false` | active Captain | `403 CAPTAIN_REQUIRED`, `404 GROUP_NOT_FOUND` |
 | `/api/v1/groups/{groupId}/bills/finalize-all` | `POST` | `Idempotency-Key` | batch ID, status, counts, lock state | active Captain | `403 CAPTAIN_REQUIRED`, `404 GROUP_NOT_FOUND`, `409 BULK_FINALIZE_IN_PROGRESS`, idempotency conflicts |
 | `/api/v1/groups/{groupId}/bill-finalize-batches/{batchId}` | `GET` | batch ID, item cursor, limit | batch summary, item results, next cursor | active Captain | `400 INVALID_CURSOR`, `404 BATCH_NOT_FOUND` |
 | `/api/v1/groups/{groupId}` | `GET` | existing input | existing group detail plus lock state, with batch navigation only for the active Captain | active member | existing errors |

@@ -12,6 +12,7 @@ import (
 
 type Querier interface {
 	CaptureOpenBills(ctx context.Context, groupID pgtype.UUID) ([]CaptureOpenBillsRow, error)
+	ClearGroupSubmissionLockedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	CompleteFinalizeBatch(ctx context.Context, arg CompleteFinalizeBatchParams) (int64, error)
 	CountActiveBatchesForGroup(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	// Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
@@ -34,7 +35,7 @@ type Querier interface {
 	CreateBillItem(ctx context.Context, arg CreateBillItemParams) (BillItem, error)
 	CreateBillItemAssignment(ctx context.Context, arg CreateBillItemAssignmentParams) (BillItemAssignment, error)
 	// ============================================================================
-	// BILL SHARES (Hamilton Finalized Snapshot)
+	// BILL SHARES (Exact Finalized Snapshot)
 	// ============================================================================
 	CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error)
 	CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, error)

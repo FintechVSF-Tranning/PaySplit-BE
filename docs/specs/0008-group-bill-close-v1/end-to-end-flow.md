@@ -233,8 +233,8 @@ Preview và finalize dùng cùng một hàm chia tiền:
 
 1. Chia `final_price` của từng item theo assignment.
 2. Chia phí dịch vụ, VAT và `general_discount` theo phần item của từng người.
-3. Floor từng thành phần về VND nguyên.
-4. Creditor hấp thụ mọi phần VND không chia hết.
+3. Cộng phần chính xác của mỗi member qua mọi item trước khi floor một lần.
+4. Phân phối VND còn dư theo phần lẻ giảm dần, hòa thì UUID byte tăng dần. Creditor không có ưu tiên.
 5. Tổng `final_amount` của mọi member phải bằng bill total.
 6. Member có `final_amount = 0` vẫn có share snapshot sau finalize nhưng không có debt.
 

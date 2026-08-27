@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -226,14 +227,14 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 	if p.Bill.MerchantName != nil && *p.Bill.MerchantName != "" {
 		billName = *p.Bill.MerchantName
 	} else {
-		billName = "Mới"
+		billName = "Hóa đơn mới"
 	}
 	metaBytes, _ := json.Marshal(map[string]any{
 		"bill_id":     p.Bill.ID.String(),
 		"manual":      len(p.Images) == 0,
 		"image_count": len(p.Images),
 	})
-	desc := fmt.Sprintf("created bill draft %q", billName)
+	desc := fmt.Sprintf("Đã tạo hóa đơn nháp %q", billName)
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
@@ -619,7 +620,15 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 		"version":        dbBill.Version,
 		"mismatch_codes": dbBill.MismatchCodes,
 	})
-	desc := fmt.Sprintf("updated bill draft (version %d)", dbBill.Version)
+	var billName string
+	if dbBill.MerchantName.Valid && dbBill.MerchantName.String != "" {
+		billName = dbBill.MerchantName.String
+	} else if p.Bill.MerchantName != nil && *p.Bill.MerchantName != "" {
+		billName = *p.Bill.MerchantName
+	} else {
+		billName = "Hóa đơn"
+	}
+	desc := fmt.Sprintf("Đã cập nhật hóa đơn %q (phiên bản %d)", billName, dbBill.Version)
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: p.Bill.GroupID, Valid: true},
@@ -669,7 +678,13 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 		"bill_id": id.String(),
 		"version": dbBill.Version,
 	})
-	desc := fmt.Sprintf("reviewed bill (version %d)", dbBill.Version)
+	var billName string
+	if dbBill.MerchantName.Valid && dbBill.MerchantName.String != "" {
+		billName = dbBill.MerchantName.String
+	} else {
+		billName = "Hóa đơn"
+	}
+	desc := fmt.Sprintf("Đã duyệt hóa đơn %q (phiên bản %d)", billName, dbBill.Version)
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
@@ -896,7 +911,13 @@ func (r *postgresRepository) finalizeCore(ctx context.Context, tx pgx.Tx, p repo
 		"participant_count": len(p.Shares),
 		"debt_count":        len(p.Debts),
 	})
-	desc := fmt.Sprintf("finalized bill (total %d VND)", dbBill.Total)
+	var billName string
+	if dbBill.MerchantName.Valid && dbBill.MerchantName.String != "" {
+		billName = dbBill.MerchantName.String
+	} else {
+		billName = "Hóa đơn"
+	}
+	desc := fmt.Sprintf("Đã chốt hóa đơn %q (tổng %s đ)", billName, formatVND(dbBill.Total))
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
@@ -997,7 +1018,13 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		"bill_id": p.BillID.String(),
 		"reason":  p.Reason,
 	})
-	desc := fmt.Sprintf("voided bill: %s", p.Reason)
+	var billName string
+	if dbBill.MerchantName.Valid && dbBill.MerchantName.String != "" {
+		billName = dbBill.MerchantName.String
+	} else {
+		billName = "Hóa đơn"
+	}
+	desc := fmt.Sprintf("Đã hủy hóa đơn %q: %s", billName, p.Reason)
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
@@ -1028,7 +1055,10 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.D
 	q := sqlc.New(tx)
 
 	// Lấy thông tin bill trước khi xóa để kiểm tra
-	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: p.ID, Valid: true})
+	billRow, err := q.GetBillByIDForUpdate(ctx, sqlc.GetBillByIDForUpdateParams{
+		ID:      pgtype.UUID{Bytes: p.ID, Valid: true},
+		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrBillNotFound
@@ -1063,7 +1093,13 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.D
 	metaBytes, _ := json.Marshal(map[string]any{
 		"bill_id": p.ID.String(),
 	})
-	desc := fmt.Sprintf("deleted draft bill %s", p.ID.String())
+	var billName string
+	if billRow.MerchantName.Valid && billRow.MerchantName.String != "" {
+		billName = billRow.MerchantName.String
+	} else {
+		billName = "Hóa đơn"
+	}
+	desc := fmt.Sprintf("Đã xóa hóa đơn nháp %q", billName)
 	_, _ = q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
 		ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
 		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
@@ -1703,4 +1739,17 @@ func (r *postgresRepository) PurgeExpiredRawOCRResponses(ctx context.Context, ol
 		return 0, fmt.Errorf("purge expired raw ocr responses: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+func formatVND(n int64) string {
+	in := strconv.FormatInt(n, 10)
+	var out []byte
+	l := len(in)
+	for i, c := range in {
+		if i > 0 && (l-i)%3 == 0 {
+			out = append(out, '.')
+		}
+		out = append(out, byte(c))
+	}
+	return string(out)
 }

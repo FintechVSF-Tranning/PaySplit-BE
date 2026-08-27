@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math"
+	"math/big"
 	"sort"
 
 	"github.com/google/uuid"
@@ -12,16 +12,15 @@ import (
 	"paysplit-backend/internal/modules/bill/domain"
 )
 
-// weightScale là thang duy nhất dùng cho mọi trọng số phân bổ. Ratio dạng số thực được nhân lên
-// thang này, và giá trị mặc định khi thiếu cả Weight lẫn Ratio cũng nằm trên thang này, để mọi
-// nhánh của getWeight so sánh được với nhau (Spec 3 AC-6).
 const weightScale int64 = 100_000_000
 
-// MemberAllocation chứa phần chia đã tính cho một thành viên.
+// MemberAllocation chứa phần chia nguyên VND của một thành viên.
 //
-// RoundingAdjustment bằng 0 với mọi thành viên không phải Creditor. Với Creditor nó bằng
-// FinalAmount trừ tổng bốn thành phần sàn của chính họ, nên có thể âm khi phần dư giảm giá lấn át
-// (Spec 3 AC-10).
+// RoundingAdjustment nối các thành phần nguyên với FinalAmount sau khi phân bổ phần dư:
+//
+//	FinalAmount = ItemSubtotal + ServiceChargeShare + VATShare - DiscountShare + RoundingAdjustment
+//
+// Adjustment có thể thuộc bất kỳ thành viên nào, Creditor không được ưu tiên (Spec 3 AC-6, AC-10).
 type MemberAllocation struct {
 	MemberID           uuid.UUID `json:"member_id"`
 	ItemSubtotal       int64     `json:"item_subtotal"`
@@ -32,35 +31,17 @@ type MemberAllocation struct {
 	FinalAmount        int64     `json:"final_amount"`
 }
 
-// ItemInput chứa thông tin món hàng và danh sách gán thành viên.
 type ItemInput struct {
 	ID          uuid.UUID
 	LineTotal   int64
 	Assignments []ItemAssignmentInput
 }
 
-// ItemAssignmentInput chứa thành viên và trọng số cho một món hàng.
 type ItemAssignmentInput struct {
 	MemberID uuid.UUID
 	Weight   int64
-	Ratio    float64 // Hỗ trợ đầu vào dạng tỷ lệ số thực
 }
 
-// getWeight trả về trọng số của một lượt gán, luôn trên thang weightScale.
-func (a ItemAssignmentInput) getWeight() int64 {
-	if a.Weight > 0 {
-		return a.Weight
-	}
-	if a.Ratio > 0 {
-		scaled := int64(math.Round(a.Ratio * float64(weightScale)))
-		if scaled > 0 {
-			return scaled
-		}
-	}
-	return weightScale
-}
-
-// AllocationInput chứa mọi đầu vào cần thiết để tính phân bổ.
 type AllocationInput struct {
 	CreditorID    uuid.UUID
 	Subtotal      int64
@@ -72,169 +53,314 @@ type AllocationInput struct {
 	Members       []uuid.UUID
 }
 
-// CalculateFloorAllocation tính phần chia của từng thành viên bằng số nguyên VND, theo thuật toán
-// chia sàn và dồn phần dư cho Creditor (Spec 3 AC-6, AC-10).
-//
-// Thuật toán chạy hai lượt tách bạch:
-//
-//	Lượt một, mọi thành viên không phải Creditor. Mỗi thành phần tiền (món hàng, phí dịch vụ, VAT,
-//	giảm giá) được chia sàn độc lập. FinalAmount là tiền hàng cộng phí cộng VAT trừ giảm giá. Nếu
-//	giá trị đó âm, phần giảm giá của chính thành viên đó bị chặn lại để FinalAmount đúng bằng 0.
-//	Mỗi người chỉ dựa vào số của chính mình nên lượt này không phụ thuộc thứ tự.
-//
-//	Lượt hai, Creditor. FinalAmount bằng tổng tính được trừ tổng FinalAmount của mọi người còn lại,
-//	trong đó tổng tính được là tiền các món cộng phí cộng VAT trừ giảm giá, chứ không phải Total
-//	khai báo trên bản nháp. Tính sau
-//	khi mọi lần chặn trần ở lượt một đã xong. Nhờ vậy tổng khớp tuyệt đối theo cấu trúc, không phụ
-//	thuộc vào việc phần dư của từng thành phần cộng lại có đẹp hay không.
-//
-// FinalAmount âm của Creditor không bao giờ bị kẹp về 0. Nó trả về
-// domain.ErrDiscountNotAllocatable, vì kẹp chính là lỗi đã làm tổng vượt quá hóa đơn trước đây.
-func CalculateFloorAllocation(in AllocationInput) ([]*MemberAllocation, error) {
+type exactMemberAllocation struct {
+	memberID uuid.UUID
+	item     *big.Rat
+	service  *big.Rat
+	vat      *big.Rat
+	discount *big.Rat
+	final    *big.Rat
+	base     int64
+}
+
+// CalculateAllocation cộng phần tiền chính xác của từng thành viên qua mọi món trước khi làm
+// tròn. Phần VND còn lại được trao theo phần lẻ giảm dần, hòa thì UUID byte chuẩn tăng dần.
+// Mọi phép tính trung gian dùng phân số chính xác, không dùng float cho tiền.
+func CalculateAllocation(in AllocationInput) ([]*MemberAllocation, error) {
 	if in.Total < 0 || in.Subtotal < 0 || in.ServiceCharge < 0 || in.VAT < 0 || in.Discount < 0 {
 		return nil, errors.New("monetary values must be non-negative")
 	}
-	// Phân bổ bắt buộc phải có Creditor. Không có người hấp thụ dư thứ hai, nên hóa đơn chưa có
-	// Creditor là chưa sẵn sàng để tính (Spec 3 AC-6, bất biến 11).
 	if in.CreditorID == uuid.Nil {
 		return nil, domain.ErrCreditorRequired
 	}
 
-	// 1. Gom mọi thành viên tham gia. Creditor luôn có mặt kể cả khi không được gán món nào.
-	memberSet := make(map[uuid.UUID]struct{})
-	memberSet[in.CreditorID] = struct{}{}
-	for _, m := range in.Members {
-		memberSet[m] = struct{}{}
-	}
-	for _, it := range in.Items {
-		for _, a := range it.Assignments {
-			memberSet[a.MemberID] = struct{}{}
+	memberSet := map[uuid.UUID]struct{}{in.CreditorID: struct{}{}}
+	for _, memberID := range in.Members {
+		if memberID == uuid.Nil {
+			return nil, errors.New("member ID must not be nil")
 		}
+		memberSet[memberID] = struct{}{}
+	}
+
+	var itemsTotal int64
+	exactItems := make(map[uuid.UUID]*big.Rat)
+	for itemIndex, item := range in.Items {
+		if item.LineTotal < 0 {
+			return nil, fmt.Errorf("item %d line total must be non-negative", itemIndex)
+		}
+		if len(item.Assignments) == 0 {
+			return nil, fmt.Errorf("item %d must have at least one assignment", itemIndex)
+		}
+
+		var err error
+		itemsTotal, err = checkedAddInt64(itemsTotal, item.LineTotal)
+		if err != nil {
+			return nil, fmt.Errorf("items total overflow: %w", err)
+		}
+
+		totalWeight := new(big.Int)
+		seenOnItem := make(map[uuid.UUID]struct{}, len(item.Assignments))
+		for assignmentIndex, assignment := range item.Assignments {
+			if assignment.MemberID == uuid.Nil {
+				return nil, fmt.Errorf("item %d assignment %d has nil member ID", itemIndex, assignmentIndex)
+			}
+			if assignment.Weight <= 0 {
+				return nil, fmt.Errorf("item %d assignment %d weight must be positive", itemIndex, assignmentIndex)
+			}
+			if _, duplicate := seenOnItem[assignment.MemberID]; duplicate {
+				return nil, fmt.Errorf("item %d has duplicate member %s", itemIndex, assignment.MemberID)
+			}
+			seenOnItem[assignment.MemberID] = struct{}{}
+			memberSet[assignment.MemberID] = struct{}{}
+			totalWeight.Add(totalWeight, big.NewInt(assignment.Weight))
+		}
+
+		for _, assignment := range item.Assignments {
+			numerator := new(big.Int).Mul(big.NewInt(item.LineTotal), big.NewInt(assignment.Weight))
+			share := new(big.Rat).SetFrac(numerator, totalWeight)
+			if exactItems[assignment.MemberID] == nil {
+				exactItems[assignment.MemberID] = new(big.Rat)
+			}
+			exactItems[assignment.MemberID].Add(exactItems[assignment.MemberID], share)
+		}
+	}
+
+	allocTotal, err := checkedAllocationTotal(itemsTotal, in.ServiceCharge, in.VAT, in.Discount)
+	if err != nil {
+		return nil, err
 	}
 
 	allMembers := make([]uuid.UUID, 0, len(memberSet))
-	for m := range memberSet {
-		allMembers = append(allMembers, m)
+	for memberID := range memberSet {
+		allMembers = append(allMembers, memberID)
 	}
-	// Thứ tự byte UUID chuẩn, để kết quả tất định giữa Go và PostgreSQL.
 	sortUUIDs(allMembers)
 
-	allocMap := make(map[uuid.UUID]*MemberAllocation, len(allMembers))
-	for _, m := range allMembers {
-		allocMap[m] = &MemberAllocation{MemberID: m}
-	}
-
-	// 2. Chia sàn tiền từng món theo trọng số. Phần dư của món không chia lẻ.
-	var itemsTotal int64
-	for _, it := range in.Items {
-		if it.LineTotal <= 0 || len(it.Assignments) == 0 {
-			continue
+	exactByID := make(map[uuid.UUID]*exactMemberAllocation, len(allMembers))
+	for _, memberID := range allMembers {
+		itemShare := new(big.Rat)
+		if exactItems[memberID] != nil {
+			itemShare.Set(exactItems[memberID])
 		}
-		itemsTotal += it.LineTotal
-
-		var totalWeight int64
-		for _, a := range it.Assignments {
-			if w := a.getWeight(); w > 0 {
-				totalWeight += w
-			}
-		}
-		if totalWeight <= 0 {
-			totalWeight = int64(len(it.Assignments))
-		}
-
-		for _, a := range it.Assignments {
-			w := a.getWeight()
-			if w <= 0 {
-				w = 1
-			}
-			allocMap[a.MemberID].ItemSubtotal += (it.LineTotal * w) / totalWeight
+		exactByID[memberID] = &exactMemberAllocation{
+			memberID: memberID,
+			item:     itemShare,
+			service:  new(big.Rat),
+			vat:      new(big.Rat),
+			discount: new(big.Rat),
+			final:    new(big.Rat),
 		}
 	}
 
-	// 3. Chia sàn phí dịch vụ, VAT và giảm giá theo tỷ lệ tiền hàng của mỗi người.
-	var totalItemSubtotal int64
-	for _, a := range allocMap {
-		totalItemSubtotal += a.ItemSubtotal
-	}
-
-	// Tổng dùng để phân bổ được tính từ chính các thành phần, không lấy in.Total khai báo. Bản nháp
-	// có thể lưu Total lệch với tổng các món (OCR đọc sai, người dùng nhập thiếu), và khoản lệch đó
-	// không được phép rơi lên đầu Creditor. Tầng đối soát báo lệch bằng mã mismatch riêng, còn phân
-	// bổ luôn chia đúng số tiền thật của các món (Spec 3 AC-6).
-	allocTotal := itemsTotal + in.ServiceCharge + in.VAT - in.Discount
-	if allocTotal < 0 {
-		return nil, domain.ErrDiscountNotAllocatable
-	}
-
-	if totalItemSubtotal > 0 {
-		for _, m := range allMembers {
-			base := allocMap[m].ItemSubtotal
-			allocMap[m].ServiceChargeShare = floorShare(in.ServiceCharge, base, totalItemSubtotal)
-			allocMap[m].VATShare = floorShare(in.VAT, base, totalItemSubtotal)
-			allocMap[m].DiscountShare = floorShare(in.Discount, base, totalItemSubtotal)
+	if itemsTotal > 0 {
+		itemsTotalInt := big.NewInt(itemsTotal)
+		for _, memberID := range allMembers {
+			exact := exactByID[memberID]
+			exact.service = proportionalRat(in.ServiceCharge, exact.item, itemsTotalInt)
+			exact.vat = proportionalRat(in.VAT, exact.item, itemsTotalInt)
+			exact.discount = proportionalRat(in.Discount, exact.item, itemsTotalInt)
 		}
 	} else {
-		// Tiền hàng bằng 0: Creditor gánh toàn bộ phí, VAT và giảm giá. Nhánh này tính thẳng và
-		// không đi qua vòng chặn trần, vì không có thành viên nào khác để chặn (Spec 3 AC-10).
-		c := allocMap[in.CreditorID]
-		c.ServiceChargeShare = in.ServiceCharge
-		c.VATShare = in.VAT
-		c.DiscountShare = in.Discount
+		creditor := exactByID[in.CreditorID]
+		creditor.service.SetInt64(in.ServiceCharge)
+		creditor.vat.SetInt64(in.VAT)
+		creditor.discount.SetInt64(in.Discount)
 	}
 
-	// 4. Lượt một: mọi thành viên không phải Creditor.
-	var sumOthers int64
-	for _, m := range allMembers {
-		if m == in.CreditorID {
+	// Phần discount một thành viên không hấp thụ được chuyển sang Creditor vì nghiệp vụ discount
+	// reconciliation, không phải vì làm tròn.
+	creditor := exactByID[in.CreditorID]
+	for _, memberID := range allMembers {
+		if memberID == in.CreditorID {
 			continue
 		}
-		a := allocMap[m]
-		owed := a.ItemSubtotal + a.ServiceChargeShare + a.VATShare
-		// Chặn trần giảm giá bằng đúng số tiền người đó phải trả, thay vì kẹp kết quả cuối về 0.
-		// Phần bị cắt rơi về Creditor một cách tự nhiên nhờ phép trừ ngược ở lượt hai.
-		if a.DiscountShare > owed {
-			a.DiscountShare = owed
+		exact := exactByID[memberID]
+		owed := new(big.Rat).Add(new(big.Rat).Set(exact.item), exact.service)
+		owed.Add(owed, exact.vat)
+		if exact.discount.Cmp(owed) > 0 {
+			excess := new(big.Rat).Sub(new(big.Rat).Set(exact.discount), owed)
+			exact.discount.Set(owed)
+			creditor.discount.Add(creditor.discount, excess)
 		}
-		a.FinalAmount = owed - a.DiscountShare
-		a.RoundingAdjustment = 0
-		sumOthers += a.FinalAmount
 	}
 
-	// 5. Lượt hai: Creditor nhận phần còn lại, nên tổng khớp theo cấu trúc.
-	c := allocMap[in.CreditorID]
-	c.FinalAmount = allocTotal - sumOthers
-	if c.FinalAmount < 0 {
-		// Giảm giá hợp lệ về tổng nhưng dồn vào những người không hấp thụ nổi, nên phần bị cắt đẩy
-		// Creditor xuống âm. Từ chối chứ không kẹp (Spec 3 AC-10).
-		return nil, domain.ErrDiscountNotAllocatable
+	var sumBase int64
+	for _, memberID := range allMembers {
+		exact := exactByID[memberID]
+		exact.final.Add(new(big.Rat).Set(exact.item), exact.service)
+		exact.final.Add(exact.final, exact.vat)
+		exact.final.Sub(exact.final, exact.discount)
+		if exact.final.Sign() < 0 {
+			if memberID == in.CreditorID {
+				return nil, domain.ErrDiscountNotAllocatable
+			}
+			return nil, fmt.Errorf("allocation invariant broken: member %s has negative exact final amount", memberID)
+		}
+		exact.base, err = floorRatInt64(exact.final)
+		if err != nil {
+			return nil, fmt.Errorf("member %s final amount: %w", memberID, err)
+		}
+		sumBase, err = checkedAddInt64(sumBase, exact.base)
+		if err != nil {
+			return nil, fmt.Errorf("allocation base total overflow: %w", err)
+		}
 	}
-	c.RoundingAdjustment = c.FinalAmount - (c.ItemSubtotal + c.ServiceChargeShare + c.VATShare - c.DiscountShare)
 
-	// 6. Bất biến cuối cùng. Nếu một thay đổi sau này phá vỡ nó, lỗi hiện ra ở đây thay vì âm thầm
-	// tạo ra khoản nợ không có tiền thật đứng sau.
+	exactSum := new(big.Rat)
+	for _, memberID := range allMembers {
+		exactSum.Add(exactSum, exactByID[memberID].final)
+	}
+	if exactSum.Cmp(new(big.Rat).SetInt64(allocTotal)) != 0 {
+		return nil, errors.New("allocation invariant broken: exact shares do not equal computed bill total")
+	}
+
+	remaining := allocTotal - sumBase
+	if remaining < 0 || remaining >= int64(len(allMembers)) {
+		return nil, fmt.Errorf("allocation invariant broken: invalid remaining amount %d", remaining)
+	}
+
+	orderedByRemainder := append([]uuid.UUID(nil), allMembers...)
+	sort.SliceStable(orderedByRemainder, func(i, j int) bool {
+		left := fractionalPart(exactByID[orderedByRemainder[i]].final)
+		right := fractionalPart(exactByID[orderedByRemainder[j]].final)
+		if cmp := left.Cmp(right); cmp != 0 {
+			return cmp > 0
+		}
+		return bytes.Compare(orderedByRemainder[i][:], orderedByRemainder[j][:]) < 0
+	})
+	for i := int64(0); i < remaining; i++ {
+		exactByID[orderedByRemainder[i]].base++
+	}
+
 	result := make([]*MemberAllocation, 0, len(allMembers))
 	var sumFinal int64
-	for _, m := range allMembers {
-		a := allocMap[m]
-		if a.FinalAmount < 0 {
-			return nil, fmt.Errorf("allocation invariant broken: member %s has negative final amount %d", m, a.FinalAmount)
+	for _, memberID := range allMembers {
+		exact := exactByID[memberID]
+		itemSubtotal, err := floorRatInt64(exact.item)
+		if err != nil {
+			return nil, fmt.Errorf("member %s item subtotal: %w", memberID, err)
 		}
-		sumFinal += a.FinalAmount
-		result = append(result, a)
+		serviceShare, err := floorRatInt64(exact.service)
+		if err != nil {
+			return nil, fmt.Errorf("member %s service share: %w", memberID, err)
+		}
+		vatShare, err := floorRatInt64(exact.vat)
+		if err != nil {
+			return nil, fmt.Errorf("member %s VAT share: %w", memberID, err)
+		}
+		discountShare, err := floorRatInt64(exact.discount)
+		if err != nil {
+			return nil, fmt.Errorf("member %s discount share: %w", memberID, err)
+		}
+
+		componentTotal, err := checkedComponentTotal(itemSubtotal, serviceShare, vatShare, discountShare)
+		if err != nil {
+			return nil, fmt.Errorf("member %s component total: %w", memberID, err)
+		}
+		roundingAdjustment, err := checkedSubInt64(exact.base, componentTotal)
+		if err != nil {
+			return nil, fmt.Errorf("member %s rounding adjustment: %w", memberID, err)
+		}
+
+		allocation := &MemberAllocation{
+			MemberID:           memberID,
+			ItemSubtotal:       itemSubtotal,
+			ServiceChargeShare: serviceShare,
+			VATShare:           vatShare,
+			DiscountShare:      discountShare,
+			RoundingAdjustment: roundingAdjustment,
+			FinalAmount:        exact.base,
+		}
+		sumFinal, err = checkedAddInt64(sumFinal, allocation.FinalAmount)
+		if err != nil {
+			return nil, fmt.Errorf("allocation final total overflow: %w", err)
+		}
+		result = append(result, allocation)
 	}
+
 	if sumFinal != allocTotal {
 		return nil, fmt.Errorf("allocation invariant broken: shares sum to %d but computed bill total is %d", sumFinal, allocTotal)
 	}
-
 	return result, nil
 }
 
-// floorShare trả về phần sàn của targetTotal theo tỷ lệ base trên totalBase.
-func floorShare(targetTotal, base, totalBase int64) int64 {
-	if targetTotal <= 0 || base <= 0 || totalBase <= 0 {
-		return 0
+func proportionalRat(total int64, base *big.Rat, totalBase *big.Int) *big.Rat {
+	if total == 0 || base.Sign() == 0 || totalBase.Sign() == 0 {
+		return new(big.Rat)
 	}
-	return (targetTotal * base) / totalBase
+	result := new(big.Rat).Mul(new(big.Rat).SetInt64(total), base)
+	return result.Quo(result, new(big.Rat).SetInt(totalBase))
+}
+
+func floorRatInt64(value *big.Rat) (int64, error) {
+	if value.Sign() < 0 {
+		return 0, errors.New("cannot floor a negative amount")
+	}
+	quotient := new(big.Int).Quo(value.Num(), value.Denom())
+	if !quotient.IsInt64() {
+		return 0, errors.New("amount exceeds int64")
+	}
+	return quotient.Int64(), nil
+}
+
+func fractionalPart(value *big.Rat) *big.Rat {
+	floor := new(big.Int).Quo(value.Num(), value.Denom())
+	return new(big.Rat).Sub(value, new(big.Rat).SetInt(floor))
+}
+
+func checkedAllocationTotal(items, service, vat, discount int64) (int64, error) {
+	total, err := checkedAddInt64(items, service)
+	if err != nil {
+		return 0, errors.New("computed bill total overflow")
+	}
+	total, err = checkedAddInt64(total, vat)
+	if err != nil {
+		return 0, errors.New("computed bill total overflow")
+	}
+	total, err = checkedSubInt64(total, discount)
+	if err != nil || total < 0 {
+		return 0, domain.ErrDiscountNotAllocatable
+	}
+	return total, nil
+}
+
+func checkedComponentTotal(items, service, vat, discount int64) (int64, error) {
+	total, err := checkedAddInt64(items, service)
+	if err != nil {
+		return 0, errors.New("component total overflow")
+	}
+	total, err = checkedAddInt64(total, vat)
+	if err != nil {
+		return 0, errors.New("component total overflow")
+	}
+	total, err = checkedSubInt64(total, discount)
+	if err != nil {
+		return 0, errors.New("component total overflow")
+	}
+	return total, nil
+}
+
+func checkedAddInt64(left, right int64) (int64, error) {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	const minInt64 = -maxInt64 - 1
+	if right > 0 && left > maxInt64-right {
+		return 0, errors.New("int64 addition overflow")
+	}
+	if right < 0 && left < minInt64-right {
+		return 0, errors.New("int64 addition underflow")
+	}
+	return left + right, nil
+}
+
+func checkedSubInt64(left, right int64) (int64, error) {
+	const minInt64 = -int64(^uint64(0)>>1) - 1
+	if right == minInt64 {
+		if left >= 0 {
+			return 0, errors.New("int64 subtraction overflow")
+		}
+		return left - right, nil
+	}
+	return checkedAddInt64(left, -right)
 }
 
 func sortUUIDs(uuids []uuid.UUID) {

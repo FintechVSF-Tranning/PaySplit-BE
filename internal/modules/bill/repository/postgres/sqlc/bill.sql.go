@@ -374,7 +374,7 @@ type CreateBillShareParams struct {
 }
 
 // ============================================================================
-// BILL SHARES (Hamilton Finalized Snapshot)
+// BILL SHARES (Exact Finalized Snapshot)
 // ============================================================================
 func (q *Queries) CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error) {
 	row := q.db.QueryRow(ctx, createBillShare,

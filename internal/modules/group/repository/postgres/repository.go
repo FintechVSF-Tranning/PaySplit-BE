@@ -72,7 +72,7 @@ func (r *postgresRepository) CreateGroup(ctx context.Context, p repository.Creat
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode group_created metadata: %w", err)
 	}
-	description := fmt.Sprintf("%s created the group %q", displayName, group.Name)
+	description := fmt.Sprintf("%s đã tạo nhóm %q", displayName, group.Name)
 	if _, err = tx.Exec(ctx, `INSERT INTO group_activities (group_id, actor_member_id, action_type, description, metadata) VALUES ($1,$2,'group_created',$3,$4)`, groupRow.ID, memberRow.ID, description, metadata); err != nil {
 		return nil, nil, fmt.Errorf("insert group_created activity: %w", err)
 	}
@@ -337,7 +337,7 @@ func (r *postgresRepository) CreateOrReuseInvite(ctx context.Context, p reposito
 			return nil, fmt.Errorf("revoke available invites: %w", revokeErr)
 		}
 		for _, old := range revoked {
-			if actErr := insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s revoked an invite", displayName), old.ID, nil); actErr != nil {
+			if actErr := insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s đã thu hồi mã mời", displayName), old.ID, nil); actErr != nil {
 				return nil, actErr
 			}
 		}
@@ -391,7 +391,7 @@ func (r *postgresRepository) insertNewInvite(ctx context.Context, q *dbgen.Queri
 		}
 		return nil, fmt.Errorf("insert invite: %w", err)
 	}
-	if err = insertInviteActivity(ctx, tx, gid, captainMemberID, "invite_created", fmt.Sprintf("%s created an invite", displayName), row.ID, &row); err != nil {
+	if err = insertInviteActivity(ctx, tx, gid, captainMemberID, "invite_created", fmt.Sprintf("%s đã tạo mã mời tham gia", displayName), row.ID, &row); err != nil {
 		return nil, err
 	}
 	return mapInvite(row), nil
@@ -521,7 +521,7 @@ func (r *postgresRepository) RevokeInvite(ctx context.Context, groupID, inviteID
 	if err != nil {
 		return fmt.Errorf("load captain display name: %w", err)
 	}
-	if err = insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s revoked an invite", displayName), invite.ID, nil); err != nil {
+	if err = insertInviteActivity(ctx, tx, gid, membership.ID, "invite_revoked", fmt.Sprintf("%s đã thu hồi mã mời", displayName), invite.ID, nil); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -654,16 +654,19 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 		return nil, fmt.Errorf("upsert membership: %w", err)
 	}
 
-	actionType, verb := "member_joined", "joined"
-	if result == domain.JoinResultReactivated {
-		actionType, verb = "member_reactivated", "rejoined"
-	}
 	displayName, err := q.GetUserDisplayName(ctx, pgUUID(uid))
 	if err != nil {
 		return nil, fmt.Errorf("load member display name: %w", err)
 	}
+
+	actionType := "member_joined"
+	actDesc := fmt.Sprintf("%s đã tham gia nhóm", displayName)
+	if result == domain.JoinResultReactivated {
+		actionType = "member_reactivated"
+		actDesc = fmt.Sprintf("%s đã tham gia lại nhóm", displayName)
+	}
 	gidValue := uuid.UUID(groupID.Bytes)
-	if err = insertActivity(ctx, tx, gidValue, membership.ID, actionType, fmt.Sprintf("%s %s the group", displayName, verb), map[string]any{"member_id": uuid.UUID(membership.ID.Bytes).String()}); err != nil {
+	if err = insertActivity(ctx, tx, gidValue, membership.ID, actionType, actDesc, map[string]any{"member_id": uuid.UUID(membership.ID.Bytes).String()}); err != nil {
 		return nil, err
 	}
 
@@ -790,15 +793,15 @@ func (r *postgresRepository) LeaveOrRemoveMember(ctx context.Context, groupID, t
 	if err != nil {
 		return fmt.Errorf("load actor display name: %w", err)
 	}
-	actionType, description, meta := "member_removed", fmt.Sprintf("%s removed a member", actorName), map[string]any{"target_member_id": uuid.UUID(target.ID.Bytes).String()}
+	actionType, description, meta := "member_removed", fmt.Sprintf("%s đã xóa một thành viên", actorName), map[string]any{"target_member_id": uuid.UUID(target.ID.Bytes).String()}
 	if actor.ID == target.ID {
-		actionType, description, meta = "member_left", fmt.Sprintf("%s left the group", actorName), map[string]any{"member_id": uuid.UUID(target.ID.Bytes).String()}
+		actionType, description, meta = "member_left", fmt.Sprintf("%s đã rời nhóm", actorName), map[string]any{"member_id": uuid.UUID(target.ID.Bytes).String()}
 	} else {
 		targetName, targetErr := q.GetUserDisplayName(ctx, target.UserID)
 		if targetErr != nil {
 			return fmt.Errorf("load target display name: %w", targetErr)
 		}
-		description = fmt.Sprintf("%s removed %s from the group", actorName, targetName)
+		description = fmt.Sprintf("%s đã xóa %s khỏi nhóm", actorName, targetName)
 	}
 	if err = insertActivity(ctx, tx, gid, actor.ID, actionType, description, meta); err != nil {
 		return err
@@ -911,7 +914,7 @@ func (r *postgresRepository) TransferCaptain(ctx context.Context, groupID, targe
 		return nil, fmt.Errorf("load previous captain display name: %w", err)
 	}
 	meta := map[string]any{"previous_captain_member_id": previousID, "current_captain_member_id": currentID}
-	if err = insertActivity(ctx, tx, gid, caller.ID, "captain_transferred", fmt.Sprintf("%s transferred the Captain role", displayName), meta); err != nil {
+	if err = insertActivity(ctx, tx, gid, caller.ID, "captain_transferred", fmt.Sprintf("%s đã chuyển quyền Trưởng nhóm", displayName), meta); err != nil {
 		return nil, err
 	}
 	if err = emitGroupEvent(ctx, tx, gid, domain.EventCaptainTransfer, map[string]any{
@@ -1068,7 +1071,7 @@ func (r *postgresRepository) DisbandGroup(ctx context.Context, groupID, callerUs
 	if _, err = tx.Exec(ctx, `UPDATE groups SET status='archived' WHERE id=$1 AND status='active'`, gid); err != nil {
 		return fmt.Errorf("archive group: %w", err)
 	}
-	if err = insertActivity(ctx, tx, gid, caller.ID, "group_archived", fmt.Sprintf("%s archived the group", actorName), map[string]any{
+	if err = insertActivity(ctx, tx, gid, caller.ID, "group_archived", fmt.Sprintf("%s đã giải tán nhóm", actorName), map[string]any{
 		"member_count_deactivated": memberTag.RowsAffected(),
 	}); err != nil {
 		return err

@@ -1,17 +1,17 @@
 # 0003. Bill and OCR v1
 
-**Date**: 2026-08-17
-**Status**: Accepted
+**Date**: 2026-08-27
+**Status**: In Progress
 
 ## Summary
 
-Bill and OCR v1 lets a group member create a manual bill or upload up to five receipt images, extract structured data through LlamaExtract, correct and allocate the draft, then let the Captain finalize it into immutable shares and debts. River runs OCR durably, Cloudinary stores private images, and PostgreSQL protects review, money, and concurrency rules. A finalized bill can only be corrected by voiding it and creating a linked replacement.
+Bill and OCR v1 lets a group member create a manual bill or upload up to five receipt images, extract structured data through LlamaExtract, correct and allocate the draft, then let the Captain finalize it into immutable shares and debts. Allocation now adds exact fractional item shares before rounding once per member, then distributes indivisible VND by largest remainder. This removes cumulative early rounding and no longer favors the Creditor for ordinary rounding.
 
 ## Structure
 
 1. [Bill draft and OCR](0001-bill-draft-ocr.md) defines manual and image drafts, Cloudinary storage, LlamaExtract jobs, candidate application, retry, SSE, and cleanup.
-2. [Allocation and review](0002-allocation-review.md) defines draft editing, item ratios, preview calculation, reconciliation, optimistic locking, and explicit review.
-3. [Finalize and void](0003-finalize-void.md) defines floor allocation with Creditor remainder absorption, immutable share snapshots, debt creation, notification jobs, and safe void with replacement history.
+2. [Allocation and review](0002-allocation-review.md) defines draft editing, exact fractional aggregation, largest remainder reconciliation, item ratios, optimistic locking, and explicit review.
+3. [Finalize and void](0003-finalize-void.md) defines immutable allocation snapshots, debt creation, notification jobs, and safe void with replacement history.
 4. [Item discount OCR parsing](0004-item-discount-ocr-parsing.md) defines sequential folding of item promotions, net item pricing, and separation of item versus general discounts.
 5. [Manual edit preserves item level discount](0005-manual-edit-item-discount.md) defines how `POST /bills` and `PUT /bills/{id}` accept and validate `discount_amount` per item so a manual edit does not erase what OCR extracted.
 
@@ -34,11 +34,11 @@ The cross child contract is that every bill scoped row carries `group_id`, every
 3. **AC-3**: LlamaExtract returns a receipt candidate containing merchant, date, items, service charge, VAT, discount, and total. The job stores raw and normalized responses, validates nonnegative `bigint` VND amounts, retries provider failures using configured timeout and retry values, and leaves the draft available for manual entry when all retries fail.
 4. **AC-4**: A successful OCR candidate never edits the draft automatically. Applying it requires the current bill version, replaces bill fields and items, clears assignments and review, and returns `409 OCR_RESULT_STALE` if the bill changed after the job began. Running OCR again preserves every earlier candidate and never overwrites manual edits.
 5. **AC-5**: A Creditor for their own bill or the Captain can replace the complete draft through one versioned request. The bill supports at most 100 items and keeps `line_total` independent from `quantity × unit_price`. Reported `subtotal` and `total` may be saved while mismatched, but review and finalize require `subtotal = sum(line_total)` and `total = subtotal + service_charge + vat - discount`.
-6. **AC-6**: Each item has one or more active group member assignments whose `numeric(9,8)` ratios are greater than `0`, no greater than `1`, and sum exactly to `1.00000000`. Equal split is a convenience that writes equal ratios to selected items. The preview allocates item amounts, service charge, VAT, and discount with integer VND arithmetic and deterministic floor rounding, and the Creditor absorbs every indivisible VND remainder. The Creditor is always part of the allocation set even with no assignment, and allocation requires a Creditor who is an active group member.
+6. **AC-6**: Each item has one or more active group member assignments whose `numeric(9,8)` ratios are greater than `0`, no greater than `1`, and sum exactly to `1.00000000`. Equal split remains a convenience that writes equal ratios to selected items, it does not mean equal division of the whole bill. Preview uses exact rational arithmetic from integer VND and integer weights. It adds every exact item share for a member before taking an integer part, calculates the existing service charge, VAT, and general discount rules from those exact subtotals, then distributes the remaining VND by descending fractional remainder. Equal fractions use canonical UUID byte order ascending. The Creditor is always part of the allocation set but receives no rounding priority.
 7. **AC-7**: The Creditor or Captain can explicitly review the current version. Any later change to bill fields, items, assignments, or applied OCR clears the review. Images are immutable after draft creation. Finalize requires a review of the exact locked version.
 8. **AC-8**: Every active group member can list and read group bills, OCR state, candidates, previews, and five minute signed image URLs. Only the Creditor or Captain can mutate a draft or run OCR, only the Captain can finalize or void, and inactive members cannot access bill APIs.
 9. **AC-9**: Captain finalize is synchronous and idempotent. In one short PostgreSQL transaction it locks the bill, validates the current version, state, review, assignments, totals, active assignees, and the Creditor bank profile, then writes immutable member share snapshots, positive debts for non Creditor members, one activity, and durable notification jobs. A retry returns the original result and concurrent finalize or edit receives a stable conflict.
-10. **AC-10**: Final member shares sum exactly to bill total, because the Creditor final amount is computed as bill total minus the sum of every other member final amount. No member final amount is negative. A member discount share is capped at what that member owes, and the cut portion moves to the Creditor. Two distinct conditions are rejected rather than clamped, each with its own error code: a discount larger than the whole bill, and a discount that is valid in total but concentrated on members who cannot absorb it, so the cascade pushes the Creditor below zero. A member with zero final amount keeps a share snapshot but gets no debt. If subtotal is zero, all service charge and VAT belong to the Creditor and no debt is created for those amounts.
+10. **AC-10**: Final member shares sum exactly to the computed bill total after largest remainder distribution, every remainder reaches zero, and no member final amount is negative. A member discount share is capped at what that member owes, and the cut portion moves to the Creditor as a discount reconciliation rule, not as a rounding rule. A discount larger than the whole bill and a valid total discount that becomes unallocatable after caps are rejected with their existing distinct errors. `FinalAmount` equals `ItemSubtotal + ServiceChargeShare + VATShare - DiscountShare + RoundingAdjustment`. A member with zero final amount keeps a share snapshot but gets no debt. If subtotal is zero, all service charge, VAT, and discount belong to the Creditor.
 11. **AC-11**: A finalized bill, its items, assignments, images, share snapshots, and debts are immutable. The Captain can idempotently void it only while every debt is `awaiting` and has no payment. Void keeps all history, marks the bill and debts `voided`, records a reason and activity, and permits one later draft to reference it through `replaces_bill_id`.
 12. **AC-12**: Bill listing uses cursor pagination ordered by `(created_at DESC, id DESC)`. Every list item preserves the existing bill fields and adds `payer_display_name`, `paid_member_count`, and `member_count`. For a finalized bill, `member_count` is the immutable share count, while `paid_member_count` counts the Creditor, every zero amount share, and every non Creditor debt in `settled`. Draft, reviewed, and voided bills return `0/0`. Bill detail returns the draft or immutable breakdown, current version, review state, OCR jobs, assignments, share snapshots, and debt summary without exposing raw provider responses or permanent asset URLs.
 13. **AC-13**: The Creditor or Captain can idempotently delete a draft. Bill owned rows are removed atomically, while the completed idempotency record, a group activity with a redacted bill ID, and cleanup payload remain. Stored assets enter the durable media cleanup flow. A partial upload, process interruption, or failed bill transaction is recoverable through the reserved operation prefix.
@@ -127,9 +127,12 @@ SSE `snapshot` carries bill version and current OCR summaries. `ocr.updated` car
 | OCR | locale normalization | Vietnamese number separators and VND currency rules. Ambiguous dates become null with `OCR_DATE_AMBIGUOUS` rather than guessed |
 | OCR | item IDs and mismatch | New PostgreSQL UUID v7 IDs at apply time plus reported and computed totals from the normalized candidate |
 | Apply or edit | reconciliation and next version | Reported request values, server derived `computed_subtotal` and `computed_total`, stable mismatch codes, and locked `bills.version` |
-| Preview | item shares | `floor(line_total × share_ratio)` for every member, with the undistributed VND remainder absorbed by the Creditor |
-| Preview | service, VAT, and discount shares | Floor of participant item subtotal divided by bill subtotal. With zero subtotal, service charge, VAT, and discount all belong to the Creditor |
-| Preview | rounding adjustment | Zero for every member other than the Creditor. For the Creditor it is the final amount minus the sum of that member four floor components, so it is negative when discount remainders dominate |
+| Preview | exact item subtotal | Sum of `bill_items.final_price × assignment integer weight / item total weight` across items assigned to the member |
+| Preview | integer `item_subtotal` | Floor of the member exact item subtotal after aggregation |
+| Preview | service, VAT, and discount shares | Exact proportional shares derived from exact member item subtotals, then integer component floors. With zero subtotal, all three values belong to the Creditor |
+| Preview | final amount | Floor of each member exact final amount plus any VND awarded by descending fractional remainder and canonical UUID byte order ascending |
+| Preview | rounding adjustment | `final_amount - (item_subtotal + service_charge_share + vat_share - discount_share)` for that member |
+| Read expense items | nested integer item shares | Floors of the caller exact participated item shares, reconciled to `item_subtotal` by item fractional remainder and item UUID ascending |
 | Review | reviewer and reviewed version | Authenticated active member plus locked bill version |
 | Finalize | participant snapshot | Active assignment members plus the Creditor, even when their final amount is zero |
 | Read bill | member display data | Current display name and avatar from the user linked through `group_members`; immutable money and membership IDs remain from bill rows |
@@ -150,17 +153,17 @@ Activity metadata is fixed and redacted. Create records bill ID, manual flag, an
 
 ### Key invariants
 
-1. Money uses signed 64 bit integer VND in Go and `bigint` in PostgreSQL. Every addition and multiplication checks overflow before persistence.
+1. Public and persisted money uses signed 64 bit integer VND in Go and `bigint` in PostgreSQL. Allocation intermediates use exact rational values constructed only from integer money and integer weights. Conversion back to `int64` checks range before persistence.
 2. Drafts store reported subtotal and total. Review and finalize require reported subtotal to equal the sum of item line totals and reported total to equal subtotal plus service charge plus VAT minus discount. Discount cannot exceed the pre discount sum.
 3. Each item has assignment ratios totaling exactly `1.00000000` before review and finalize.
-4. The same deterministic floor allocation function produces preview and final shares. Stored final snapshots exist because financial history must remain immutable and explainable.
+4. The same deterministic exact rational allocation function produces preview and final shares. Stored final snapshots exist because financial history must remain immutable and explainable.
 5. The Creditor is the creator and cannot change. Bank data is read live from the profile and is not copied into the bill.
 6. A reviewed version is exact. Any semantic draft mutation increments version and clears review.
 7. Finalize and void commit every financial row, activity, idempotency result, and River notification insert together or commit nothing.
 8. Provider calls never run while a bill or debt row lock is held.
 9. Pure request shape checks run before a transaction. Version, state, group scope, active membership, ratios, replacement eligibility, and all database dependent rules run again under the bill lock.
 10. Images are immutable after creation. Changing receipt input requires deleting the draft and creating another draft.
-11. Equal split compares UUIDs by canonical 16 byte order in Go and PostgreSQL. The final UUID in that order receives any decimal ratio residual. Money remainders always go to the Creditor. There is no second absorber, so allocation requires a Creditor and a bill without one is not ready.
+11. Equal split compares UUIDs by canonical 16 byte order in Go and PostgreSQL. The final UUID in that order receives any decimal ratio residual. Money remainders follow descending exact fractional remainder, then canonical UUID byte order ascending. The Creditor remains required as the payer and for the existing zero subtotal and discount cap rules, but is not a rounding absorber.
 12. Payment start in Module 4 and bill void both lock debt rows by canonical UUID byte order before changing payment or debt state.
 
 ### Security model
@@ -209,6 +212,8 @@ Receipt images, OCR responses, item text, and bank details are sensitive. Cloudi
 8. Fail after Cloudinary stores one of several images, then prove durable cleanup removes every orphan, verifies **AC-13**.
 9. Load 100 items and 50 members, verify exact totals and target latency with metrics and redacted logs, verifies **AC-6**, **AC-10**, and **AC-14**.
 10. Paginate bills with duplicate timestamps, verify payer names and exact `0/0`, partial, and complete payment counts without per bill queries, read draft and finalized detail, refresh an expired image URL, and reconnect SSE from a current snapshot, verifies **AC-12**.
+11. Split 400000 VND and 800000 VND items equally across six members and verify every final amount is 200000 VND. Repeat with all input orders permuted and verify identical output, verifies revised **AC-6** and **AC-10**.
+12. Split 100000 VND equally across three members and verify the lowest canonical UUID receives 33334 VND when all fractional remainders tie. Verify the Creditor receives no priority, verifies revised **AC-6** and **AC-10**.
 
 ## Build plan
 
@@ -218,10 +223,13 @@ The project uses Tracer Bullet. Each slice crosses migration, sqlc, repository, 
 2. Add private image drafts. Add `bill_images`, multipart streaming, Cloudinary normalization and signing, image constraints, partial failure cleanup, and multi image create coverage, satisfies **AC-1**, **AC-8**, **AC-12**, and **AC-13**.
 3. Add the OCR thread. Extend `ocr_jobs`, install River, implement LlamaExtract and Cloudinary read adapters, enqueue with the bill transaction, expose snapshot based SSE, enforce retry and single active job rules, and schedule raw response cleanup, satisfies **AC-2**, **AC-3**, **AC-4**, **AC-12**, and **AC-14**.
 4. Complete allocation and review. Add ratio replacement, reconciliation, deterministic preview, explicit review, review invalidation, stable conflicts, and limits under concurrent edits, satisfies **AC-5**, **AC-6**, **AC-7**, **AC-8**, and **AC-10**.
-5. Add finalize. Add immutable share snapshots, bank eligibility, ordered locking, floor allocation, positive debt creation, activity and notification inserts, idempotent response replay, and concurrent integration coverage, satisfies **AC-7**, **AC-9**, **AC-10**, and **AC-14**.
+5. Add finalize. Add immutable share snapshots, bank eligibility, ordered locking, deterministic allocation, positive debt creation, activity and notification inserts, idempotent response replay, and concurrent integration coverage, satisfies **AC-7**, **AC-9**, **AC-10**, and **AC-14**.
 6. Add void and replacement. Extend bill and debt states, add safe void checks, replacement uniqueness, durable history, draft deletion, cleanup, and activity behavior, satisfies **AC-11** and **AC-13**.
 7. Finish the operational contract. Complete OpenAPI, environment validation, metrics, structured redaction, provider and storage failure tests, SSE reconnect tests, module documentation, and end to end verification of every criterion, satisfies **AC-1** through **AC-14**.
 8. Enrich both cursor and legacy bill list reads in one PostgreSQL query. Join the Creditor display name and aggregate immutable shares with debt settlement status, preserve pagination and the existing JSON shape, update sqlc, OpenAPI, handler tests, and PostgreSQL integration coverage, satisfies the extended **AC-12**.
+9. Replace early item floor calculation with exact rational aggregation, one final floor per member, and deterministic largest remainder distribution. Keep preview and finalize on the same pure function, satisfies revised **AC-6** and **AC-10**.
+10. Preserve the public share fields and derive each member `rounding_adjustment` exactly once from their awarded final amount and integer component fields. Reconcile nested item rows to `item_subtotal` by item fractional remainder without assigning an unparticipated item, satisfies revised **AC-6**, **AC-10**, and **AC-12**.
+11. Add permutation, large value, discount, zero subtotal, mixed participant, private item, and regression coverage. Invalidate review on existing unfinalized bills before the new allocator serves finalize, satisfies revised **AC-6**, **AC-7**, **AC-9**, **AC-10**, and **AC-14**.
 
 ## Consequences
 
@@ -240,12 +248,14 @@ The project uses Tracer Bullet. Each slice crosses migration, sqlc, repository, 
 4. SSE uses current state snapshots rather than replay, so clients learn the latest state but not every transient progress event.
 5. A zero subtotal bill assigns all service charge and VAT to the Creditor, which is simple but may not match every real receipt.
 6. Aggregate payment counts intentionally expose group level completion to every active group member, but never identify which other member has or has not paid.
+7. Exact rational arithmetic and deterministic sorting cost more than the former linear floor pass, so the 100 item and 50 member performance target must be measured again.
 
 **Neutral**:
 
 1. The initial bill schema is a starting point. Implementation must add a new sequential migration rather than edit migration `000001`.
 2. Final share snapshots intentionally store derived values because finalized financial history is immutable and must remain explainable.
 3. `bill_status`, `debt_status`, and `activity_type` gain values that later modules must understand.
+4. Existing finalized share snapshots never change. Draft and reviewed bills use the new algorithm only after deployment.
 
 ## Follow up
 
@@ -255,6 +265,20 @@ The project uses Tracer Bullet. Each slice crosses migration, sqlc, repository, 
 4. [x] Add `DISCOUNT_NOT_ALLOCATABLE` to the OpenAPI error code list, together with the domain error behind it. Done, and the full blocker code list is now enumerated on the `Bill.mismatch_codes` schema.
 5. [x] Update `verify.md`, it described the preview as using the Hamilton largest remainder method. Done during the verify run.
 6. [ ] Update `docs/bill-ocr-module.md`, it still documents `CalculateHamiltonAllocation` and the largest remainder method. That file belongs to `/sync`, not to this spec.
+7. [ ] Reverify revised **AC-6** and **AC-10** after the exact aggregation allocator ships. Historical Creditor absorption evidence in `verify.md` does not verify the revised contract.
+
+## Migration plan
+
+**Strategy**: Direct replacement with review invalidation, no schema change.
+
+**Phases**:
+
+1. Ship the exact allocator and its regression tests while leaving finalized snapshots untouched.
+2. Clear review fields on every unfinalized reviewed bill in the deployment transaction, then require users to review the new preview before finalize.
+
+**Rollback**: Revert the allocator. Reviews cleared during deployment stay cleared because restoring an approval for different amounts is unsafe.
+
+**Risks**: A draft can show different member amounts after deployment. Preview, review, bulk close, and finalize must all switch together so one bill version never mixes allocation algorithms.
 
 ## Rationale
 

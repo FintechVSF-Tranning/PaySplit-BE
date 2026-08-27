@@ -2,6 +2,8 @@ package usecase_test
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -14,433 +16,368 @@ var (
 	tm1 = uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	tm2 = uuid.MustParse("00000000-0000-0000-0000-000000000002")
 	tm3 = uuid.MustParse("00000000-0000-0000-0000-000000000003")
+	tm4 = uuid.MustParse("00000000-0000-0000-0000-000000000004")
+	tm5 = uuid.MustParse("00000000-0000-0000-0000-000000000005")
+	tm6 = uuid.MustParse("00000000-0000-0000-0000-000000000006")
 )
 
-func TestFloorAllocation_EqualSplit_CreditorAbsorbsRemainder(t *testing.T) {
-	// covers: AC-6, AC-10 (chia sàn đều, phần dư dồn cho Creditor, tổng khớp tuyệt đối)
+func TestAllocation_AggregatesExactItemSharesBeforeRounding(t *testing.T) {
+	// covers: AC-6, AC-10
+	members := []uuid.UUID{tm1, tm2, tm3, tm4, tm5, tm6}
+	assignments := equalAssignments(members)
 	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   100000,
-		Total:      100000,
+		CreditorID: tm6,
+		Subtotal:   1_200_000,
+		Total:      1_200_000,
+		Items: []usecase.ItemInput{
+			{ID: uuid.New(), LineTotal: 400_000, Assignments: assignments},
+			{ID: uuid.New(), LineTotal: 800_000, Assignments: assignments},
+		},
+	}
+
+	result := mustAllocate(t, input)
+	for _, allocation := range result {
+		if allocation.ItemSubtotal != 200_000 || allocation.FinalAmount != 200_000 || allocation.RoundingAdjustment != 0 {
+			t.Fatalf("member %s received subtotal=%d adjustment=%d final=%d, want 200000/0/200000",
+				allocation.MemberID, allocation.ItemSubtotal, allocation.RoundingAdjustment, allocation.FinalAmount)
+		}
+	}
+	assertAllocationInvariants(t, result, 1_200_000)
+}
+
+func TestAllocation_LargestRemainderUsesUUIDTieBreakNotCreditor(t *testing.T) {
+	// covers: AC-6, AC-10
+	input := usecase.AllocationInput{
+		CreditorID: tm3,
+		Subtotal:   100_000,
+		Total:      100_000,
 		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 1},
-				{MemberID: tm2, Weight: 1},
-				{MemberID: tm3, Weight: 1},
-			},
+			ID:          uuid.New(),
+			LineTotal:   100_000,
+			Assignments: equalAssignments([]uuid.UUID{tm3, tm2, tm1}),
 		}},
 	}
 
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 33_334 || result[tm2].FinalAmount != 33_333 || result[tm3].FinalAmount != 33_333 {
+		t.Fatalf("unexpected tie result: tm1=%d tm2=%d tm3=%d",
+			result[tm1].FinalAmount, result[tm2].FinalAmount, result[tm3].FinalAmount)
 	}
-	if len(res) != 3 {
-		t.Fatalf("mong đợi 3 thành viên, nhận %d", len(res))
-	}
-
-	// 100.000 chia 3 bằng 33.333 cho mỗi người, dư 1 đồng về Creditor tm1.
-	if res[0].FinalAmount != 33334 || res[1].FinalAmount != 33333 || res[2].FinalAmount != 33333 {
-		t.Errorf("phân bổ sai: m1=%d, m2=%d, m3=%d", res[0].FinalAmount, res[1].FinalAmount, res[2].FinalAmount)
-	}
-	if res[0].RoundingAdjustment != 1 {
-		t.Errorf("Creditor phải mang adjustment 1, nhận %d", res[0].RoundingAdjustment)
-	}
-	if res[1].RoundingAdjustment != 0 || res[2].RoundingAdjustment != 0 {
-		t.Errorf("thành viên thường phải có adjustment 0, nhận m2=%d, m3=%d", res[1].RoundingAdjustment, res[2].RoundingAdjustment)
+	if result[tm1].RoundingAdjustment != 1 || result[tm3].RoundingAdjustment != 0 {
+		t.Fatalf("remainder must follow UUID, got tm1 adjustment=%d creditor adjustment=%d",
+			result[tm1].RoundingAdjustment, result[tm3].RoundingAdjustment)
 	}
 }
 
-func TestFloorAllocation_IntegerWeights_ProportionalSplit(t *testing.T) {
-	// covers: AC-6 (chia theo trọng số nguyên)
+func TestAllocation_MixedParticipantsAggregateExactly(t *testing.T) {
+	// covers: AC-6, AC-10
 	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   90000,
-		Total:      90000,
+		CreditorID: tm3,
+		Subtotal:   150_000,
+		Total:      150_000,
+		Items: []usecase.ItemInput{
+			{ID: uuid.New(), LineTotal: 100_000, Assignments: equalAssignments([]uuid.UUID{tm1, tm2, tm3})},
+			{ID: uuid.New(), LineTotal: 50_000, Assignments: equalAssignments([]uuid.UUID{tm1, tm2})},
+		},
+	}
+
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 58_334 || result[tm2].FinalAmount != 58_333 || result[tm3].FinalAmount != 33_333 {
+		t.Fatalf("unexpected mixed allocation: tm1=%d tm2=%d tm3=%d",
+			result[tm1].FinalAmount, result[tm2].FinalAmount, result[tm3].FinalAmount)
+	}
+}
+
+func TestAllocation_PrivateItemStaysWithParticipant(t *testing.T) {
+	// covers: AC-6
+	input := usecase.AllocationInput{
+		CreditorID: tm3,
+		Subtotal:   190_000,
+		Total:      190_000,
+		Items: []usecase.ItemInput{
+			{ID: uuid.New(), LineTotal: 90_000, Assignments: []usecase.ItemAssignmentInput{{MemberID: tm1, Weight: 1}}},
+			{ID: uuid.New(), LineTotal: 100_000, Assignments: equalAssignments([]uuid.UUID{tm1, tm2, tm3})},
+		},
+	}
+
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 123_334 || result[tm2].FinalAmount != 33_333 || result[tm3].FinalAmount != 33_333 {
+		t.Fatalf("unexpected private item allocation: tm1=%d tm2=%d tm3=%d",
+			result[tm1].FinalAmount, result[tm2].FinalAmount, result[tm3].FinalAmount)
+	}
+}
+
+func TestAllocation_InputOrderDoesNotChangeResult(t *testing.T) {
+	// covers: AC-6, AC-10
+	item1 := uuid.MustParse("10000000-0000-0000-0000-000000000001")
+	item2 := uuid.MustParse("10000000-0000-0000-0000-000000000002")
+	forward := usecase.AllocationInput{
+		CreditorID: tm3,
+		Subtotal:   150_000,
+		Total:      150_000,
+		Members:    []uuid.UUID{tm1, tm2, tm3},
+		Items: []usecase.ItemInput{
+			{ID: item1, LineTotal: 100_000, Assignments: equalAssignments([]uuid.UUID{tm1, tm2, tm3})},
+			{ID: item2, LineTotal: 50_000, Assignments: equalAssignments([]uuid.UUID{tm1, tm2})},
+		},
+	}
+	reversed := usecase.AllocationInput{
+		CreditorID: tm3,
+		Subtotal:   150_000,
+		Total:      150_000,
+		Members:    []uuid.UUID{tm3, tm2, tm1},
+		Items: []usecase.ItemInput{
+			{ID: item2, LineTotal: 50_000, Assignments: equalAssignments([]uuid.UUID{tm2, tm1})},
+			{ID: item1, LineTotal: 100_000, Assignments: equalAssignments([]uuid.UUID{tm3, tm2, tm1})},
+		},
+	}
+
+	if got, want := allocationByMember(mustAllocate(t, reversed)), allocationByMember(mustAllocate(t, forward)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("allocation changed with input order:\ngot=%+v\nwant=%+v", got, want)
+	}
+}
+
+func TestAllocation_ServiceChargeVATAndDiscount(t *testing.T) {
+	// covers: AC-6, AC-10
+	input := usecase.AllocationInput{
+		CreditorID:    tm2,
+		Subtotal:      100_000,
+		ServiceCharge: 5_000,
+		VAT:           10_000,
+		Discount:      3_000,
+		Total:         112_000,
 		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 90000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 2},
-				{MemberID: tm2, Weight: 1},
-			},
+			ID: uuid.New(), LineTotal: 100_000,
+			Assignments: equalAssignments([]uuid.UUID{tm1, tm2}),
 		}},
 	}
 
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
+	result := mustAllocate(t, input)
+	for _, allocation := range result {
+		if allocation.ServiceChargeShare != 2_500 || allocation.VATShare != 5_000 || allocation.DiscountShare != 1_500 || allocation.FinalAmount != 56_000 {
+			t.Fatalf("unexpected components for %s: %+v", allocation.MemberID, allocation)
+		}
 	}
-	if res[0].FinalAmount != 60000 || res[1].FinalAmount != 30000 {
-		t.Errorf("mong đợi 60000/30000, nhận m1=%d, m2=%d", res[0].FinalAmount, res[1].FinalAmount)
-	}
+	assertAllocationInvariants(t, result, 112_000)
 }
 
-func TestFloorAllocation_ServiceCharge_VAT_Discount(t *testing.T) {
-	// covers: AC-6, AC-10 (phí dịch vụ, VAT và giảm giá cùng chia sàn theo tiền hàng)
+func TestAllocation_ZeroSubtotalCreditorBearsBillComponents(t *testing.T) {
+	// covers: AC-10
 	input := usecase.AllocationInput{
 		CreditorID:    tm1,
-		Subtotal:      100000,
-		ServiceCharge: 5000,
-		VAT:           10000,
-		Discount:      3000,
-		Total:         112000,
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 1},
-				{MemberID: tm2, Weight: 1},
-			},
-		}},
-	}
-
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-
-	var sum int64
-	for _, a := range res {
-		sum += a.FinalAmount
-	}
-	if sum != 112000 {
-		t.Errorf("mong đợi tổng 112000, nhận %d", sum)
-	}
-	if res[1].ServiceChargeShare != 2500 || res[1].VATShare != 5000 || res[1].DiscountShare != 1500 {
-		t.Errorf("thành phần của m2 sai: sc=%d, vat=%d, disc=%d",
-			res[1].ServiceChargeShare, res[1].VATShare, res[1].DiscountShare)
-	}
-}
-
-func TestFloorAllocation_ZeroSubtotal_CreditorBearsFees(t *testing.T) {
-	// covers: AC-10 (tiền hàng bằng 0 thì Creditor gánh toàn bộ phí và VAT, không qua vòng chặn trần)
-	input := usecase.AllocationInput{
-		CreditorID:    tm1,
-		Subtotal:      0,
-		ServiceCharge: 5000,
-		VAT:           2000,
-		Total:         7000,
+		ServiceCharge: 5_000,
+		VAT:           2_000,
+		Discount:      1_000,
+		Total:         6_000,
 		Members:       []uuid.UUID{tm1, tm2},
 	}
 
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-	if res[0].FinalAmount != 7000 {
-		t.Errorf("Creditor phải gánh 7000, nhận %d", res[0].FinalAmount)
-	}
-	if res[1].FinalAmount != 0 {
-		t.Errorf("thành viên không tham gia phải bằng 0, nhận %d", res[1].FinalAmount)
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 6_000 || result[tm2].FinalAmount != 0 {
+		t.Fatalf("unexpected zero subtotal allocation: tm1=%d tm2=%d", result[tm1].FinalAmount, result[tm2].FinalAmount)
 	}
 }
 
-func TestFloorAllocation_RemainderGoesToCreditor_NotLargestShare(t *testing.T) {
-	// covers: AC-10 (phần dư đi theo Creditor, không theo người có phần lẻ lớn nhất như Hamilton cũ)
-	// Creditor là tm3, người có UUID lớn nhất và phần lẻ nhỏ nhất.
+func TestAllocation_LargeAmountUsesExactArithmetic(t *testing.T) {
+	// covers: AC-6, AC-14
+	const lineTotal = int64(9_000_000_000_000_000_001)
 	input := usecase.AllocationInput{
 		CreditorID: tm3,
-		Subtotal:   100,
-		Total:      100,
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 1},
-				{MemberID: tm2, Weight: 1},
-				{MemberID: tm3, Weight: 1},
-			},
-		}},
-	}
-
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-	// 100 chia 3 bằng 33 mỗi người, dư 1 đồng, và nó phải về tm3.
-	if res[0].FinalAmount != 33 || res[1].FinalAmount != 33 || res[2].FinalAmount != 34 {
-		t.Errorf("phần dư không về Creditor: m1=%d, m2=%d, m3=%d",
-			res[0].FinalAmount, res[1].FinalAmount, res[2].FinalAmount)
-	}
-}
-
-func TestFloorAllocation_LargeDiscount_CapsMemberAtZero(t *testing.T) {
-	// covers: AC-10 (giảm giá lớn bị chặn trần ở mức thành viên, không ai âm, tổng vẫn khớp)
-	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   100000,
-		Discount:   99999,
-		Total:      1,
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 9900},
-				{MemberID: tm2, Weight: 100},
-			},
-		}},
-	}
-
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-
-	var sum int64
-	for _, a := range res {
-		if a.FinalAmount < 0 {
-			t.Errorf("thành viên %s nhận số âm: %d", a.MemberID, a.FinalAmount)
-		}
-		sum += a.FinalAmount
-	}
-	if sum != 1 {
-		t.Errorf("mong đợi tổng 1, nhận %d", sum)
-	}
-}
-
-func TestFloorAllocation_DiscountNotAllocatable_Rejected(t *testing.T) {
-	// covers: AC-10 (giảm giá dồn vào người không hấp thụ nổi thì bị từ chối, không kẹp về 0)
-	// tm1 là Creditor với phần rất nhỏ, còn tm2 gánh gần hết tiền hàng và toàn bộ giảm giá.
-	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   100000,
-		Discount:   100000,
-		Total:      0,
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm2, Weight: 1},
-			},
-		}},
-	}
-
-	_, err := usecase.CalculateFloorAllocation(input)
-	if err != nil && !errors.Is(err, domain.ErrDiscountNotAllocatable) {
-		t.Fatalf("mong đợi ErrDiscountNotAllocatable hoặc kết quả hợp lệ, nhận %v", err)
-	}
-}
-
-func TestFloorAllocation_DiscountExceedsBill_Rejected(t *testing.T) {
-	// covers: AC-10 (giảm giá lớn hơn cả hóa đơn bị từ chối chứ không kẹp)
-	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   10000,
-		Discount:   50000,
-		Total:      0,
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 10000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 1},
-				{MemberID: tm2, Weight: 1},
-			},
-		}},
-	}
-
-	if _, err := usecase.CalculateFloorAllocation(input); !errors.Is(err, domain.ErrDiscountNotAllocatable) {
-		t.Fatalf("mong đợi ErrDiscountNotAllocatable, nhận %v", err)
-	}
-}
-
-func TestFloorAllocation_MissingCreditor_Rejected(t *testing.T) {
-	// covers: AC-6 (không có Creditor thì không có người hấp thụ dư, phải từ chối)
-	input := usecase.AllocationInput{
-		Subtotal: 100,
-		Total:    100,
-		Items: []usecase.ItemInput{{
-			ID:          uuid.New(),
-			LineTotal:   100,
-			Assignments: []usecase.ItemAssignmentInput{{MemberID: tm2, Weight: 1}},
-		}},
-	}
-
-	if _, err := usecase.CalculateFloorAllocation(input); !errors.Is(err, domain.ErrCreditorRequired) {
-		t.Fatalf("mong đợi ErrCreditorRequired, nhận %v", err)
-	}
-}
-
-func TestFloorAllocation_DraftMismatch_NoDiscrepancyDumping(t *testing.T) {
-	// covers: AC-6 (Total khai báo lệch với tổng các món thì khoản lệch không rơi lên đầu ai)
-	input := usecase.AllocationInput{
-		CreditorID: tm1,
-		Subtotal:   100000,
-		Total:      500000, // OCR đọc 500.000 nhưng chỉ nhập 100.000 tiền món
-		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 1},
-				{MemberID: tm2, Weight: 1},
-			},
-		}},
-	}
-
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-	if res[0].FinalAmount != 50000 || res[1].FinalAmount != 50000 {
-		t.Errorf("mong đợi 50000/50000, nhận m1=%d, m2=%d", res[0].FinalAmount, res[1].FinalAmount)
-	}
-	if res[0].RoundingAdjustment != 0 || res[1].RoundingAdjustment != 0 {
-		t.Errorf("mong đợi adjustment 0, nhận m1=%d, m2=%d", res[0].RoundingAdjustment, res[1].RoundingAdjustment)
-	}
-}
-
-func TestFloorAllocation_LargeMonetaryAmount_NoOverflow(t *testing.T) {
-	// covers: AC-6, AC-14 (số nguyên 64 bit trên hóa đơn 10 tỷ VND)
-	const lineTotal = int64(10_000_000_001)
-	input := usecase.AllocationInput{
-		CreditorID: tm1,
 		Subtotal:   lineTotal,
 		Total:      lineTotal,
 		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: lineTotal,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Weight: 10000},
-				{MemberID: tm2, Weight: 10000},
-				{MemberID: tm3, Weight: 10000},
-			},
+			ID:          uuid.New(),
+			LineTotal:   lineTotal,
+			Assignments: equalAssignments([]uuid.UUID{tm1, tm2, tm3}),
 		}},
 	}
 
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-
-	var sum int64
-	for _, a := range res {
-		sum += a.FinalAmount
-	}
-	if sum != lineTotal {
-		t.Errorf("mong đợi tổng đúng %d, nhận %d", lineTotal, sum)
-	}
-	// 10.000.000.001 chia 3 bằng 3.333.333.333 mỗi người, dư 2 đồng về Creditor tm1.
-	if res[0].FinalAmount != 3333333335 || res[1].FinalAmount != 3333333333 || res[2].FinalAmount != 3333333333 {
-		t.Errorf("phân bổ số lớn sai: m1=%d, m2=%d, m3=%d",
-			res[0].FinalAmount, res[1].FinalAmount, res[2].FinalAmount)
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 3_000_000_000_000_000_001 || result[tm2].FinalAmount != 3_000_000_000_000_000_000 || result[tm3].FinalAmount != 3_000_000_000_000_000_000 {
+		t.Fatalf("unexpected large allocation: tm1=%d tm2=%d tm3=%d",
+			result[tm1].FinalAmount, result[tm2].FinalAmount, result[tm3].FinalAmount)
 	}
 }
 
-func TestFloorAllocation_FallbackRatio_Input(t *testing.T) {
-	// covers: AC-6 (đầu vào dạng Ratio số thực quy về cùng thang trọng số)
+func TestAllocation_DraftTotalMismatchIsNotAllocated(t *testing.T) {
+	// covers: AC-6
 	input := usecase.AllocationInput{
 		CreditorID: tm1,
-		Subtotal:   100000,
-		Total:      100000,
+		Subtotal:   100_000,
+		Total:      500_000,
 		Items: []usecase.ItemInput{{
-			ID:        uuid.New(),
-			LineTotal: 100000,
-			Assignments: []usecase.ItemAssignmentInput{
-				{MemberID: tm1, Ratio: 0.5},
-				{MemberID: tm2, Ratio: 0.5},
-			},
+			ID: uuid.New(), LineTotal: 100_000,
+			Assignments: equalAssignments([]uuid.UUID{tm1, tm2}),
 		}},
 	}
 
-	res, err := usecase.CalculateFloorAllocation(input)
-	if err != nil {
-		t.Fatalf("CalculateFloorAllocation() error = %v", err)
-	}
-	if res[0].FinalAmount != 50000 || res[1].FinalAmount != 50000 {
-		t.Errorf("mong đợi 50000/50000, nhận m1=%d, m2=%d", res[0].FinalAmount, res[1].FinalAmount)
+	result := allocationByMember(mustAllocate(t, input))
+	if result[tm1].FinalAmount != 50_000 || result[tm2].FinalAmount != 50_000 {
+		t.Fatalf("declared mismatch leaked into allocation: tm1=%d tm2=%d", result[tm1].FinalAmount, result[tm2].FinalAmount)
 	}
 }
 
-// TestFloorAllocation_BruteForce_Invariants quét nhiều tổ hợp đầu vào và khẳng định ba bất biến.
-// Lỗi tổng vượt hóa đơn của thuật toán Hamilton cũ lọt lưới đúng vì bộ test chỉ kiểm tra từng ca lẻ.
-func TestFloorAllocation_BruteForce_Invariants(t *testing.T) {
+func TestAllocation_Validation(t *testing.T) {
+	// covers: AC-6, AC-10
+	validItem := func() usecase.ItemInput {
+		return usecase.ItemInput{ID: uuid.New(), LineTotal: 100, Assignments: []usecase.ItemAssignmentInput{{MemberID: tm1, Weight: 1}}}
+	}
+	tests := []struct {
+		name  string
+		input usecase.AllocationInput
+		want  error
+	}{
+		{name: "missing creditor", input: usecase.AllocationInput{Items: []usecase.ItemInput{validItem()}}, want: domain.ErrCreditorRequired},
+		{name: "unassigned item", input: usecase.AllocationInput{CreditorID: tm1, Items: []usecase.ItemInput{{ID: uuid.New(), LineTotal: 100}}}, want: nil},
+		{name: "zero weight", input: usecase.AllocationInput{CreditorID: tm1, Items: []usecase.ItemInput{{ID: uuid.New(), LineTotal: 100, Assignments: []usecase.ItemAssignmentInput{{MemberID: tm1}}}}}, want: nil},
+		{name: "duplicate member on item", input: usecase.AllocationInput{CreditorID: tm1, Items: []usecase.ItemInput{{ID: uuid.New(), LineTotal: 100, Assignments: []usecase.ItemAssignmentInput{{MemberID: tm1, Weight: 1}, {MemberID: tm1, Weight: 1}}}}}, want: nil},
+		{name: "negative money", input: usecase.AllocationInput{CreditorID: tm1, Discount: -1, Items: []usecase.ItemInput{validItem()}}, want: nil},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := usecase.CalculateAllocation(test.input)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if test.want != nil && !errors.Is(err, test.want) {
+				t.Fatalf("got %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestAllocation_DiscountExceedsComputedBillIsRejected(t *testing.T) {
+	// covers: AC-10
+	input := usecase.AllocationInput{
+		CreditorID: tm1,
+		Subtotal:   10_000,
+		Discount:   50_000,
+		Items: []usecase.ItemInput{{
+			ID: uuid.New(), LineTotal: 10_000,
+			Assignments: equalAssignments([]uuid.UUID{tm1, tm2}),
+		}},
+	}
+	if _, err := usecase.CalculateAllocation(input); !errors.Is(err, domain.ErrDiscountNotAllocatable) {
+		t.Fatalf("got %v, want ErrDiscountNotAllocatable", err)
+	}
+}
+
+func TestAllocation_BruteForceInvariants(t *testing.T) {
 	// covers: AC-6, AC-10
 	members := []uuid.UUID{tm1, tm2, tm3}
-	lineTotals := []int64{1, 3, 7, 100, 99999, 1000003}
-	weightSets := [][]int64{{1, 1, 1}, {2, 1, 1}, {9900, 99, 1}, {1, 0, 0}, {5, 5, 1}}
-	fees := []int64{0, 1, 7, 5000}
-	discounts := []int64{0, 1, 999, 50000}
+	lineTotals := []int64{1, 3, 7, 100, 99_999, 1_000_003}
+	weightSets := [][]int64{{1, 1, 1}, {2, 1, 1}, {9900, 99, 1}, {5, 5, 1}}
+	fees := []int64{0, 1, 7, 5_000}
+	discounts := []int64{0, 1, 999, 50_000}
 
 	var checked int
-	for _, lt := range lineTotals {
-		for _, ws := range weightSets {
-			for _, sc := range fees {
+	for _, lineTotal := range lineTotals {
+		for _, weights := range weightSets {
+			for _, service := range fees {
 				for _, vat := range fees {
-					for _, disc := range discounts {
-						for creditorIdx := 0; creditorIdx < len(members); creditorIdx++ {
-							assignments := make([]usecase.ItemAssignmentInput, 0, len(members))
-							for i, m := range members {
-								if ws[i] > 0 {
-									assignments = append(assignments, usecase.ItemAssignmentInput{MemberID: m, Weight: ws[i]})
-								}
+					for _, discount := range discounts {
+						expected := lineTotal + service + vat - discount
+						if expected < 0 {
+							continue
+						}
+						assignments := make([]usecase.ItemAssignmentInput, len(members))
+						for i, memberID := range members {
+							assignments[i] = usecase.ItemAssignmentInput{MemberID: memberID, Weight: weights[i]}
+						}
+						for _, creditorID := range members {
+							input := usecase.AllocationInput{
+								CreditorID: creditorID, Subtotal: lineTotal, ServiceCharge: service,
+								VAT: vat, Discount: discount, Total: expected, Members: members,
+								Items: []usecase.ItemInput{{ID: uuid.New(), LineTotal: lineTotal, Assignments: assignments}},
 							}
-
-							expectedTotal := lt + sc + vat - disc
-							if expectedTotal < 0 {
-								// Đầu vào không hợp lệ về mặt nghiệp vụ, tầng đối soát đã chặn từ trước.
-								continue
-							}
-
-							in := usecase.AllocationInput{
-								CreditorID:    members[creditorIdx],
-								Subtotal:      lt,
-								ServiceCharge: sc,
-								VAT:           vat,
-								Discount:      disc,
-								Total:         expectedTotal,
-								Members:       members,
-								Items: []usecase.ItemInput{{
-									ID:          uuid.New(),
-									LineTotal:   lt,
-									Assignments: assignments,
-								}},
-							}
-
-							res, err := usecase.CalculateFloorAllocation(in)
+							result, err := usecase.CalculateAllocation(input)
 							if err != nil {
-								// Chỉ hai lỗi nghiệp vụ được phép xuất hiện ở đây.
 								if errors.Is(err, domain.ErrDiscountNotAllocatable) {
 									continue
 								}
-								t.Fatalf("lỗi ngoài dự kiến với lineTotal=%d ws=%v sc=%d vat=%d disc=%d creditor=%d: %v",
-									lt, ws, sc, vat, disc, creditorIdx, err)
+								t.Fatalf("unexpected error for total=%d weights=%v service=%d vat=%d discount=%d: %v",
+									lineTotal, weights, service, vat, discount, err)
 							}
 							checked++
-
-							expected := expectedTotal
-							var sum int64
-							var adjHolders int
-							for _, a := range res {
-								if a.FinalAmount < 0 {
-									t.Fatalf("số âm với lineTotal=%d ws=%v sc=%d vat=%d disc=%d: thành viên %s nhận %d",
-										lt, ws, sc, vat, disc, a.MemberID, a.FinalAmount)
-								}
-								sum += a.FinalAmount
-								if a.RoundingAdjustment != 0 {
-									adjHolders++
-									if a.MemberID != members[creditorIdx] {
-										t.Fatalf("adjustment khác 0 nằm ngoài Creditor: %s", a.MemberID)
-									}
-								}
-							}
-							if sum != expected {
-								t.Fatalf("tổng lệch với lineTotal=%d ws=%v sc=%d vat=%d disc=%d: nhận %d, mong đợi %d",
-									lt, ws, sc, vat, disc, sum, expected)
-							}
-							if adjHolders > 1 {
-								t.Fatalf("có %d thành viên mang adjustment khác 0, chỉ được phép tối đa 1", adjHolders)
-							}
+							assertAllocationInvariants(t, result, expected)
 						}
 					}
 				}
 			}
 		}
 	}
-
 	if checked < 500 {
-		t.Fatalf("bộ quét quá nhỏ, chỉ kiểm tra được %d tổ hợp", checked)
+		t.Fatalf("brute force sweep too small: %d", checked)
 	}
-	t.Logf("đã kiểm tra %d tổ hợp", checked)
+}
+
+func BenchmarkAllocation_100Items50Members(b *testing.B) {
+	// covers: AC-14
+	members := make([]uuid.UUID, 50)
+	for i := range members {
+		members[i] = uuid.MustParse("00000000-0000-0000-0000-" + fmt.Sprintf("%012d", i+1))
+	}
+	items := make([]usecase.ItemInput, 100)
+	var total int64
+	for itemIndex := range items {
+		lineTotal := int64(1_000_000 + itemIndex)
+		total += lineTotal
+		assignments := make([]usecase.ItemAssignmentInput, len(members))
+		for memberIndex, memberID := range members {
+			assignments[memberIndex] = usecase.ItemAssignmentInput{MemberID: memberID, Weight: int64(memberIndex + 1)}
+		}
+		items[itemIndex] = usecase.ItemInput{ID: uuid.New(), LineTotal: lineTotal, Assignments: assignments}
+	}
+	input := usecase.AllocationInput{CreditorID: members[49], Subtotal: total, Total: total, Members: members, Items: items}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := usecase.CalculateAllocation(input); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func equalAssignments(members []uuid.UUID) []usecase.ItemAssignmentInput {
+	result := make([]usecase.ItemAssignmentInput, len(members))
+	for i, memberID := range members {
+		result[i] = usecase.ItemAssignmentInput{MemberID: memberID, Weight: 1}
+	}
+	return result
+}
+
+func mustAllocate(t *testing.T, input usecase.AllocationInput) []*usecase.MemberAllocation {
+	t.Helper()
+	result, err := usecase.CalculateAllocation(input)
+	if err != nil {
+		t.Fatalf("CalculateAllocation() error = %v", err)
+	}
+	return result
+}
+
+func allocationByMember(allocations []*usecase.MemberAllocation) map[uuid.UUID]usecase.MemberAllocation {
+	result := make(map[uuid.UUID]usecase.MemberAllocation, len(allocations))
+	for _, allocation := range allocations {
+		result[allocation.MemberID] = *allocation
+	}
+	return result
+}
+
+func assertAllocationInvariants(t *testing.T, allocations []*usecase.MemberAllocation, expectedTotal int64) {
+	t.Helper()
+	var sum int64
+	for _, allocation := range allocations {
+		if allocation.FinalAmount < 0 {
+			t.Fatalf("member %s has negative final amount %d", allocation.MemberID, allocation.FinalAmount)
+		}
+		componentTotal := allocation.ItemSubtotal + allocation.ServiceChargeShare + allocation.VATShare - allocation.DiscountShare + allocation.RoundingAdjustment
+		if componentTotal != allocation.FinalAmount {
+			t.Fatalf("member %s component equation=%d final=%d", allocation.MemberID, componentTotal, allocation.FinalAmount)
+		}
+		sum += allocation.FinalAmount
+	}
+	if sum != expectedTotal {
+		t.Fatalf("allocation sum=%d, want %d", sum, expectedTotal)
+	}
 }

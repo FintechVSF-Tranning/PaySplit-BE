@@ -13,6 +13,12 @@ SET bill_submission_locked_at = COALESCE(bill_submission_locked_at, now())
 WHERE id = $1 AND status = 'active'
 RETURNING bill_submission_locked_at;
 
+-- name: ClearGroupSubmissionLockedAt :one
+UPDATE groups
+SET bill_submission_locked_at = NULL
+WHERE id = $1 AND status = 'active'
+RETURNING bill_submission_locked_at;
+
 -- name: CaptureOpenBills :many
 SELECT id, version, (status = 'reviewed') AS captured_reviewed
 FROM bills

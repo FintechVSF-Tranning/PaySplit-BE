@@ -66,6 +66,9 @@ func evaluateAllocation(bill *domain.Bill, activeMemberIDs map[uuid.UUID]bool) (
 	if hasInactive {
 		blockers = append(blockers, BlockerInactiveMemberAssigned)
 	}
+	if bill.CreditorMemberID == uuid.Nil || (activeMemberIDs != nil && !activeMemberIDs[bill.CreditorMemberID]) {
+		blockers = append(blockers, BlockerCreditorRequired)
+	}
 
 	if bill.Discount > bill.Subtotal+bill.ServiceCharge+bill.VAT {
 		blockers = append(blockers, BlockerDiscountExceedsBill)
@@ -83,7 +86,7 @@ func evaluateAllocation(bill *domain.Bill, activeMemberIDs map[uuid.UUID]bool) (
 		return nil, blockers
 	}
 
-	allocations, err := CalculateFloorAllocation(toAllocationInput(bill))
+	allocations, err := CalculateAllocation(toAllocationInput(bill))
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrDiscountNotAllocatable):
