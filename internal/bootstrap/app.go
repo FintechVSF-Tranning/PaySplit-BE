@@ -236,7 +236,7 @@ func New(ctx context.Context) (*App, error) {
 	// nên nó chỉ cần lắng nghe — không có đường phát nào đi vòng qua nhật ký.
 	groupHub := grouphttp.NewHub(db)
 	groupSSEHandler := grouphttp.NewSSEHandler(groupHandler, groupHub, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
-	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.RateLimitRequestsPerMinute, time.Minute)
+	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.InviteAttemptsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
 	adminService := adminusecase.NewService(adminRepo)

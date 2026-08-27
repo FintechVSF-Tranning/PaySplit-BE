@@ -579,18 +579,84 @@ func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID
 	return s.repo.ListBillsByGroup(ctx, groupID, limit, offset)
 }
 
-// ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12).
-func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32) (*repository.ListBillsCursorResult, error) {
+// ListBillsResult là kết quả của danh sách hóa đơn: trang dữ liệu theo cursor
+// kèm số lượng hóa đơn theo từng trạng thái để client dựng badge bộ lọc mà
+// không phải đoán từ trang đã tải.
+type ListBillsResult struct {
+	Bills      []*domain.BillListItem `json:"bills"`
+	NextCursor *string                `json:"next_cursor,omitempty"`
+	Counts     BillStatusCounts       `json:"counts"`
+}
+
+// BillStatusCounts đếm hóa đơn của nhóm theo trạng thái (không bị bộ lọc
+// `statuses` của request cắt bớt).
+type BillStatusCounts struct {
+	Draft     int64 `json:"draft"`
+	Reviewed  int64 `json:"reviewed"`
+	Finalized int64 `json:"finalized"`
+	Voided    int64 `json:"voided"`
+	Total     int64 `json:"total"`
+}
+
+// ParseBillStatuses kiểm tra danh sách trạng thái do client gửi lên. Danh sách
+// rỗng nghĩa là "Tất cả"; một giá trị lạ làm cả request hỏng thay vì bị bỏ qua
+// âm thầm, để client biết mình gửi sai chứ không nhận nhầm một trang "Tất cả".
+func ParseBillStatuses(raw []string) ([]string, error) {
+	statuses := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, value := range raw {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		switch domain.BillStatus(v) {
+		case domain.BillStatusDraft, domain.BillStatusReviewed, domain.BillStatusFinalized, domain.BillStatusVoided:
+		default:
+			return nil, fmt.Errorf("%w: unknown bill status %q", domain.ErrInvalidInput, v)
+		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		statuses = append(statuses, v)
+	}
+	return statuses, nil
+}
+
+// ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12),
+// lọc theo trạng thái nếu client yêu cầu.
+func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32, statuses []string) (*ListBillsResult, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden
 	}
 
-	return s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
-		GroupID: groupID,
-		Cursor:  cursor,
-		Limit:   limit,
+	page, err := s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+		GroupID:        groupID,
+		Cursor:         cursor,
+		Limit:          limit,
+		Statuses:       statuses,
+		CallerMemberID: member.ID,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ListBillsResult{Bills: page.Bills, NextCursor: page.NextCursor}
+
+	// Badge bộ lọc không được phép chặn danh sách: nếu đếm lỗi, trả trang dữ
+	// liệu với counts rỗng thay vì làm hỏng cả màn hình.
+	if counts, countErr := s.repo.CountBillsByGroupStatus(ctx, groupID); countErr == nil {
+		result.Counts = BillStatusCounts{
+			Draft:     counts[string(domain.BillStatusDraft)],
+			Reviewed:  counts[string(domain.BillStatusReviewed)],
+			Finalized: counts[string(domain.BillStatusFinalized)],
+			Voided:    counts[string(domain.BillStatusVoided)],
+		}
+		result.Counts.Total = result.Counts.Draft + result.Counts.Reviewed + result.Counts.Finalized + result.Counts.Voided
+	}
+
+	return result, nil
 }
 
 // RetryOCR kích hoạt lại quá trình bóc tách OCR thủ công (tối đa 5 lần / 24h, Spec 3 AC-2, AC-8).

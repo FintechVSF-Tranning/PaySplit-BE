@@ -405,11 +405,18 @@ func (r *postgresRepository) ListBillsByGroupCursor(ctx context.Context, p repos
 	}
 
 	q := sqlc.New(r.pool)
+	statuses := p.Statuses
+	if statuses == nil {
+		statuses = []string{}
+	}
+
 	rows, err := q.ListBillsByGroupCursor(ctx, sqlc.ListBillsByGroupCursorParams{
-		GroupID: pgtype.UUID{Bytes: p.GroupID, Valid: true},
-		Column2: cursorCreatedAt,
-		ID:      cursorID,
-		Limit:   limit + 1,
+		GroupID:  pgtype.UUID{Bytes: p.GroupID, Valid: true},
+		Column2:  cursorCreatedAt,
+		ID:       cursorID,
+		Limit:    limit + 1,
+		Column5:  statuses,
+		MemberID: pgtype.UUID{Bytes: p.CallerMemberID, Valid: p.CallerMemberID != uuid.Nil},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list bills cursor: %w", err)
@@ -422,12 +429,20 @@ func (r *postgresRepository) ListBillsByGroupCursor(ctx context.Context, p repos
 
 	bills := make([]*domain.BillListItem, 0, len(rows))
 	for _, row := range rows {
-		bills = append(bills, &domain.BillListItem{
+		item := &domain.BillListItem{
 			Bill:             toDomainBill(&row.Bill),
 			PayerDisplayName: row.PayerDisplayName,
 			PaidMemberCount:  row.PaidMemberCount,
 			MemberCount:      row.MemberCount,
-		})
+			MyShareStatus:    domain.MyShareStatusNone,
+			OCRStatus:        domain.OCRJobStatus(row.OcrStatus),
+		}
+		if row.MyShare.Valid {
+			amount := row.MyShare.Int64
+			item.MyShare = &amount
+		}
+		item.MyShareStatus = myShareStatus(item, p.CallerMemberID, row.MyDebtStatus)
+		bills = append(bills, item)
 	}
 
 	var nextCursor *string
@@ -441,6 +456,45 @@ func (r *postgresRepository) ListBillsByGroupCursor(ctx context.Context, p repos
 		Bills:      bills,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+// myShareStatus diễn giải phần tiền của người đang xem. Người ứng tiền không
+// bao giờ tự nợ mình, còn khoản nợ đã 'voided' (thành viên rời nhóm, số tiền
+// được xóa) tính như đã xong — cùng quy ước với paid_member_count.
+func myShareStatus(item *domain.BillListItem, callerMemberID uuid.UUID, debtStatus string) domain.MyShareStatus {
+	if callerMemberID != uuid.Nil && item.CreditorMemberID == callerMemberID {
+		return domain.MyShareStatusCreditor
+	}
+	if item.MyShare == nil {
+		return domain.MyShareStatusNone
+	}
+	switch debtStatus {
+	case "settled", "voided":
+		return domain.MyShareStatusSettled
+	case "":
+		// Có share nhưng chưa sinh nợ (phần bằng 0) thì coi như không phải trả.
+		if *item.MyShare == 0 {
+			return domain.MyShareStatusSettled
+		}
+		return domain.MyShareStatusPending
+	default:
+		return domain.MyShareStatusPending
+	}
+}
+
+// CountBillsByGroupStatus đếm hóa đơn của nhóm theo từng trạng thái. Trạng thái
+// không có hóa đơn nào sẽ vắng mặt trong map — caller tự coi là 0.
+func (r *postgresRepository) CountBillsByGroupStatus(ctx context.Context, groupID uuid.UUID) (map[string]int64, error) {
+	rows, err := sqlc.New(r.pool).CountBillsByGroupStatus(ctx, pgtype.UUID{Bytes: groupID, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("count bills by status: %w", err)
+	}
+
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Status] = row.Count
+	}
+	return counts, nil
 }
 
 // UpdateDraftBill cập nhật hóa đơn draft và ghi đè danh sách món ăn trong 1 transaction có kiểm tra version.

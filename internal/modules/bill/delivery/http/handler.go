@@ -230,13 +230,25 @@ func (h *Handler) GetBillDetail(w http.ResponseWriter, r *http.Request) {
 	_ = helpers.WriteJSON(w, http.StatusOK, detail)
 }
 
-// ListBills xử lý GET /api/v1/bills?group_id=...&limit=...&cursor=...
+// ListBills xử lý GET /api/v1/bills?group_id=...&status=...&limit=...&cursor=...
 func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 	callerUserID := getUserID(r)
 	groupIDStr := r.URL.Query().Get("group_id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_GROUP_ID", "group_id query param is required", nil)
+		return
+	}
+
+	// `status` nhận cả dạng lặp (?status=draft&status=reviewed) lẫn CSV
+	// (?status=draft,reviewed). Bỏ trống = tất cả trạng thái.
+	rawStatuses := make([]string, 0, 4)
+	for _, value := range r.URL.Query()["status"] {
+		rawStatuses = append(rawStatuses, strings.Split(value, ",")...)
+	}
+	statuses, err := usecase.ParseBillStatuses(rawStatuses)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "status must be one of draft, reviewed, finalized, voided", nil)
 		return
 	}
 
@@ -255,6 +267,12 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 
 	offsetStr := r.URL.Query().Get("offset")
 	if offsetStr != "" && cursor == nil {
+		// Đường offset là lối cũ không mang bộ lọc trạng thái. Trả lỗi rõ ràng
+		// còn hơn im lặng trả về một trang "tất cả" mà client tưởng đã lọc.
+		if len(statuses) > 0 {
+			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "status filter requires cursor pagination, not offset", nil)
+			return
+		}
 		offset := 0
 		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
 			offset = o
@@ -270,14 +288,15 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.service.ListBillsCursor(r.Context(), callerUserID, groupID, cursor, int32(limit))
+	res, err := h.service.ListBillsCursor(r.Context(), callerUserID, groupID, cursor, int32(limit), statuses)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 
 	resp := map[string]any{
-		"bills": res.Bills,
+		"bills":  res.Bills,
+		"counts": res.Counts,
 	}
 	if res.NextCursor != nil {
 		resp["next_cursor"] = *res.NextCursor

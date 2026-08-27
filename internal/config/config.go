@@ -48,6 +48,11 @@ type AppConfig struct {
 	RequestTimeout             time.Duration
 	CORSAllowedOrigins         []string
 	RateLimitRequestsPerMinute int
+
+	// InviteAttemptsPerMinute giới hạn riêng cho xem trước / tham gia bằng mã
+	// mời. Trước đây nó dùng chung ngưỡng với limiter IP toàn cục, nên nới lỏng
+	// cho lưu lượng bình thường sẽ vô tình nới cả cửa dò mã mời.
+	InviteAttemptsPerMinute int
 }
 
 // DatabaseConfig chứa cấu hình kết nối và pool PostgreSQL; giá trị này không
@@ -194,7 +199,17 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	rateLimit, err := intEnv("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE", 30)
+	// Ngưỡng tính theo IP, mà một IP có thể là cả một văn phòng sau NAT hoặc một
+	// máy đang đăng nhập nhiều tài khoản. Mỗi lần mở app đã tốn hơn chục request
+	// (hồ sơ, nhóm, hóa đơn, công nợ, thông báo), nên mức cũ 30/phút chặn nhầm
+	// người dùng thật trước khi chặn được kẻ lạm dụng.
+	rateLimit, err := intEnv("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE", 300)
+	if err != nil {
+		return nil, err
+	}
+	// Dò mã mời là hành vi tấn công thật (8 ký tự Base62), nên ngưỡng của nó
+	// phải chặt và độc lập với lưu lượng đọc thông thường.
+	inviteAttempts, err := intEnv("HTTP_INVITE_ATTEMPTS_PER_MINUTE", 30)
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +391,7 @@ func Load() (*Config, error) {
 			RequestTimeout:             requestTimeout,
 			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
 			RateLimitRequestsPerMinute: rateLimit,
+			InviteAttemptsPerMinute:    inviteAttempts,
 		},
 		Database: DatabaseConfig{
 			URL:               os.Getenv("DATABASE_URL"),
@@ -461,6 +477,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.App.CORSAllowedOrigins) == 0 {
 		return errors.New("HTTP_CORS_ALLOWED_ORIGINS must contain at least one origin")
+	}
+	if c.App.InviteAttemptsPerMinute <= 0 {
+		return errors.New("HTTP_INVITE_ATTEMPTS_PER_MINUTE must be positive")
 	}
 	if c.App.RateLimitRequestsPerMinute <= 0 {
 		return errors.New("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")

@@ -36,8 +36,13 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
+			// Idempotency-Key phải nằm ở đây, nếu không trình duyệt cho preflight
+			// đi qua rồi vẫn chặn request thật: xóa hóa đơn, tạo QR thanh toán,
+			// nộp minh chứng và nhắc nợ đều gửi header này.
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key")
+			// Retry-After là cách duy nhất client biết phải chờ bao lâu sau 429;
+			// không expose thì JavaScript không đọc được nó.
+			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
 			w.Header().Set("Access-Control-Max-Age", "600")
 
 			if r.Method == http.MethodOptions {

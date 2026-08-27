@@ -1064,6 +1064,19 @@ paths:
           in: query
           required: true
           schema: {type: string, format: uuid}
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Filter by bill status. Repeat the param (?status=draft&status=reviewed)
+            or pass a comma separated list (?status=draft,reviewed). Omit for all
+            statuses. An unknown value returns 400 VALIDATION_FAILED. Not supported
+            together with offset pagination.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: {type: string, enum: [draft, reviewed, finalized, voided]}
         - name: limit
           in: query
           schema: {type: integer, default: 20}
@@ -1086,9 +1099,10 @@ paths:
                           bills:
                             type: array
                             items: {$ref: "#/components/schemas/BillListItem"}
+                          counts: {$ref: "#/components/schemas/BillStatusCounts"}
                           next_cursor: {type: string}
         "400":
-          description: "Validation failed (VALIDATION_FAILED), or an invalid cursor was supplied (INVALID_CURSOR)"
+          description: "Validation failed (VALIDATION_FAILED), an unknown status filter, a status filter combined with offset pagination, or an invalid cursor (INVALID_CURSOR)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
 
@@ -2575,6 +2589,19 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
 
+    BillStatusCounts:
+      type: object
+      description: >-
+        Bill counts per status for the whole group. Never narrowed by the status
+        filter of the request, so filter badges stay correct on every page.
+      required: [draft, reviewed, finalized, voided, total]
+      properties:
+        draft: {type: integer, format: int64, minimum: 0}
+        reviewed: {type: integer, format: int64, minimum: 0}
+        finalized: {type: integer, format: int64, minimum: 0}
+        voided: {type: integer, format: int64, minimum: 0}
+        total: {type: integer, format: int64, minimum: 0}
+
     BillListItem:
       allOf:
         - $ref: "#/components/schemas/Bill"
@@ -2600,6 +2627,30 @@ components:
               description: >-
                 Immutable share count for a finalized bill, the Creditor included.
                 Zero for draft, reviewed, and voided bills
+            my_share:
+              type: integer
+              format: int64
+              minimum: 0
+              nullable: true
+              description: >-
+                Amount the caller owes for this bill, taken from the stored
+                shares. Absent until the bill is finalized, and absent when the
+                caller carries none of it
+            my_share_status:
+              type: string
+              enum: [none, creditor, pending, settled]
+              description: >-
+                creditor when the caller paid up front, pending while they still
+                owe the Creditor, settled once the debt is paid or was written
+                off after they left the group, none when the bill is not
+                finalized or the caller has no share
+            ocr_status:
+              type: string
+              enum: [queued, processing, succeeded, failed]
+              description: >-
+                Status of the most recent OCR job, omitted for manually entered
+                bills. Distinguishes a bill still being scanned from one waiting
+                for item assignment - both are draft
 
     BillImage:
       type: object

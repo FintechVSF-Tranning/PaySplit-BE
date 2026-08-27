@@ -50,6 +50,9 @@ type mockServiceRepo struct {
 	voidedBill     *domain.Bill
 	deletedDraft   bool
 
+	// lastListStatuses ghi lại bộ lọc trạng thái mà usecase truyền xuống repo.
+	lastListStatuses []string
+
 	// Spec 0008 create gate controls.
 	submissionLockedAt *time.Time
 	lockLookupErr      error
@@ -145,8 +148,10 @@ func (m *mockServiceRepo) GetGroupMemberUser(ctx context.Context, memberID, grou
 }
 
 func (m *mockServiceRepo) ListBillsByGroupCursor(ctx context.Context, params repository.ListBillsCursorParams) (*repository.ListBillsCursorResult, error) {
+	m.lastListStatuses = params.Statuses
+
 	bills := []*domain.BillListItem{}
-	if m.bill != nil {
+	if m.bill != nil && matchesStatusFilter(m.bill.Status, params.Statuses) {
 		bills = append(bills, &domain.BillListItem{
 			Bill:             m.bill,
 			PayerDisplayName: "Nguyễn An",
@@ -157,6 +162,26 @@ func (m *mockServiceRepo) ListBillsByGroupCursor(ctx context.Context, params rep
 	return &repository.ListBillsCursorResult{
 		Bills: bills,
 	}, nil
+}
+
+func matchesStatusFilter(status domain.BillStatus, statuses []string) bool {
+	if len(statuses) == 0 {
+		return true
+	}
+	for _, s := range statuses {
+		if s == string(status) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *mockServiceRepo) CountBillsByGroupStatus(ctx context.Context, groupID uuid.UUID) (map[string]int64, error) {
+	counts := map[string]int64{}
+	if m.bill != nil {
+		counts[string(m.bill.Status)] = 1
+	}
+	return counts, nil
 }
 
 func (m *mockServiceRepo) GetActiveOCRJobByBillID(ctx context.Context, billID uuid.UUID) (*domain.OCRJob, error) {
@@ -1158,6 +1183,91 @@ func TestUpdateDraftBill_ReviewedStatus_Allowed(t *testing.T) {
 	}
 }
 
+func TestListBillsCursor_StatusFilter(t *testing.T) {
+	// covers: bộ lọc trạng thái của tab Hóa đơn trong nhóm.
+	groupID := uuid.New()
+	userID := uuid.New()
+
+	newRepo := func(status domain.BillStatus) *mockServiceRepo {
+		return &mockServiceRepo{
+			member: &repository.GroupMember{
+				ID:      uuid.New(),
+				GroupID: groupID,
+				UserID:  userID,
+				Role:    "member",
+				Status:  "active",
+			},
+			bill: &domain.Bill{ID: uuid.New(), GroupID: groupID, Status: status},
+		}
+	}
+
+	t.Run("lọc đúng trạng thái được yêu cầu", func(t *testing.T) {
+		repo := newRepo(domain.BillStatusVoided)
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10, []string{"voided"})
+		if err != nil {
+			t.Fatalf("ListBillsCursor() error = %v", err)
+		}
+		if len(res.Bills) != 1 {
+			t.Fatalf("expected 1 voided bill, got %d", len(res.Bills))
+		}
+		if len(repo.lastListStatuses) != 1 || repo.lastListStatuses[0] != "voided" {
+			t.Errorf("bộ lọc không được truyền xuống repository: %v", repo.lastListStatuses)
+		}
+	})
+
+	t.Run("trạng thái không khớp thì trang rỗng nhưng counts vẫn đủ", func(t *testing.T) {
+		repo := newRepo(domain.BillStatusDraft)
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10, []string{"finalized"})
+		if err != nil {
+			t.Fatalf("ListBillsCursor() error = %v", err)
+		}
+		if len(res.Bills) != 0 {
+			t.Fatalf("expected empty page, got %d bills", len(res.Bills))
+		}
+		// counts đếm toàn nhóm, không bị bộ lọc cắt bớt.
+		if res.Counts.Draft != 1 || res.Counts.Total != 1 {
+			t.Errorf("counts sai: %+v", res.Counts)
+		}
+	})
+
+	t.Run("không lọc thì trả tất cả", func(t *testing.T) {
+		repo := newRepo(domain.BillStatusReviewed)
+		service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
+
+		res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10, nil)
+		if err != nil {
+			t.Fatalf("ListBillsCursor() error = %v", err)
+		}
+		if len(res.Bills) != 1 || res.Counts.Reviewed != 1 {
+			t.Errorf("expected 1 reviewed bill, got %d bills / counts %+v", len(res.Bills), res.Counts)
+		}
+	})
+}
+
+func TestParseBillStatuses(t *testing.T) {
+	// covers: validate query param `status` của GET /api/v1/bills.
+	got, err := usecase.ParseBillStatuses([]string{"draft", " reviewed ", "draft", ""})
+	if err != nil {
+		t.Fatalf("ParseBillStatuses() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "draft" || got[1] != "reviewed" {
+		t.Errorf("expected [draft reviewed], got %v", got)
+	}
+
+	if _, err := usecase.ParseBillStatuses([]string{"settled"}); err == nil {
+		t.Error("expected error for unknown status")
+	}
+
+	empty, err := usecase.ParseBillStatuses(nil)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("nil input phải là bộ lọc rỗng, got %v / %v", empty, err)
+	}
+}
+
 func TestListBillsCursor_Success(t *testing.T) {
 	// covers: M-3, Spec 3 AC-12 (cursor-based bill listing)
 	groupID := uuid.New()
@@ -1181,7 +1291,7 @@ func TestListBillsCursor_Success(t *testing.T) {
 
 	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, &mockEnqueuer{})
 
-	res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10)
+	res, err := service.ListBillsCursor(context.Background(), userID, groupID, nil, 10, nil)
 	if err != nil {
 		t.Fatalf("ListBillsCursor() error = %v", err)
 	}
@@ -1230,7 +1340,7 @@ func TestAuthorization_InactiveOrNonMember_ReturnsForbidden(t *testing.T) {
 	}
 
 	// 3. ListBillsCursor
-	_, err = service.ListBillsCursor(ctx, userID, groupID, nil, 10)
+	_, err = service.ListBillsCursor(ctx, userID, groupID, nil, 10, nil)
 	if !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("ListBillsCursor expected ErrForbidden, got %v", err)
 	}
