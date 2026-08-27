@@ -88,7 +88,7 @@ type UpdateDraftParams struct {
 	ActorMemberID   uuid.UUID
 }
 
-// FinalizeBillParams chứa dữ liệu chốt hóa đơn và lưu snapshot phân bổ nợ Hamilton.
+// FinalizeBillParams chứa dữ liệu chốt hóa đơn và lưu snapshot phân bổ nợ chính xác.
 type FinalizeBillParams struct {
 	BillID          uuid.UUID
 	GroupID         uuid.UUID
@@ -271,10 +271,15 @@ type Repository interface {
 	// Nhóm không tồn tại hoặc đã archive trả về ErrBillNotFound (Spec 0008 Bill creation gate).
 	GetGroupSubmissionLock(ctx context.Context, groupID uuid.UUID) (*time.Time, error)
 
-	// LockSubmissions thực hiện trọn vẹn bước khóa một chiều trong một transaction:
+	// LockSubmissions thực hiện trọn vẹn bước khóa trong một transaction:
 	// khóa dòng nhóm, kiểm tra Captain, bật bill_submission_locked_at khi chưa có,
-	// ghi activity bill_submission_locked khi khóa thay đổi (Spec 0008 AC-1).
+	// ghi activity bill_submission_locked khi khóa thay đổi.
 	LockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) (*LockSubmissionsResult, error)
+
+	// UnlockSubmissions mở khóa gửi hóa đơn cho nhóm trong một transaction:
+	// khóa dòng nhóm, kiểm tra Captain, xóa bill_submission_locked_at (về NULL),
+	// ghi activity bill_submission_unlocked khi có thay đổi.
+	UnlockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) error
 
 	// StartBulkFinalize mở batch chốt toàn bộ trong một transaction theo đúng trình tự
 	// spec: khóa nhóm, kiểm tra Captain, bật khóa gửi hóa đơn, từ chối khi còn batch

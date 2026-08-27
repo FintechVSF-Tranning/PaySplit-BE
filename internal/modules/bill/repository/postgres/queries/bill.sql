@@ -279,7 +279,7 @@ DELETE FROM bill_item_assignments
 WHERE bill_item_id = $1;
 
 -- ============================================================================
--- BILL SHARES (Hamilton Finalized Snapshot)
+-- BILL SHARES (Exact Finalized Snapshot)
 -- ============================================================================
 
 -- name: CreateBillShare :one

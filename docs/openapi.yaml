@@ -476,6 +476,35 @@ paths:
         "403": {$ref: "#/components/responses/CaptainRequired"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/groups/{groupId}/bills/unlock-submissions:
+    post:
+      summary: Unlock bill submission for the group (allows new bills again)
+      operationId: unlockBillSubmissions
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Bill submission unlocked successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill_submission_locked: {type: boolean, example: false}
+                          bill_submission_locked_at: {type: string, nullable: true, example: null}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{groupId}/bills/finalize-all:
     post:
       summary: Start one asynchronous bulk finalize batch over every open draft (spec 0008)
@@ -2012,11 +2041,11 @@ components:
       type: object
       required: [item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount]
       properties:
-        item_subtotal: {type: string}
+        item_subtotal: {type: string, description: "Floor of the member exact item shares after aggregation across all participated items. Nested item_share values reconcile to this amount."}
         service_charge_share: {type: string}
         vat_share: {type: string}
         discount_share: {type: string}
-        rounding_adjustment: {type: string}
+        rounding_adjustment: {type: string, description: "final_amount - (item_subtotal + service_charge_share + vat_share - discount_share). It can belong to any member."}
         final_amount: {type: string}
     ExpenseBill:
       type: object
@@ -2700,7 +2729,7 @@ components:
         bill_id: {type: string, format: uuid}
         group_id: {type: string, format: uuid}
         member_id: {type: string, format: uuid}
-        item_subtotal: {type: integer, format: int64}
+        item_subtotal: {type: integer, format: int64, description: "Floor of the member exact item shares after aggregation across all participated items."}
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
@@ -2708,9 +2737,9 @@ components:
           type: integer
           format: int64
           description: >-
-            Zero for every member except the Creditor. For the Creditor it is the residual left after
-            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
-            be negative when discount remainders dominate.
+            final_amount minus item_subtotal, service_charge_share, and vat_share, plus discount_share.
+            It records the exact reconciliation once and can belong to any member selected by the
+            largest remainder rule. The Creditor has no rounding priority.
         final_amount: {type: integer, format: int64}
         created_at: {type: string, format: date-time}
 
@@ -2719,7 +2748,7 @@ components:
       required: [member_id, item_subtotal, service_charge_share, vat_share, discount_share, final_amount]
       properties:
         member_id: {type: string, format: uuid}
-        item_subtotal: {type: integer, format: int64}
+        item_subtotal: {type: integer, format: int64, description: "Floor of the member exact item shares after aggregation across all participated items."}
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
@@ -2727,9 +2756,9 @@ components:
           type: integer
           format: int64
           description: >-
-            Zero for every member except the Creditor. For the Creditor it is the residual left after
-            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
-            be negative when discount remainders dominate.
+            final_amount minus item_subtotal, service_charge_share, and vat_share, plus discount_share.
+            It records the exact reconciliation once and can belong to any member selected by the
+            largest remainder rule. The Creditor has no rounding priority.
         final_amount: {type: integer, format: int64}
 
     OCRJob:

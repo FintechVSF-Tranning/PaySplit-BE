@@ -142,7 +142,7 @@ type BillItemAssignment struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// BillShare là snapshot số tiền nợ chi tiết của thành viên sau khi Hamilton allocation (Spec 3 AC-9).
+// BillShare là snapshot số tiền nợ chi tiết của thành viên sau khi phân bổ chính xác (Spec 3 AC-9).
 type BillShare struct {
 	ID                 uuid.UUID `json:"id"`
 	BillID             uuid.UUID `json:"bill_id"`

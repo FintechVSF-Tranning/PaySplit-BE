@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -472,7 +473,7 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 	}, nil
 }
 
-// CalculateBreakdown tính toán phân bổ số tiền từng người theo thuật toán Floor Allocation mà không lưu DB.
+// CalculateBreakdown tính toán phân bổ chính xác số tiền từng người mà không lưu DB.
 func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID, req CalculateBreakdownRequest) (*CalculateBreakdownResponse, error) {
 	if req.GroupID == uuid.Nil {
 		return nil, domain.ErrInvalidInput
@@ -496,10 +497,13 @@ func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID
 	for _, it := range req.Items {
 		var assignments []ItemAssignmentInput
 		for _, a := range it.Assignments {
-			ratio, _ := strconv.ParseFloat(a.Weight, 64)
+			weight, parseErr := parseWeightToScaledIntStrict(a.Weight)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
+			}
 			assignments = append(assignments, ItemAssignmentInput{
 				MemberID: a.MemberID,
-				Ratio:    ratio,
+				Weight:   weight,
 			})
 		}
 		itemsTotal += it.LineTotal
@@ -509,7 +513,7 @@ func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID
 		})
 	}
 
-	// 3. Thực thi thuật toán CalculateFloorAllocation
+	// 3. Thực thi thuật toán phân bổ chính xác.
 	allocInput := AllocationInput{
 		CreditorID:    req.CreditorMemberID,
 		Subtotal:      req.Subtotal,
@@ -520,7 +524,7 @@ func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID
 		Items:         items,
 	}
 
-	allocations, err := CalculateFloorAllocation(allocInput)
+	allocations, err := CalculateAllocation(allocInput)
 	if err != nil {
 		return nil, err
 	}
@@ -1028,7 +1032,7 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		return nil, domain.ErrReviewRequired
 	}
 
-	// 2. Kiểm tra version khớp trước khi chạy thuật toán Hamilton (Spec 3 AC-9)
+	// 2. Kiểm tra version khớp trước khi chạy thuật toán phân bổ chính xác (Spec 3 AC-9)
 	if bill.Version != expectedVersion {
 		return nil, domain.ErrVersionConflict
 	}
@@ -1094,7 +1098,7 @@ type finalizationPlan struct {
 	beforeCommit  func(ctx context.Context, tx pgx.Tx) error
 }
 
-// buildFinalizationPlan biến kết quả phân bổ Hamilton thành snapshot shares,
+// buildFinalizationPlan biến kết quả phân bổ chính xác thành snapshot shares,
 // debts và thông báo cho từng thành viên. Hàm thuần túy, không IO, dùng chung
 // cho finalize đơn lẻ và item batch chốt toàn bộ (Spec 0008 Batch item transaction).
 func (s *Service) buildFinalizationPlan(bill *domain.Bill, groupID, actorMemberID uuid.UUID, allocations []*MemberAllocation, memberUserMap map[uuid.UUID]uuid.UUID) *finalizationPlan {
@@ -1104,7 +1108,7 @@ func (s *Service) buildFinalizationPlan(bill *domain.Bill, groupID, actorMemberI
 	notifications := make([]*repository.NotificationParam, 0, len(allocations))
 
 	for _, a := range allocations {
-		// CalculateFloorAllocation đã bảo đảm FinalAmount không âm và tổng khớp Total, nên ở đây
+		// CalculateAllocation đã bảo đảm FinalAmount không âm và tổng khớp Total, nên ở đây
 		// không kẹp lại lần nữa. Việc kẹp thừa từng che mất lỗi tổng vượt hóa đơn (Spec 3 AC-10).
 		amount := a.FinalAmount
 		roundingAdj := a.RoundingAdjustment
@@ -1282,15 +1286,31 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 }
 
 func parseWeightToScaledInt(weightStr string) int64 {
-	w, err := strconv.ParseFloat(weightStr, 64)
-	if err != nil || w <= 0 {
-		return 10000 // default 1.0000
-	}
-	scaled := int64(math.Round(w * 10000))
-	if scaled <= 0 {
-		return 10000
+	scaled, err := parseWeightToScaledIntStrict(weightStr)
+	if err != nil {
+		return weightScale
 	}
 	return scaled
+}
+
+// parseWeightToScaledIntStrict chuyển chuỗi thập phân sang trọng số nguyên mà không đi qua
+// float. Khi đầu vào có nhiều hơn tám chữ số thập phân, hàm làm tròn nửa lên ở biên này.
+func parseWeightToScaledIntStrict(weightStr string) (int64, error) {
+	weight, ok := new(big.Rat).SetString(strings.TrimSpace(weightStr))
+	if !ok || weight.Sign() <= 0 {
+		return 0, errors.New("weight must be a positive decimal")
+	}
+
+	scaled := new(big.Rat).Mul(weight, new(big.Rat).SetInt64(weightScale))
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(scaled.Num(), scaled.Denom(), remainder)
+	if new(big.Int).Lsh(remainder, 1).Cmp(scaled.Denom()) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	if !quotient.IsInt64() || quotient.Sign() <= 0 {
+		return 0, errors.New("weight exceeds supported range")
+	}
+	return quotient.Int64(), nil
 }
 
 func computeLineTotal(unitPrice int64, quantityStr string) int64 {

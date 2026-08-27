@@ -169,9 +169,9 @@ ALTER TABLE bills
 
 When calculating group member expenses in `internal/modules/bill/usecase/allocation.go`:
 
-1. **Item Share Calculation**: Each member assigned to an item receives a share of `item.FinalPrice` (the net price after item promotion), rather than the gross price:
-   $$\text{member\_item\_share} = \lfloor \text{item.FinalPrice} \times \text{weight} \rfloor$$
-2. **Member Item Subtotal**: $\text{member\_subtotal} = \sum \text{member\_item\_share}$.
+1. **Item Share Calculation**: Each member assigned to an item receives an exact rational share of `item.FinalPrice` (the net price after item promotion), rather than the gross price:
+   $$\text{member\_item\_share} = \text{item.FinalPrice} \times \text{integer weight} / \text{total item weight}$$
+2. **Member Item Subtotal**: $\text{member\_subtotal} = \sum \text{exact member\_item\_share}$. Money is rounded only after this aggregation under [Allocation and review](0002-allocation-review.md).
 3. **General Discount Allocation**: Only `Bill.GeneralDiscount` is allocated proportionally across members based on their $\text{member\_subtotal} / \text{net\_items\_total}$ ratio. Item specific discounts stay entirely with the members who consumed those specific items.
 
 ### Value sourcing

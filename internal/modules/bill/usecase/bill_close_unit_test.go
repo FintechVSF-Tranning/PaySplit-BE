@@ -693,3 +693,13 @@ func (f *authzFake) GetFinalizeBatch(ctx context.Context, batchID, groupID uuid.
 func (f *authzFake) ListBatchItemsPage(ctx context.Context, batchID uuid.UUID, cursor *string, limit int32) ([]*domain.BatchItemResult, *string, error) {
 	return []*domain.BatchItemResult{}, nil, nil
 }
+
+func TestUnlockSubmissions_Usecase(t *testing.T) {
+	gid, uid := uuid.New(), uuid.New()
+	mockRepo := &mockServiceRepo{}
+	svc := billusecase.NewService(mockRepo, nil, nil, nil, nil)
+
+	if err := svc.UnlockSubmissions(context.Background(), uid, gid); err != nil {
+		t.Fatalf("UnlockSubmissions returned error: %v", err)
+	}
+}

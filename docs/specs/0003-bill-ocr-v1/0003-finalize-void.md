@@ -25,7 +25,7 @@ Finalize is one synchronous PostgreSQL transaction guarded by the bill row, curr
 ### Finalize transaction
 
 1. Lock the bill first, then relevant membership and assignment rows in canonical UUID byte order.
-2. Rerun allocation with checked `int64` arithmetic. Reject overflow before any financial insert.
+2. Rerun allocation with checked integer and exact rational arithmetic. Reject overflow or an invalid rational before any financial insert.
 3. Insert one `bill_member_shares` row for every assigned member plus the Creditor. Keep zero rows for participant history.
 4. Insert one `debts` row for each non Creditor share whose final amount is positive. Map group and bill from the bill, debtor from the share, creditor from the bill, amount from final amount, status to `awaiting`, and payment and settlement fields to null. Do not create self debt, zero debt, or a due date.
 5. Set bill status and finalize fields. Insert exactly one `finalized_bill` activity and one River notification job per share snapshot, including the Creditor, in the same database transaction. Each job contains group ID, bill ID, member ID, final amount, Creditor ID, and activity ID.
@@ -35,12 +35,12 @@ Finalize is one synchronous PostgreSQL transaction guarded by the bill row, curr
 
 | Field | Meaning |
 |---|---|
-| `item_subtotal` | Sum of the member item allocations after item level floor rounding |
+| `item_subtotal` | Floor of the member exact item shares after they are added across all participated items |
 | `service_charge_share` | Member service allocation, or all service charge for the Creditor when subtotal is zero |
 | `vat_share` | Member VAT allocation, or all VAT for the Creditor when subtotal is zero |
 | `discount_share` | Member discount allocation, capped at what that member owes so their final amount never goes below zero |
-| `rounding_adjustment` | Zero for every member other than the Creditor. For the Creditor it is their final amount minus the sum of their four floor components, and it is negative when discount remainders dominate |
-| `final_amount` | Exact immutable amount attributed to the member |
+| `rounding_adjustment` | Final amount minus the integer component equation. It can belong to any member selected by largest remainder and is stored exactly once |
+| `final_amount` | Exact immutable integer VND awarded after largest remainder reconciliation |
 
 The sum of `final_amount` is bill total. The sum of positive non Creditor final amounts is the sum of debts for the bill. These are different invariants because the Creditor can consume part of the bill.
 
@@ -76,7 +76,7 @@ The sum of `final_amount` is bill total. The sum of positive non Creditor final 
 3. Build immutable detail reads and verify snapshot to debt traceability, satisfies **AC-10** and **AC-12**.
 4. Build void and replacement checks with payment boundary and concurrent request coverage, satisfies **AC-11**.
 5. Complete failure injection, OpenAPI, metrics, redaction, and end to end tests, satisfies **AC-9** through **AC-14**.
-6. Describe `rounding_adjustment` on the `BillShare` schema in OpenAPI as zero for every member except the Creditor, and add a test for a bill whose discount is valid in total but not allocatable, satisfies **AC-10** and **AC-12**.
+6. Describe the revised `rounding_adjustment` formula on the `BillShare` schema in OpenAPI, add deterministic largest remainder coverage, and retain the test for a bill whose discount is valid in total but not allocatable, satisfies **AC-10** and **AC-12**.
 
 ## Rationale
 

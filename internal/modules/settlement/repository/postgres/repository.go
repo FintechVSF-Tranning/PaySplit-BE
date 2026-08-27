@@ -464,7 +464,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, fmt.Errorf("link payment debts: %w", err)
 	}
 	metadata, _ := json.Marshal(map[string]any{"payment_id": pid, "creditor_member_id": cid, "amount": amount, "covered_debt_count": len(selected)})
-	if _, err = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_created','Payment QR created',$3)`, gid, debtorID, metadata); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_created','Đã tạo mã QR thanh toán',$3)`, gid, debtorID, metadata); err != nil {
 		return nil, false, err
 	}
 	if in.BeforeCommit != nil {
@@ -973,7 +973,7 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		return nil, domain.ErrDebtsNotAwaiting
 	}
 	metadata, _ := json.Marshal(map[string]any{"payment_id": pid, "creditor_member_id": payment.CreditorMemberID, "amount": payment.Amount, "has_note": in.Note != nil})
-	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_submitted','Payment proof submitted',$3)`, gid, memberID, metadata)
+	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_submitted','Đã gửi minh chứng thanh toán',$3)`, gid, memberID, metadata)
 	if e != nil {
 		return nil, e
 	}
@@ -1096,6 +1096,10 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 	}
 	var activity string
 	var metadata []byte
+	reason := ""
+	if in.Reason != nil {
+		reason = *in.Reason
+	}
 	if confirm {
 		_, e = tx.Exec(ctx, `UPDATE payments SET status='confirmed',confirmed_at=now(),updated_at=now() WHERE id=$1`, pid)
 		if e == nil {
@@ -1108,10 +1112,6 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		activity = "payment_confirmed"
 		metadata, _ = json.Marshal(map[string]any{"payment_id": pid, "debtor_member_id": payment.DebtorMemberID, "amount": payment.Amount, "settled_debt_count": len(ids)})
 	} else {
-		reason := ""
-		if in.Reason != nil {
-			reason = *in.Reason
-		}
 		_, e = tx.Exec(ctx, `UPDATE payments SET status='rejected',rejected_at=now(),rejection_reason=$2,updated_at=now() WHERE id=$1`, pid, reason)
 		if e == nil {
 			var tag pgconn.CommandTag
@@ -1126,7 +1126,17 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 	if e != nil {
 		return nil, nil, e
 	}
-	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member',$3,$4,$5)`, gid, memberID, activity, "Payment "+strings.TrimPrefix(activity, "payment_"), metadata)
+	var actDesc string
+	if confirm {
+		actDesc = "Đã xác nhận thanh toán"
+	} else {
+		if reason != "" {
+			actDesc = fmt.Sprintf("Đã từ chối minh chứng thanh toán: %s", reason)
+		} else {
+			actDesc = "Đã từ chối minh chứng thanh toán"
+		}
+	}
+	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member',$3,$4,$5)`, gid, memberID, activity, actDesc, metadata)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -1235,7 +1245,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 		return nil, e
 	}
 	metadata, _ := json.Marshal(map[string]any{"debt_id": did, "debtor_member_id": debtor, "amount": amount, "reminder_count": count})
-	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','debt_reminded','Debt reminder sent',$3)`, gid, memberID, metadata)
+	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','debt_reminded','Đã gửi lời nhắc thanh toán',$3)`, gid, memberID, metadata)
 	if e != nil {
 		return nil, e
 	}
@@ -1298,7 +1308,7 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 			return e
 		}
 		metadata, _ := json.Marshal(map[string]any{"debt_id": c.id, "debtor_member_id": c.debtor, "amount": c.amount, "reminder_count": c.count})
-		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','debt_reminded','Automated debt reminder sent',$2)`, c.group, metadata); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','debt_reminded','Hệ thống đã tự động gửi nhắc nợ',$2)`, c.group, metadata); e != nil {
 			return e
 		}
 		if before != nil {
@@ -1347,7 +1357,7 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 		}
 		hours := int64(time.Since(c.submitted).Hours())
 		metadata, _ := json.Marshal(map[string]any{"payment_id": c.id, "creditor_member_id": c.creditor, "debtor_member_id": c.debtor, "hours_pending": hours})
-		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','payment_stalled_confirmation','Payment confirmation is stalled',$2)`, c.group, metadata); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','payment_stalled_confirmation','Minh chứng thanh toán đang chờ xác nhận',$2)`, c.group, metadata); e != nil {
 			return e
 		}
 		if before != nil {

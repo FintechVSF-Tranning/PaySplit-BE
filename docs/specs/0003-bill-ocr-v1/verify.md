@@ -1,5 +1,15 @@
 # Verify: bill and OCR v1 (spec 0003)
 
+## Pending verification for the 2026 08 27 allocation revision
+
+- [x] Two items of 400000 VND and 800000 VND shared equally by six members produce 200000 VND for every member.
+- [x] A 100000 VND total shared equally by three members awards 33334 VND to the lowest canonical member UUID and 33333 VND to the other two when all fractions tie.
+- [x] Mixed item participation, private items, fee, VAT, general discount, zero subtotal, large values, and discount cap cases preserve every final invariant.
+- [x] Reordering members, items, participants, and Go map insertion produces identical output.
+- [x] Nested item shares sum to `ItemSubtotal`, and all member final amounts sum to the computed bill total.
+
+The checked Creditor absorption cases below are historical evidence for the previous allocator. They do not verify revised **AC-6** or **AC-10**.
+
 ## Commands and runtime evidence
 - [x] `go test -v ./internal/modules/bill/repository/postgres/...` (PostgreSQL integration test with real database transactions) (satisfies AC-1, AC-5, AC-7, AC-9, AC-10, AC-11)
 - [x] `go test -v ./internal/modules/bill/jobs/...` (River queue OCR background worker test, plus retention job registration) (satisfies AC-2, AC-3, AC-11, AC-13)
@@ -57,11 +67,11 @@ Fixture: `testdata/bills/anh2.png`, a real VinCommerce (VM Royal City) supermark
 - [x] AC-3: LlamaExtract client extracts structured candidate with nonnegative integer VND monetary values.
 - [x] AC-4: Explicit candidate application updates draft bill without automatic silent overwrites.
 - [x] AC-5: Full draft replacement with optimistic locking version check and up to 100 items.
-- [x] AC-6: Item assignment ratios sum to 1.0, preview uses floor allocation with the Creditor absorbing every remainder, and the read path returns the stable blocker codes that explain an absent breakdown.
+- [x] AC-6: Exact item shares are aggregated before rounding, largest remainder uses stable UUID tie breaking, and the read path returns the stable blocker codes that explain an absent breakdown.
 - [x] AC-7: Explicit review checks that subtotal and total reconcile before finalizing.
 - [x] AC-8: Group member authorization blocks unauthorized callers and generates short lived signed URLs.
 - [x] AC-9: Synchronous transactional finalization creates immutable bill shares and positive awaiting debts.
-- [x] AC-10: Sum of final shares equals bill total, the Creditor absorbs every remainder, and no member final amount is negative.
+- [x] AC-10: Sum of final shares equals bill total, every remainder is distributed without Creditor priority, and no member final amount is negative.
 - [x] AC-11: Safe void transitions bill and debts to voided while preserving history for replacement.
 - [x] AC-12: List and detail reads expose bill state, breakdown, and signed image URLs.
 - [x] AC-13: Draft deletion removes bill records and enqueues Cloudinary media cleanup jobs.
