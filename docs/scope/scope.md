@@ -94,8 +94,8 @@ Provide manual and multi image bill drafts, private receipt storage, durable Lla
   - [x] Regression, permutation, boundary, and performance coverage (satisfies revised AC-6, AC-10, AC-14)
 - [x] Verify allocation rounding revision: `/check verify bill allocation rounding`
 - [ ] Test allocation rounding revision: `/test bill allocation rounding`
-- [ ] Review allocation rounding revision (fresh model): `/check review bill allocation rounding`
-- [ ] Document allocation rounding revision: `/document bill allocation rounding`
+- [x] Review allocation rounding revision (fresh model): `/check review bill allocation rounding`
+- [x] Document allocation rounding revision: `/document bill allocation rounding`
 
 Spec [0003](../specs/0003-bill-ocr-v1/index.md) · planned code in `internal/modules/bill/`, `internal/platform/ocr/`, `internal/platform/storage/cloudinary/`, and `internal/bootstrap/`
 
