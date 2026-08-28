@@ -20,6 +20,21 @@ func TestLoadAuthDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPrefersPlatformPortOverHTTPPort(t *testing.T) {
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "HTTP_HOST": "0.0.0.0", "HTTP_PORT": "8080", "PORT": "36015", "HTTP_ADDRESS": ""}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.App.Port != "36015" || cfg.App.Address != "0.0.0.0:36015" {
+		t.Fatalf("server address = %q with port %q, want Vercel platform port 36015", cfg.App.Address, cfg.App.Port)
+	}
+}
+
 func TestValidateRejectsMissingGmail(t *testing.T) {
 	cfg := validConfig()
 	cfg.SMTP.AppPassword = ""
