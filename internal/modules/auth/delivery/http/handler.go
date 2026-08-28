@@ -13,13 +13,15 @@ import (
 
 	"paysplit-backend/internal/modules/auth/domain"
 	"paysplit-backend/internal/modules/auth/usecase"
+	"paysplit-backend/internal/platform/auth/realtimejwt"
 	"paysplit-backend/internal/transport/http/helpers"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
 type Handler struct {
-	service   *usecase.Service
-	avatarURL func(string) string
+	service     *usecase.Service
+	avatarURL   func(string) string
+	realtimeJWT *realtimejwt.Manager
 }
 
 func NewHandler(service *usecase.Service, avatarURL func(string) string) *Handler {

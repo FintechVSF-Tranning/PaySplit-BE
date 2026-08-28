@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-func (h *Handler) RegisterAuthRoutes(router chi.Router, tokenAuth func(http.Handler) http.Handler) {
+func (h *Handler) RegisterAuthRoutes(router chi.Router, tokenAuth func(http.Handler) http.Handler, liveAuth func(http.Handler) http.Handler) {
 	router.Post("/sign-up", h.SignUp)
 	router.Post("/verify-email", h.VerifyEmail)
 	router.Post("/resend-verification", h.ResendVerification)
@@ -14,6 +14,9 @@ func (h *Handler) RegisterAuthRoutes(router chi.Router, tokenAuth func(http.Hand
 	router.Post("/forgot-password", h.ForgotPassword)
 	router.Post("/reset-password", h.ResetPassword)
 	router.With(tokenAuth).Post("/sign-out", h.SignOut)
+	if liveAuth != nil {
+		router.With(liveAuth).Post("/realtime-token", h.GetRealtimeToken)
+	}
 }
 func (h *Handler) RegisterUserRoutes(router chi.Router, liveAuth func(http.Handler) http.Handler) {
 	router.Group(func(protected chi.Router) {

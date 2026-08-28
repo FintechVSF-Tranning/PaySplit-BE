@@ -3,6 +3,7 @@ package jobs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -21,6 +22,7 @@ import (
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/modules/bill/usecase"
 	platformmetrics "paysplit-backend/internal/platform/metrics"
+	"paysplit-backend/internal/platform/queue/appjob"
 )
 
 // Bộ mã lỗi OCR đóng (bounded), dùng cho ocr_jobs.error_message, SSE và nhãn Prometheus.
@@ -119,19 +121,41 @@ func NewOCRWorker(
 
 // Work được River Queue tự động kích hoạt khi có job OCR trong hàng đợi.
 func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error {
+	attempt := 1
+	maxAttempts := 5
+	if job != nil {
+		if job.JobRow != nil {
+			attempt = job.JobRow.Attempt
+			maxAttempts = job.JobRow.MaxAttempts
+		}
+		return w.processOCR(ctx, job.Args.BillID, job.Args.JobID, job.Args.GroupID, attempt, maxAttempts)
+	}
+	return nil
+}
+
+// Execute triển khai appjob.JobHandler cho OCRWorker (Spec 0010 AC-11)
+func (w *OCRWorker) Execute(ctx context.Context, job appjob.Job) error {
+	var args OCRJobArgs
+	if err := json.Unmarshal(job.Args, &args); err != nil {
+		return fmt.Errorf("unmarshal ocr job args: %w", err)
+	}
+	return w.processOCR(ctx, args.BillID, args.JobID, args.GroupID, job.Attempts, job.MaxAttempts)
+}
+
+func (w *OCRWorker) processOCR(ctx context.Context, billIDStr, jobIDStr, groupIDStr string, attempt, maxAttempts int) error {
 	if w.repo == nil || w.storage == nil || w.ocrProvider == nil {
 		return errors.New("ocr worker dependencies not configured")
 	}
 
-	billID, err := uuid.Parse(job.Args.BillID)
+	billID, err := uuid.Parse(billIDStr)
 	if err != nil {
 		return nil
 	}
-	jobID, err := uuid.Parse(job.Args.JobID)
+	jobID, err := uuid.Parse(jobIDStr)
 	if err != nil {
 		return nil
 	}
-	groupID, err := uuid.Parse(job.Args.GroupID)
+	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
 		return nil
 	}
@@ -187,8 +211,8 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 	for _, img := range bill.Images {
 		b, err := w.storage.Download(ctx, img.ImageKey)
 		if err != nil {
-			if job.Attempt >= job.MaxAttempts {
-				log.Printf("event=ocr_download_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, job.Attempt, err)
+			if maxAttempts > 0 && attempt >= maxAttempts {
+				log.Printf("event=ocr_download_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, attempt, err)
 				_ = w.failJob(ctx, jobID, billID, ocrErrorDownloadFailed)
 				return nil
 			}
@@ -222,14 +246,14 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 			return nil
 		}
 
-		// Nếu hết số lần retry tối đa của River Queue
-		if job.Attempt >= job.MaxAttempts {
-			log.Printf("event=ocr_provider_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, job.Attempt, err)
+		// Nếu hết số lần retry tối đa
+		if maxAttempts > 0 && attempt >= maxAttempts {
+			log.Printf("event=ocr_provider_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, attempt, err)
 			_ = w.failJob(ctx, jobID, billID, classifyProviderError(err))
 			return nil
 		}
 
-		// Trả về error để River Queue tự động retry với exponential backoff
+		// Trả về error để hàng đợi tự động retry với exponential backoff
 		return fmt.Errorf("extract receipt: %w", err)
 	}
 
@@ -287,6 +311,15 @@ type OCRRetentionWorker struct {
 // NewOCRRetentionWorker khởi tạo OCRRetentionWorker.
 func NewOCRRetentionWorker(repo repository.Repository) *OCRRetentionWorker {
 	return &OCRRetentionWorker{repo: repo}
+}
+
+// Execute triển khai appjob.JobHandler cho OCRRetentionWorker
+func (w *OCRRetentionWorker) Execute(ctx context.Context, job appjob.Job) error {
+	var args OCRRetentionJobArgs
+	if len(job.Args) > 0 {
+		_ = json.Unmarshal(job.Args, &args)
+	}
+	return w.Work(ctx, &river.Job[OCRRetentionJobArgs]{Args: args})
 }
 
 // PollQueueDepth định kỳ đọc trực tiếp số lượng job OCR đang queued/processing từ database và ghi
@@ -354,6 +387,11 @@ func NewIdempotencyRetentionWorker(repo repository.Repository) *IdempotencyReten
 	return &IdempotencyRetentionWorker{repo: repo}
 }
 
+// Execute triển khai appjob.JobHandler cho IdempotencyRetentionWorker
+func (w *IdempotencyRetentionWorker) Execute(ctx context.Context, job appjob.Job) error {
+	return w.Work(ctx, &river.Job[IdempotencyRetentionJobArgs]{})
+}
+
 // Work xóa mọi bản ghi idempotency đã quá hạn.
 func (w *IdempotencyRetentionWorker) Work(ctx context.Context, job *river.Job[IdempotencyRetentionJobArgs]) error {
 	if w.repo == nil {
@@ -369,16 +407,24 @@ func (w *IdempotencyRetentionWorker) Work(ctx context.Context, job *river.Job[Id
 	return nil
 }
 
-// Enqueuer hỗ trợ đẩy công việc OCR vào River Queue.
+// Enqueuer hỗ trợ đẩy công việc OCR vào River Queue hoặc durable app_jobs.
 type Enqueuer struct {
 	client         *river.Client[pgx.Tx]
+	appjobEnqueuer appjob.Enqueuer
 	ocrMaxAttempts int
 }
 
 // NewEnqueuer khởi tạo Enqueuer cho module Bill & OCR.
-// ocrMaxAttempts áp dụng cho các job OCR (BILL_OCR_MAX_ATTEMPTS, Spec 3 AC-3); <=0 dùng mặc định của River.
 func NewEnqueuer(client *river.Client[pgx.Tx], ocrMaxAttempts int) *Enqueuer {
 	return &Enqueuer{client: client, ocrMaxAttempts: ocrMaxAttempts}
+}
+
+func NewAppJobBillEnqueuer(enqueuer appjob.Enqueuer, ocrMaxAttempts int) *Enqueuer {
+	return &Enqueuer{appjobEnqueuer: enqueuer, ocrMaxAttempts: ocrMaxAttempts}
+}
+
+func (e *Enqueuer) SetAppJobEnqueuer(enqueuer appjob.Enqueuer) {
+	e.appjobEnqueuer = enqueuer
 }
 
 func (e *Enqueuer) ocrInsertOpts() *river.InsertOpts {
@@ -388,32 +434,56 @@ func (e *Enqueuer) ocrInsertOpts() *river.InsertOpts {
 	return &river.InsertOpts{MaxAttempts: e.ocrMaxAttempts}
 }
 
-// EnqueueOCRJobTx đẩy job OCR vào River Queue trong cùng database transaction tx.
+// EnqueueOCRJobTx đẩy job OCR vào queue trong cùng database transaction tx.
 func (e *Enqueuer) EnqueueOCRJobTx(ctx context.Context, tx pgx.Tx, billID, jobID, groupID uuid.UUID) error {
-	if e == nil || e.client == nil {
+	if e == nil {
 		return nil
 	}
 
-	_, err := e.client.InsertTx(ctx, tx, OCRJobArgs{
+	args := OCRJobArgs{
 		BillID:  billID.String(),
 		JobID:   jobID.String(),
 		GroupID: groupID.String(),
-	}, e.ocrInsertOpts())
-	return err
+	}
+
+	if e.appjobEnqueuer != nil {
+		idempotencyKey := "ocr:" + jobID.String()
+		_, err := e.appjobEnqueuer.EnqueueTx(ctx, tx, appjob.KindOCRProcess, idempotencyKey, args, 10, 0)
+		return err
+	}
+
+	if e.client != nil {
+		_, err := e.client.InsertTx(ctx, tx, args, e.ocrInsertOpts())
+		return err
+	}
+
+	return nil
 }
 
-// EnqueueOCRJob đẩy job OCR vào River Queue không dùng transaction ngoài.
+// EnqueueOCRJob đẩy job OCR vào queue không dùng transaction ngoài.
 func (e *Enqueuer) EnqueueOCRJob(ctx context.Context, billID, jobID, groupID uuid.UUID) error {
-	if e == nil || e.client == nil {
+	if e == nil {
 		return nil
 	}
 
-	_, err := e.client.Insert(ctx, OCRJobArgs{
+	args := OCRJobArgs{
 		BillID:  billID.String(),
 		JobID:   jobID.String(),
 		GroupID: groupID.String(),
-	}, e.ocrInsertOpts())
-	return err
+	}
+
+	if e.appjobEnqueuer != nil {
+		idempotencyKey := "ocr:" + jobID.String()
+		_, err := e.appjobEnqueuer.Enqueue(ctx, appjob.KindOCRProcess, idempotencyKey, args, 10, 0)
+		return err
+	}
+
+	if e.client != nil {
+		_, err := e.client.Insert(ctx, args, e.ocrInsertOpts())
+		return err
+	}
+
+	return nil
 }
 
 // NotificationJobArgs định nghĩa payload công việc gửi thông báo trong River Queue.
@@ -424,16 +494,27 @@ type NotificationJobArgs struct {
 // Kind định danh loại job trong River Queue.
 func (NotificationJobArgs) Kind() string { return "send_notification" }
 
-// EnqueueNotificationTx đẩy job gửi thông báo vào River Queue trong cùng database transaction tx.
+// EnqueueNotificationTx đẩy job gửi thông báo vào queue trong cùng database transaction tx.
 func (e *Enqueuer) EnqueueNotificationTx(ctx context.Context, tx pgx.Tx, notificationID string) error {
-	if e == nil || e.client == nil {
+	if e == nil {
 		return nil
 	}
 
-	_, err := e.client.InsertTx(ctx, tx, NotificationJobArgs{
-		NotificationID: notificationID,
-	}, nil)
-	return err
+	if e.appjobEnqueuer != nil {
+		idempotencyKey := "notif:" + notificationID
+		args := NotificationJobArgs{NotificationID: notificationID}
+		_, err := e.appjobEnqueuer.EnqueueTx(ctx, tx, appjob.KindNotificationPush, idempotencyKey, args, 0, 0)
+		return err
+	}
+
+	if e.client != nil {
+		_, err := e.client.InsertTx(ctx, tx, NotificationJobArgs{
+			NotificationID: notificationID,
+		}, nil)
+		return err
+	}
+
+	return nil
 }
 
 // BulkFinalizeItemArgs định nghĩa payload công việc xử lý một item batch chốt toàn bộ (Spec 0008 AC-4).
@@ -446,19 +527,31 @@ type BulkFinalizeItemArgs struct {
 // Kind định danh loại job trong River Queue.
 func (BulkFinalizeItemArgs) Kind() string { return "bill_bulk_finalize_item" }
 
-// EnqueueBulkFinalizeItemTx đẩy job xử lý item batch vào River Queue trong cùng
+// EnqueueBulkFinalizeItemTx đẩy job xử lý item batch vào queue trong cùng
 // database transaction tx, bảo đảm một item chỉ tồn tại khi batch đã commit (Spec 0008 AC-4).
 func (e *Enqueuer) EnqueueBulkFinalizeItemTx(ctx context.Context, tx pgx.Tx, batchID, billID, groupID uuid.UUID) error {
-	if e == nil || e.client == nil {
+	if e == nil {
 		return nil
 	}
 
-	_, err := e.client.InsertTx(ctx, tx, BulkFinalizeItemArgs{
+	args := BulkFinalizeItemArgs{
 		BatchID: batchID.String(),
 		BillID:  billID.String(),
 		GroupID: groupID.String(),
-	}, nil)
-	return err
+	}
+
+	if e.appjobEnqueuer != nil {
+		idempotencyKey := fmt.Sprintf("bulk_finalize:%s:%s", batchID.String(), billID.String())
+		_, err := e.appjobEnqueuer.EnqueueTx(ctx, tx, appjob.KindBulkFinalizeItem, idempotencyKey, args, 5, 0)
+		return err
+	}
+
+	if e.client != nil {
+		_, err := e.client.InsertTx(ctx, tx, args, nil)
+		return err
+	}
+
+	return nil
 }
 
 func stitchReceiptImages(images [][]byte) ([]byte, error) {

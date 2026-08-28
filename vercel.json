@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "regions": ["sin1"],
+  "functions": {
+    "api/index.go": {
+      "maxDuration": 50
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index.go"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/internal/jobs/dispatch",
+      "schedule": "0 0 * * *"
+    }
+  ]
+}

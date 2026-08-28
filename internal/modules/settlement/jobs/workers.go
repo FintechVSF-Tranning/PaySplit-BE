@@ -9,6 +9,7 @@ import (
 	"paysplit-backend/internal/modules/settlement/repository"
 	"paysplit-backend/internal/modules/settlement/usecase"
 	platformmetrics "paysplit-backend/internal/platform/metrics"
+	"paysplit-backend/internal/platform/queue/appjob"
 )
 
 type ScanArgs struct{}
@@ -37,6 +38,24 @@ func (w *ScanWorker) Work(ctx context.Context, _ *river.Job[ScanArgs]) error {
 	return err
 }
 
+func NewScanWorker(service *usecase.Service, reminderAge, stalledAge time.Duration, maxCount int) *ScanWorker {
+	if reminderAge <= 0 {
+		reminderAge = 72 * time.Hour
+	}
+	if stalledAge <= 0 {
+		stalledAge = 48 * time.Hour
+	}
+	if maxCount <= 0 {
+		maxCount = 3
+	}
+	return &ScanWorker{service: service, reminderAge: reminderAge, stalledAge: stalledAge, maxCount: maxCount}
+}
+
+// Execute triển khai appjob.JobHandler cho ScanWorker (Spec 0010 AC-11)
+func (w *ScanWorker) Execute(ctx context.Context, job appjob.Job) error {
+	return w.Work(ctx, &river.Job[ScanArgs]{})
+}
+
 type CleanupArgs struct{}
 
 func (CleanupArgs) Kind() string { return "settlement_cleanup" }
@@ -48,6 +67,10 @@ type CleanupWorker struct {
 	river.WorkerDefaults[CleanupArgs]
 	repo    repository.Repository
 	storage cleanupStorage
+}
+
+func NewCleanupWorker(repo repository.Repository, storage cleanupStorage) *CleanupWorker {
+	return &CleanupWorker{repo: repo, storage: storage}
 }
 
 func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) error {
@@ -62,6 +85,11 @@ func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) err
 		platformmetrics.RecordSettlementWorkerRun("cleanup", "success")
 	}
 	return err
+}
+
+// Execute triển khai appjob.JobHandler cho CleanupWorker (Spec 0010 AC-11)
+func (w *CleanupWorker) Execute(ctx context.Context, job appjob.Job) error {
+	return w.Work(ctx, &river.Job[CleanupArgs]{})
 }
 
 func Register(workers *river.Workers, service *usecase.Service, repo repository.Repository, storage cleanupStorage, reminderAge, stalledAge time.Duration, maxCount int) []*river.PeriodicJob {

@@ -20,6 +20,54 @@ paths:
       tags: [Health]
       responses:
         "200": {description: Healthy}
+  /api/v1/app-config:
+    get:
+      summary: Retrieve client sync and realtime configuration
+      operationId: getAppConfig
+      tags: [Config]
+      responses:
+        "200":
+          description: Client configuration
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AppConfigResponse"
+  /api/v1/sync/versions:
+    get:
+      summary: Consolidated fallback polling for aggregate versions across all user groups
+      operationId: getSyncVersions
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: after
+          in: query
+          required: false
+          schema: {type: string}
+          description: Opaque HMAC-signed sync cursor
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, default: 500, minimum: 1, maximum: 500}
+      responses:
+        "200":
+          description: Version invalidations delta
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SyncVersionsResponse"
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/auth/sign-up:
     post:
       operationId: signUp
@@ -130,6 +178,29 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         "204": {description: Session revoked}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /api/v1/auth/realtime-token:
+    post:
+      summary: Issue ES256 short-lived JWT for Supabase Realtime Broadcast authorization
+      operationId: getRealtimeToken
+      tags: [Auth]
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Realtime JWT token issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [token, expires_at]
+                        properties:
+                          token: {type: string, description: "ES256 signed JWT with kid header"}
+                          expires_at: {type: string, format: date-time}
         "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/auth/forgot-password:
     post:
@@ -845,8 +916,10 @@ paths:
 
   /api/v1/groups/{id}/events:
     get:
-      summary: Stream group events via Server-Sent Events (SSE)
+      summary: Stream group events via Server-Sent Events (SSE) (Deprecated)
+      deprecated: true
       description: |
+        Deprecated: In Spec 0010 serverless runtime, real-time invalidations are delivered via Supabase Realtime Broadcast and fallback polling (/api/v1/sync/versions).
         Kênh nóng của giao thức đồng bộ nhóm. Không bọc SuccessEnvelope: response
         là text/event-stream.
 
@@ -1322,7 +1395,10 @@ paths:
 
   /api/v1/bills/{id}/events:
     get:
-      summary: Stream bill events via Server-Sent Events (SSE)
+      summary: Stream bill events via Server-Sent Events (SSE) (Deprecated)
+      deprecated: true
+      description: |
+        Deprecated: In Spec 0010 serverless runtime, real-time invalidations are delivered via Supabase Realtime Broadcast and fallback polling (/api/v1/sync/versions).
       operationId: streamBillEvents
       tags: [Bills]
       security: [{bearerAuth: []}]
@@ -2070,6 +2146,37 @@ components:
           properties: {total_owed: {type: string}, total_settled: {type: string}, total_receivable: {type: string}, net_balance: {type: string}}
         bills: {type: array, items: {$ref: "#/components/schemas/ExpenseBill"}}
         next_cursor: {type: string, nullable: true}
+    AppConfigResponse:
+      type: object
+      required: [realtime_mode, poll_interval_seconds, poll_jitter_percent, max_group_channels, sync_page_limit, sync_max_bytes, sync_max_pages_per_cycle]
+      properties:
+        realtime_mode: {type: string, enum: [supabase, polling]}
+        poll_interval_seconds: {type: integer, example: 10}
+        poll_jitter_percent: {type: integer, example: 20}
+        max_group_channels: {type: integer, example: 10}
+        sync_page_limit: {type: integer, example: 500}
+        sync_max_bytes: {type: integer, example: 262144}
+        sync_max_pages_per_cycle: {type: integer, example: 4}
+        supabase_url: {type: string, nullable: true}
+        supabase_publishable_key: {type: string, nullable: true}
+    SyncVersionsResponse:
+      type: object
+      required: [watermark, membership_sync_version, aggregates, next_cursor, has_more]
+      properties:
+        watermark: {type: integer, format: int64}
+        membership_sync_version: {type: integer, format: int64}
+        aggregates:
+          type: array
+          items:
+            type: object
+            required: [group_id, aggregate_type, aggregate_id, version]
+            properties:
+              group_id: {type: string, format: uuid}
+              aggregate_type: {type: string, enum: [group, bill, settlement]}
+              aggregate_id: {type: string, format: uuid}
+              version: {type: integer, format: int64}
+        next_cursor: {type: string}
+        has_more: {type: boolean}
     Debt:
       type: object
       required: [id, bill_id, bill_date, merchant_name, debtor_member_id, debtor_display_name, debtor_avatar_url, creditor_member_id, creditor_display_name, creditor_avatar_url, amount, status, reminder_count, payment_id, created_at, settled_at]

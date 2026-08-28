@@ -10,6 +10,7 @@ import (
 	"paysplit-backend/internal/modules/notification/domain"
 	"paysplit-backend/internal/modules/notification/repository"
 	"paysplit-backend/internal/platform/notification/fcm"
+	"paysplit-backend/internal/platform/queue/appjob"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -55,11 +56,24 @@ func NewNotificationWorker(repo Repository, pushNotifier PushNotifier) *Notifica
 // Job nạp lại nội dung từ bản ghi notifications thay vì mang sẵn title/body/payload, vì River
 // đảm bảo giao at-least-once và cần NotificationID làm handle để chống trùng lặp/nạp lại nội dung.
 func (w *NotificationWorker) Work(ctx context.Context, job *river.Job[NotificationJobArgs]) error {
-	if w.pushNotifier == nil || job.Args.NotificationID == "" {
+	return w.processNotification(ctx, job.Args.NotificationID)
+}
+
+// Execute triển khai appjob.JobHandler cho serverless durable queue (Spec 0010 AC-11)
+func (w *NotificationWorker) Execute(ctx context.Context, job appjob.Job) error {
+	var args NotificationJobArgs
+	if err := json.Unmarshal(job.Args, &args); err != nil {
+		return fmt.Errorf("unmarshal notification job args: %w", err)
+	}
+	return w.processNotification(ctx, args.NotificationID)
+}
+
+func (w *NotificationWorker) processNotification(ctx context.Context, notificationID string) error {
+	if w.pushNotifier == nil || notificationID == "" {
 		return nil
 	}
 
-	notif, err := w.repo.GetNotificationByID(ctx, job.Args.NotificationID)
+	notif, err := w.repo.GetNotificationByID(ctx, notificationID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotificationNotFound) {
 			// Bản ghi thông báo không còn tồn tại (vd: user đã bị xóa) -> hoàn tất job, không retry.
@@ -90,7 +104,7 @@ func (w *NotificationWorker) Work(ctx context.Context, job *river.Job[Notificati
 			log.Printf("event=fcm_invalid_message notification_id=%s user_id=%s err=%v", notif.ID, notif.UserID, sendErr)
 			return nil
 		}
-		// Trả về lỗi để River Queue tự động retry với exponential backoff
+		// Trả về lỗi để hàng đợi tự động retry với exponential backoff
 		return sendErr
 	}
 
@@ -114,19 +128,27 @@ func payloadToData(payload json.RawMessage) map[string]string {
 	return data
 }
 
-// Enqueuer hỗ trợ đẩy công việc gửi thông báo vào River Queue
+// Enqueuer hỗ trợ đẩy công việc gửi thông báo vào River Queue hoặc durable app_jobs
 type Enqueuer struct {
-	client *river.Client[pgx.Tx]
+	client         *river.Client[pgx.Tx]
+	appjobEnqueuer appjob.Enqueuer
 }
 
 func NewEnqueuer(client *river.Client[pgx.Tx]) *Enqueuer {
 	return &Enqueuer{client: client}
 }
 
-// EnqueueNotificationTx đẩy job gửi push cho notificationID vào River Queue, tham gia cùng
-// transaction ex với việc lưu bản ghi notifications để đảm bảo cả hai thao tác nguyên tử.
+func NewAppJobEnqueuer(enqueuer appjob.Enqueuer) *Enqueuer {
+	return &Enqueuer{appjobEnqueuer: enqueuer}
+}
+
+func (e *Enqueuer) SetAppJobEnqueuer(enqueuer appjob.Enqueuer) {
+	e.appjobEnqueuer = enqueuer
+}
+
+// EnqueueNotificationTx đẩy job gửi push cho notificationID vào queue
 func (e *Enqueuer) EnqueueNotificationTx(ctx context.Context, ex repository.Executor, notificationID string) error {
-	if e == nil || e.client == nil {
+	if e == nil {
 		return nil
 	}
 
@@ -135,6 +157,17 @@ func (e *Enqueuer) EnqueueNotificationTx(ctx context.Context, ex repository.Exec
 		return fmt.Errorf("enqueue notification: invalid transaction executor")
 	}
 
-	_, err := e.client.InsertTx(ctx, tx, NotificationJobArgs{NotificationID: notificationID}, nil)
-	return err
+	if e.appjobEnqueuer != nil {
+		idempotencyKey := "notif:" + notificationID
+		args := NotificationJobArgs{NotificationID: notificationID}
+		_, err := e.appjobEnqueuer.EnqueueTx(ctx, tx, appjob.KindNotificationPush, idempotencyKey, args, 0, 0)
+		return err
+	}
+
+	if e.client != nil {
+		_, err := e.client.InsertTx(ctx, tx, NotificationJobArgs{NotificationID: notificationID}, nil)
+		return err
+	}
+
+	return nil
 }

@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"paysplit-backend/internal/config"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,11 +19,42 @@ func ParsePoolConfig(cfg config.DatabaseConfig) (*pgxpool.Config, error) {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
 
-	poolConfig.MaxConns = cfg.MaxConns
-	poolConfig.MinConns = cfg.MinConns
-	poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
-	poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
-	poolConfig.HealthCheckPeriod = cfg.HealthCheckPeriod
+	if cfg.MaxConns > 0 {
+		poolConfig.MaxConns = cfg.MaxConns
+	}
+	if cfg.MinConns >= 0 {
+		poolConfig.MinConns = cfg.MinConns
+	}
+	if cfg.MaxConnLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
+	}
+	if cfg.MaxConnIdleTime > 0 {
+		poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
+	}
+	if cfg.HealthCheckPeriod > 0 {
+		poolConfig.HealthCheckPeriod = cfg.HealthCheckPeriod
+	}
+
+	// Cấu hình QueryExecModeExec khi sử dụng Transaction Pooler (Supabase Supavisor trên cổng 6543).
+	// Transaction pooler không hỗ trợ prepared statement xuyên suốt các session, do đó cần dùng Exec mode.
+	if strings.EqualFold(cfg.PoolMode, "transaction") || strings.Contains(cfg.URL, ":6543") {
+		poolConfig.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+	}
+
+	if cfg.ApplicationName != "" {
+		if poolConfig.ConnConfig.RuntimeParams == nil {
+			poolConfig.ConnConfig.RuntimeParams = make(map[string]string)
+		}
+		poolConfig.ConnConfig.RuntimeParams["application_name"] = cfg.ApplicationName
+	}
+
+	if cfg.IdleInTransactionTimeout > 0 {
+		if poolConfig.ConnConfig.RuntimeParams == nil {
+			poolConfig.ConnConfig.RuntimeParams = make(map[string]string)
+		}
+		poolConfig.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = fmt.Sprintf("%dms", cfg.IdleInTransactionTimeout.Milliseconds())
+	}
+
 	return poolConfig, nil
 }
 
@@ -45,3 +78,4 @@ func NewPostgresPool(ctx context.Context, cfg config.DatabaseConfig) (*pgxpool.P
 	}
 	return pool, nil
 }
+

@@ -31,6 +31,9 @@ type Config struct {
 	GroupSync  GroupSyncConfig
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
+	Job        JobConfig
+	Realtime   RealtimeConfig
+	Sync       SyncConfig
 }
 
 // MetricsConfig chứa cấu hình Prometheus metrics scraper.
@@ -42,6 +45,7 @@ type MetricsConfig struct {
 // AppConfig chứa cấu hình HTTP server và middleware ở cấp tiến trình.
 type AppConfig struct {
 	Environment                string
+	RuntimeRole                string
 	Host                       string
 	Port                       string
 	Address                    string
@@ -58,12 +62,64 @@ type AppConfig struct {
 // DatabaseConfig chứa cấu hình kết nối và pool PostgreSQL; giá trị này không
 // đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
-	URL               string
-	MaxConns          int32
-	MinConns          int32
-	MaxConnLifetime   time.Duration
-	MaxConnIdleTime   time.Duration
-	HealthCheckPeriod time.Duration
+	URL                      string
+	PoolMode                 string
+	MaxConns                 int32
+	MinConns                 int32
+	MaxConnLifetime          time.Duration
+	MaxConnIdleTime          time.Duration
+	HealthCheckPeriod        time.Duration
+	AcquireTimeout           time.Duration
+	IdleInTransactionTimeout time.Duration
+	ApplicationName          string
+}
+
+// JobConfig chứa cấu hình cho hàng đợi durable app_jobs (Spec 0010).
+type JobConfig struct {
+	ProcessingEnabled      bool
+	TriggerSecret          string
+	CronSecret             string
+	BatchSize              int
+	DispatcherTimeout      time.Duration
+	DispatcherLease        time.Duration
+	InvocationTimeout      time.Duration
+	StopClaimingAfter      time.Duration
+	ExternalTimeout        time.Duration
+	LeaseDuration          time.Duration
+	DrainSlotLeaseDuration time.Duration
+	BackendNotification    string
+	BackendOCR             string
+	BackendBulkFinalize    string
+	BackendCleanup         string
+	BackendSettlement      string
+	EnabledKinds           []string
+	PGNetDispatchTimeout   time.Duration
+	PGNetDrainTimeout      time.Duration
+}
+
+// RealtimeConfig chứa cấu hình cho Supabase Realtime Broadcast và short lived JWT (Spec 0010).
+type RealtimeConfig struct {
+	SupabaseURL            string
+	SupabasePublishableKey string
+	JWTPrivateKey          string
+	JWTKID                 string
+	JWTIssuer              string
+	JWTAudience            string
+	LegacyHS256Secret      string
+	TokenTTL               time.Duration
+	ClockSkew              time.Duration
+	MobileRealtimeMode     string
+	PollInterval           time.Duration
+	PollJitterPercent      int
+	MaxGroupChannels       int
+}
+
+// SyncConfig chứa cấu hình cho endpoint /api/v1/sync/versions (Spec 0010).
+type SyncConfig struct {
+	PageLimit        int
+	MaxBytes         int
+	MaxPagesPerCycle int
+	CursorHMACKey    string
 }
 
 // AuthConfig chứa các thiết lập cần thiết để phát hành access token.
@@ -364,6 +420,110 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	dbPoolMode := stringEnv("DB_POOL_MODE", "transaction")
+	dbAcquireTimeout, err := durationEnv("DB_ACQUIRE_TIMEOUT_MS", 1000, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	dbIdleInTxTimeout, err := durationEnv("DB_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	dbAppName := stringEnv("DB_APPLICATION_NAME", "paysplit-api")
+
+	jobProcessingEnabled := boolEnv("JOB_PROCESSING_ENABLED", true)
+	jobTriggerSecret := os.Getenv("JOB_TRIGGER_SECRET")
+	cronSecret := stringEnv("CRON_SECRET", jobTriggerSecret)
+	jobBatchSize, err := intEnv("JOB_BATCH_SIZE", 5)
+	if err != nil {
+		return nil, err
+	}
+	jobDispatcherTimeout, err := durationEnv("JOB_DISPATCHER_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobDispatcherLease, err := durationEnv("JOB_DISPATCHER_LEASE_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobInvocationTimeout, err := durationEnv("JOB_INVOCATION_TIMEOUT_SECONDS", 45, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobStopClaimingAfter, err := durationEnv("JOB_STOP_CLAIMING_AFTER_SECONDS", 40, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobExternalTimeout, err := durationEnv("JOB_EXTERNAL_TIMEOUT_SECONDS", 35, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobLeaseDuration, err := durationEnv("JOB_LEASE_SECONDS", 75, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	jobDrainSlotLease, err := durationEnv("JOB_DRAIN_SLOT_LEASE_SECONDS", 75, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	pgNetDispatchTimeout, err := durationEnv("PG_NET_DISPATCH_TIMEOUT_MS", 10000, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	pgNetDrainTimeout, err := durationEnv("PG_NET_DRAIN_TIMEOUT_MS", 55000, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	backendNotification := stringEnv("JOB_BACKEND_NOTIFICATION", "app_jobs")
+	backendOCR := stringEnv("JOB_BACKEND_OCR", "app_jobs")
+	backendBulkFinalize := stringEnv("JOB_BACKEND_BULK_FINALIZE", "app_jobs")
+	backendCleanup := stringEnv("JOB_BACKEND_CLEANUP", "app_jobs")
+	backendSettlement := stringEnv("JOB_BACKEND_SETTLEMENT", "app_jobs")
+	enabledKinds := csvEnv("APP_JOB_ENABLED_KINDS")
+
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabasePublishableKey := os.Getenv("SUPABASE_PUBLISHABLE_KEY")
+	realtimeJWTPrivateKey := os.Getenv("SUPABASE_REALTIME_JWT_PRIVATE_KEY")
+	realtimeJWTKID := os.Getenv("SUPABASE_REALTIME_JWT_KID")
+	realtimeJWTIssuer := stringEnv("SUPABASE_REALTIME_JWT_ISSUER", "supabase")
+	realtimeJWTAudience := stringEnv("SUPABASE_REALTIME_JWT_AUDIENCE", "authenticated")
+	realtimeLegacyHS256 := os.Getenv("SUPABASE_REALTIME_LEGACY_HS256_SECRET")
+	realtimeTokenTTL, err := durationEnv("REALTIME_TOKEN_TTL_SECONDS", 300, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	realtimeClockSkew, err := durationEnv("REALTIME_CLOCK_SKEW_SECONDS", 60, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	mobileRealtimeMode := stringEnv("MOBILE_REALTIME_MODE", "supabase")
+	realtimePollInterval, err := durationEnv("REALTIME_POLL_INTERVAL_SECONDS", 10, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	realtimePollJitter, err := intEnv("REALTIME_POLL_JITTER_PERCENT", 20)
+	if err != nil {
+		return nil, err
+	}
+	realtimeMaxGroupChannels, err := intEnv("REALTIME_MAX_GROUP_CHANNELS", 10)
+	if err != nil {
+		return nil, err
+	}
+
+	syncPageLimit, err := intEnv("SYNC_VERSIONS_PAGE_LIMIT", 500)
+	if err != nil {
+		return nil, err
+	}
+	syncMaxBytes, err := intEnv("SYNC_VERSIONS_MAX_BYTES", 262144)
+	if err != nil {
+		return nil, err
+	}
+	syncMaxPagesPerCycle, err := intEnv("SYNC_VERSIONS_MAX_PAGES_PER_CYCLE", 4)
+	if err != nil {
+		return nil, err
+	}
+	syncCursorHMACKey := os.Getenv("SYNC_CURSOR_HMAC_KEY")
+
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("PORT", stringEnv("HTTP_PORT", "8080"))
 	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
@@ -385,6 +545,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		App: AppConfig{
 			Environment:                stringEnv("APP_ENV", "development"),
+			RuntimeRole:                stringEnv("APP_RUNTIME_ROLE", "api"),
 			Host:                       httpHost,
 			Port:                       httpPort,
 			Address:                    httpAddress,
@@ -394,12 +555,16 @@ func Load() (*Config, error) {
 			InviteAttemptsPerMinute:    inviteAttempts,
 		},
 		Database: DatabaseConfig{
-			URL:               os.Getenv("DATABASE_URL"),
-			MaxConns:          maxConns,
-			MinConns:          minConns,
-			MaxConnLifetime:   maxConnLifetime,
-			MaxConnIdleTime:   maxConnIdle,
-			HealthCheckPeriod: healthCheckPeriod,
+			URL:                      os.Getenv("DATABASE_URL"),
+			PoolMode:                 dbPoolMode,
+			MaxConns:                 maxConns,
+			MinConns:                 minConns,
+			MaxConnLifetime:          maxConnLifetime,
+			MaxConnIdleTime:          maxConnIdle,
+			HealthCheckPeriod:        healthCheckPeriod,
+			AcquireTimeout:           dbAcquireTimeout,
+			IdleInTransactionTimeout: dbIdleInTxTimeout,
+			ApplicationName:          dbAppName,
 		},
 		Auth: AuthConfig{
 			JWTSecret:            os.Getenv("JWT_SECRET_KEY"),
@@ -455,6 +620,48 @@ func Load() (*Config, error) {
 			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
 			StalledConfirmationAge: stalledConfirmationAge,
 		},
+		Job: JobConfig{
+			ProcessingEnabled:      jobProcessingEnabled,
+			TriggerSecret:          jobTriggerSecret,
+			CronSecret:             cronSecret,
+			BatchSize:              jobBatchSize,
+			DispatcherTimeout:      jobDispatcherTimeout,
+			DispatcherLease:        jobDispatcherLease,
+			InvocationTimeout:      jobInvocationTimeout,
+			StopClaimingAfter:      jobStopClaimingAfter,
+			ExternalTimeout:        jobExternalTimeout,
+			LeaseDuration:          jobLeaseDuration,
+			DrainSlotLeaseDuration: jobDrainSlotLease,
+			BackendNotification:    backendNotification,
+			BackendOCR:             backendOCR,
+			BackendBulkFinalize:    backendBulkFinalize,
+			BackendCleanup:         backendCleanup,
+			BackendSettlement:      backendSettlement,
+			EnabledKinds:           enabledKinds,
+			PGNetDispatchTimeout:   pgNetDispatchTimeout,
+			PGNetDrainTimeout:      pgNetDrainTimeout,
+		},
+		Realtime: RealtimeConfig{
+			SupabaseURL:            supabaseURL,
+			SupabasePublishableKey: supabasePublishableKey,
+			JWTPrivateKey:          realtimeJWTPrivateKey,
+			JWTKID:                 realtimeJWTKID,
+			JWTIssuer:              realtimeJWTIssuer,
+			JWTAudience:            realtimeJWTAudience,
+			LegacyHS256Secret:      realtimeLegacyHS256,
+			TokenTTL:               realtimeTokenTTL,
+			ClockSkew:              realtimeClockSkew,
+			MobileRealtimeMode:     mobileRealtimeMode,
+			PollInterval:           realtimePollInterval,
+			PollJitterPercent:      realtimePollJitter,
+			MaxGroupChannels:       realtimeMaxGroupChannels,
+		},
+		Sync: SyncConfig{
+			PageLimit:        syncPageLimit,
+			MaxBytes:         syncMaxBytes,
+			MaxPagesPerCycle: syncMaxPagesPerCycle,
+			CursorHMACKey:    syncCursorHMACKey,
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -468,6 +675,9 @@ func Load() (*Config, error) {
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config must not be nil")
+	}
+	if c.App.Environment == "production" && c.App.RuntimeRole != "api" {
+		return fmt.Errorf("production only accepts APP_RUNTIME_ROLE=api, got %q", c.App.RuntimeRole)
 	}
 	if strings.TrimSpace(c.App.Address) == "" {
 		return errors.New("HTTP_ADDRESS must not be empty")
@@ -490,7 +700,7 @@ func (c *Config) Validate() error {
 	if c.Database.MinConns < 0 || c.Database.MaxConns <= 0 || c.Database.MinConns > c.Database.MaxConns {
 		return errors.New("DB_MIN_CONNS must be non-negative and no greater than DB_MAX_CONNS")
 	}
-	if c.Database.MaxConnLifetime <= 0 || c.Database.MaxConnIdleTime <= 0 || c.Database.HealthCheckPeriod <= 0 {
+	if c.Database.MaxConnLifetime <= 0 || c.Database.MaxConnIdleTime <= 0 || c.Database.HealthCheckPeriod <= 0 || c.Database.AcquireTimeout <= 0 || c.Database.IdleInTransactionTimeout <= 0 {
 		return errors.New("database duration settings must be positive")
 	}
 	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
@@ -520,11 +730,29 @@ func (c *Config) Validate() error {
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
 	}
-	if c.River.WorkerCount <= 0 || c.River.FetchCooldown <= 0 {
-		return errors.New("river settings must be positive")
+	if c.Job.BatchSize <= 0 || c.Job.DispatcherTimeout <= 0 || c.Job.DispatcherLease <= 0 || c.Job.InvocationTimeout <= 0 || c.Job.StopClaimingAfter <= 0 || c.Job.ExternalTimeout <= 0 || c.Job.LeaseDuration <= 0 || c.Job.DrainSlotLeaseDuration <= 0 {
+		return errors.New("job settings must be positive")
 	}
-	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
-		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
+	if c.Job.StopClaimingAfter >= c.Job.InvocationTimeout {
+		return errors.New("JOB_STOP_CLAIMING_AFTER_SECONDS must be less than JOB_INVOCATION_TIMEOUT_SECONDS")
+	}
+	if c.Job.ExternalTimeout >= c.Job.InvocationTimeout {
+		return errors.New("JOB_EXTERNAL_TIMEOUT_SECONDS must be less than JOB_INVOCATION_TIMEOUT_SECONDS")
+	}
+	if c.Realtime.TokenTTL <= 0 || c.Realtime.ClockSkew <= 0 || c.Realtime.PollInterval <= 0 || c.Realtime.MaxGroupChannels <= 0 {
+		return errors.New("realtime duration and channel settings must be positive")
+	}
+	if c.Realtime.PollJitterPercent < 0 || c.Realtime.PollJitterPercent > 100 {
+		return errors.New("REALTIME_POLL_JITTER_PERCENT must be between 0 and 100")
+	}
+	if c.Realtime.MobileRealtimeMode != "supabase" && c.Realtime.MobileRealtimeMode != "polling" {
+		return errors.New("MOBILE_REALTIME_MODE must be 'supabase' or 'polling'")
+	}
+	if c.Sync.PageLimit <= 0 || c.Sync.PageLimit > 500 {
+		return errors.New("SYNC_VERSIONS_PAGE_LIMIT must be between 1 and 500")
+	}
+	if c.Sync.MaxBytes <= 0 || c.Sync.MaxPagesPerCycle <= 0 {
+		return errors.New("sync settings must be positive")
 	}
 	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
 	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
@@ -566,9 +794,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
 		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
-	}
-	if c.Settlement.StalledConfirmationAge <= 0 {
-		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
 	}
 	return nil
 }

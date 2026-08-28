@@ -170,10 +170,47 @@ func TestValidateRejectsEmptySettlementBaseURLByVariableName(t *testing.T) {
 	}
 }
 
+func TestValidateServerlessRuntimeRole_AC1(t *testing.T) {
+	cfg := validConfig()
+	cfg.App.Environment = "production"
+	cfg.App.RuntimeRole = "api"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error for role api in production: %v", err)
+	}
+
+	cfg.App.RuntimeRole = "worker"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "APP_RUNTIME_ROLE=api") {
+		t.Fatalf("expected error for non-api role in production, got: %v", err)
+	}
+}
+
+func TestValidateJobConfig_AC10AndAC11(t *testing.T) {
+	cfg := validConfig()
+	cfg.Job.BatchSize = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for zero batch size")
+	}
+
+	cfg = validConfig()
+	cfg.Job.StopClaimingAfter = 50 * time.Second
+	cfg.Job.InvocationTimeout = 45 * time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when StopClaimingAfter >= InvocationTimeout")
+	}
+}
+
+func TestValidateSyncConfig_AC6(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sync.PageLimit = 501
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for page limit > 500")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
-		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
-		Database:   DatabaseConfig{URL: "postgres://local/test", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
+		App:        AppConfig{Environment: "development", RuntimeRole: "api", Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
+		Database:   DatabaseConfig{URL: "postgres://local/test", PoolMode: "transaction", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second, AcquireTimeout: time.Second, IdleInTransactionTimeout: 5 * time.Second, ApplicationName: "paysplit-api"},
 		Auth:       AuthConfig{JWTSecret: "secret", JWTIssuer: "issuer", AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 7 * 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
 		SMTP:       SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second},
 		Cloudinary: CloudinaryConfig{CloudName: "test", APIKey: "test", APISecret: "test"},
@@ -186,5 +223,38 @@ func validConfig() *Config {
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
 		GroupSync:  GroupSyncConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute, EventRetention: 7 * 24 * time.Hour},
 		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3, StalledConfirmationAge: 48 * time.Hour},
+		Job: JobConfig{
+			ProcessingEnabled:      true,
+			BatchSize:              5,
+			DispatcherTimeout:      5 * time.Second,
+			DispatcherLease:        15 * time.Second,
+			InvocationTimeout:      45 * time.Second,
+			StopClaimingAfter:      40 * time.Second,
+			ExternalTimeout:        35 * time.Second,
+			LeaseDuration:          75 * time.Second,
+			DrainSlotLeaseDuration: 75 * time.Second,
+			BackendNotification:    "app_jobs",
+			BackendOCR:             "app_jobs",
+			BackendBulkFinalize:    "app_jobs",
+			BackendCleanup:         "app_jobs",
+			BackendSettlement:      "app_jobs",
+			PGNetDispatchTimeout:   10 * time.Second,
+			PGNetDrainTimeout:      55 * time.Second,
+		},
+		Realtime: RealtimeConfig{
+			JWTIssuer:          "supabase",
+			JWTAudience:        "authenticated",
+			TokenTTL:           300 * time.Second,
+			ClockSkew:          60 * time.Second,
+			MobileRealtimeMode: "supabase",
+			PollInterval:       10 * time.Second,
+			PollJitterPercent:  20,
+			MaxGroupChannels:   10,
+		},
+		Sync: SyncConfig{
+			PageLimit:        500,
+			MaxBytes:         262144,
+			MaxPagesPerCycle: 4,
+		},
 	}
 }
