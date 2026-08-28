@@ -244,6 +244,10 @@ func (r *postgresRepository) ListDebts(ctx context.Context, in repository.ListDe
 			v := uuid.UUID(row.PaymentID.Bytes).String()
 			d.PaymentID = &v
 		}
+		if row.LastRemindedAt.Valid {
+			v := row.LastRemindedAt.Time
+			d.LastRemindedAt = &v
+		}
 		if row.SettledAt.Valid {
 			v := row.SettledAt.Time
 			d.SettledAt = &v

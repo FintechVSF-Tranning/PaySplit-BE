@@ -157,7 +157,7 @@ const listDebtRows = `-- name: ListDebtRows :many
 SELECT d.id, d.bill_id, b.bill_date, COALESCE(b.merchant_name, '') AS merchant_name,
        d.debtor_member_id, du.display_name AS debtor_display_name, du.avatar_object_key AS debtor_avatar_object_key,
        d.creditor_member_id, cu.display_name AS creditor_display_name, cu.avatar_object_key AS creditor_avatar_object_key,
-       d.amount, d.status::text AS status, d.reminder_count, d.payment_id, d.created_at, d.settled_at
+       d.amount, d.status::text AS status, d.reminder_count, d.last_reminded_at, d.payment_id, d.created_at, d.settled_at
 FROM debts d
 JOIN bills b ON b.id = d.bill_id AND b.group_id = d.group_id
 JOIN group_members dm ON dm.id = d.debtor_member_id
@@ -197,6 +197,7 @@ type ListDebtRowsRow struct {
 	Amount                  int64              `json:"amount"`
 	Status                  string             `json:"status"`
 	ReminderCount           int32              `json:"reminder_count"`
+	LastRemindedAt          pgtype.Timestamptz `json:"last_reminded_at"`
 	PaymentID               pgtype.UUID        `json:"payment_id"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	SettledAt               pgtype.Timestamptz `json:"settled_at"`
@@ -233,6 +234,7 @@ func (q *Queries) ListDebtRows(ctx context.Context, arg ListDebtRowsParams) ([]L
 			&i.Amount,
 			&i.Status,
 			&i.ReminderCount,
+			&i.LastRemindedAt,
 			&i.PaymentID,
 			&i.CreatedAt,
 			&i.SettledAt,
