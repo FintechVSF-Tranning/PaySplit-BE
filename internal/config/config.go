@@ -365,7 +365,7 @@ func Load() (*Config, error) {
 	}
 
 	httpHost := stringEnv("HTTP_HOST", "localhost")
-	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
+	httpPort := stringEnv("PORT", stringEnv("HTTP_PORT", "8080"))
 	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
 	if httpAddress == "" {
 		if httpHost != "" {
