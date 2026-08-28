@@ -62,6 +62,7 @@ type Debt struct {
 	Amount                  int64
 	Status                  string
 	ReminderCount           int32
+	LastRemindedAt          *time.Time
 	PaymentID               *string
 	CreatedAt               time.Time
 	SettledAt               *time.Time

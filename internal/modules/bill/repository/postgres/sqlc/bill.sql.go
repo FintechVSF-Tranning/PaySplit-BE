@@ -30,6 +30,40 @@ func (q *Queries) CountActiveOCRJobs(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countBillsByGroupStatus = `-- name: CountBillsByGroupStatus :many
+SELECT b.status::text AS status, COUNT(*)::bigint AS count
+FROM bills b
+WHERE b.group_id = $1
+GROUP BY b.status
+`
+
+type CountBillsByGroupStatusRow struct {
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+// Đếm hóa đơn theo từng trạng thái để badge của các chip lọc không phụ thuộc
+// vào trang dữ liệu đã tải.
+func (q *Queries) CountBillsByGroupStatus(ctx context.Context, groupID pgtype.UUID) ([]CountBillsByGroupStatusRow, error) {
+	rows, err := q.db.Query(ctx, countBillsByGroupStatus, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountBillsByGroupStatusRow
+	for rows.Next() {
+		var i CountBillsByGroupStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countManualOCRAttemptsInWindow = `-- name: CountManualOCRAttemptsInWindow :one
 SELECT COUNT(*) FROM ocr_jobs
 WHERE bill_id = $1 AND created_at >= $2
@@ -340,7 +374,7 @@ type CreateBillShareParams struct {
 }
 
 // ============================================================================
-// BILL SHARES (Hamilton Finalized Snapshot)
+// BILL SHARES (Exact Finalized Snapshot)
 // ============================================================================
 func (q *Queries) CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error) {
 	row := q.db.QueryRow(ctx, createBillShare,
@@ -1182,9 +1216,36 @@ func (q *Queries) ListBillShares(ctx context.Context, billID pgtype.UUID) ([]Bil
 }
 
 const listBillsByGroup = `-- name: ListBillsByGroup :many
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id, total_item_discount, general_discount FROM bills
-WHERE group_id = $1
-ORDER BY created_at DESC
+SELECT
+    b.id, b.group_id, b.creditor_member_id, b.status, b.merchant_name, b.bill_date, b.image_object_key, b.subtotal, b.service_charge, b.vat, b.discount, b.total, b.mismatch_warning, b.version, b.created_at, b.finalized_at, b.updated_at, b.replaces_bill_id, b.voided_at, b.split_method, b.mismatch_codes, b.reviewed_at, b.reviewed_by_member_id, b.total_item_discount, b.general_discount,
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status IN ('settled', 'voided')
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+ORDER BY b.created_at DESC
 LIMIT $2 OFFSET $3
 `
 
@@ -1194,41 +1255,51 @@ type ListBillsByGroupParams struct {
 	Offset  int32       `json:"offset"`
 }
 
-func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error) {
+type ListBillsByGroupRow struct {
+	Bill             Bill   `json:"bill"`
+	PayerDisplayName string `json:"payer_display_name"`
+	PaidMemberCount  int64  `json:"paid_member_count"`
+	MemberCount      int64  `json:"member_count"`
+}
+
+func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]ListBillsByGroupRow, error) {
 	rows, err := q.db.Query(ctx, listBillsByGroup, arg.GroupID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Bill
+	var items []ListBillsByGroupRow
 	for rows.Next() {
-		var i Bill
+		var i ListBillsByGroupRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.GroupID,
-			&i.CreditorMemberID,
-			&i.Status,
-			&i.MerchantName,
-			&i.BillDate,
-			&i.ImageObjectKey,
-			&i.Subtotal,
-			&i.ServiceCharge,
-			&i.Vat,
-			&i.Discount,
-			&i.Total,
-			&i.MismatchWarning,
-			&i.Version,
-			&i.CreatedAt,
-			&i.FinalizedAt,
-			&i.UpdatedAt,
-			&i.ReplacesBillID,
-			&i.VoidedAt,
-			&i.SplitMethod,
-			&i.MismatchCodes,
-			&i.ReviewedAt,
-			&i.ReviewedByMemberID,
-			&i.TotalItemDiscount,
-			&i.GeneralDiscount,
+			&i.Bill.ID,
+			&i.Bill.GroupID,
+			&i.Bill.CreditorMemberID,
+			&i.Bill.Status,
+			&i.Bill.MerchantName,
+			&i.Bill.BillDate,
+			&i.Bill.ImageObjectKey,
+			&i.Bill.Subtotal,
+			&i.Bill.ServiceCharge,
+			&i.Bill.Vat,
+			&i.Bill.Discount,
+			&i.Bill.Total,
+			&i.Bill.MismatchWarning,
+			&i.Bill.Version,
+			&i.Bill.CreatedAt,
+			&i.Bill.FinalizedAt,
+			&i.Bill.UpdatedAt,
+			&i.Bill.ReplacesBillID,
+			&i.Bill.VoidedAt,
+			&i.Bill.SplitMethod,
+			&i.Bill.MismatchCodes,
+			&i.Bill.ReviewedAt,
+			&i.Bill.ReviewedByMemberID,
+			&i.Bill.TotalItemDiscount,
+			&i.Bill.GeneralDiscount,
+			&i.PayerDisplayName,
+			&i.PaidMemberCount,
+			&i.MemberCount,
 		); err != nil {
 			return nil, err
 		}
@@ -1241,64 +1312,139 @@ func (q *Queries) ListBillsByGroup(ctx context.Context, arg ListBillsByGroupPara
 }
 
 const listBillsByGroupCursor = `-- name: ListBillsByGroupCursor :many
-SELECT id, group_id, creditor_member_id, status, merchant_name, bill_date, image_object_key, subtotal, service_charge, vat, discount, total, mismatch_warning, version, created_at, finalized_at, updated_at, replaces_bill_id, voided_at, split_method, mismatch_codes, reviewed_at, reviewed_by_member_id, total_item_discount, general_discount FROM bills
-WHERE group_id = $1
+SELECT
+    b.id, b.group_id, b.creditor_member_id, b.status, b.merchant_name, b.bill_date, b.image_object_key, b.subtotal, b.service_charge, b.vat, b.discount, b.total, b.mismatch_warning, b.version, b.created_at, b.finalized_at, b.updated_at, b.replaces_bill_id, b.voided_at, b.split_method, b.mismatch_codes, b.reviewed_at, b.reviewed_by_member_id, b.total_item_discount, b.general_discount,
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count,
+    -- Phần tiền của người đang xem. NULL khi hóa đơn chưa chốt hoặc người xem
+    -- không gánh món nào; bill_shares có UNIQUE(bill_id, member_id) nên join
+    -- này không nhân dòng.
+    my_share.final_amount AS my_share,
+    -- Trạng thái khoản nợ tương ứng của người đang xem, cũng UNIQUE theo
+    -- (bill_id, debtor_member_id, creditor_member_id).
+    COALESCE(my_debt.status::text, '')::text AS my_debt_status,
+    -- Tiến trình OCR mới nhất: phân biệt "đang quét" với "chờ gán món", vì cả
+    -- hai đều mang bills.status = 'draft'.
+    COALESCE(ocr.status::text, '')::text AS ocr_status
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN bill_shares my_share ON my_share.bill_id = b.id
+    AND my_share.member_id = $6
+LEFT JOIN debts my_debt ON my_debt.bill_id = b.id
+    AND my_debt.debtor_member_id = $6
+    AND my_debt.creditor_member_id = b.creditor_member_id
+LEFT JOIN LATERAL (
+    SELECT jobs.status
+    FROM ocr_jobs jobs
+    WHERE jobs.bill_id = b.id
+    ORDER BY jobs.created_at DESC
+    LIMIT 1
+) ocr ON true
+LEFT JOIN LATERAL (
+    SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status IN ('settled', 'voided')
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+  -- Bộ lọc trạng thái của tab Hóa đơn trong nhóm. Mảng rỗng (hoặc NULL) nghĩa là
+  -- "Tất cả", nên client cũ không gửi tham số này vẫn giữ nguyên hành vi.
+  AND (
+    COALESCE(cardinality($5::text[]), 0) = 0
+    OR b.status::text = ANY($5::text[])
+  )
   AND (
     $2::timestamptz IS NULL 
-    OR created_at < $2 
-    OR (created_at = $2 AND id < $3)
+    OR b.created_at < $2
+    OR (b.created_at = $2 AND b.id < $3)
   )
-ORDER BY created_at DESC, id DESC
+ORDER BY b.created_at DESC, b.id DESC
 LIMIT $4
 `
 
 type ListBillsByGroupCursorParams struct {
-	GroupID pgtype.UUID        `json:"group_id"`
-	Column2 pgtype.Timestamptz `json:"column_2"`
-	ID      pgtype.UUID        `json:"id"`
-	Limit   int32              `json:"limit"`
+	GroupID  pgtype.UUID        `json:"group_id"`
+	Column2  pgtype.Timestamptz `json:"column_2"`
+	ID       pgtype.UUID        `json:"id"`
+	Limit    int32              `json:"limit"`
+	Column5  []string           `json:"column_5"`
+	MemberID pgtype.UUID        `json:"member_id"`
 }
 
-func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error) {
+type ListBillsByGroupCursorRow struct {
+	Bill             Bill        `json:"bill"`
+	PayerDisplayName string      `json:"payer_display_name"`
+	PaidMemberCount  int64       `json:"paid_member_count"`
+	MemberCount      int64       `json:"member_count"`
+	MyShare          pgtype.Int8 `json:"my_share"`
+	MyDebtStatus     string      `json:"my_debt_status"`
+	OcrStatus        string      `json:"ocr_status"`
+}
+
+func (q *Queries) ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]ListBillsByGroupCursorRow, error) {
 	rows, err := q.db.Query(ctx, listBillsByGroupCursor,
 		arg.GroupID,
 		arg.Column2,
 		arg.ID,
 		arg.Limit,
+		arg.Column5,
+		arg.MemberID,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Bill
+	var items []ListBillsByGroupCursorRow
 	for rows.Next() {
-		var i Bill
+		var i ListBillsByGroupCursorRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.GroupID,
-			&i.CreditorMemberID,
-			&i.Status,
-			&i.MerchantName,
-			&i.BillDate,
-			&i.ImageObjectKey,
-			&i.Subtotal,
-			&i.ServiceCharge,
-			&i.Vat,
-			&i.Discount,
-			&i.Total,
-			&i.MismatchWarning,
-			&i.Version,
-			&i.CreatedAt,
-			&i.FinalizedAt,
-			&i.UpdatedAt,
-			&i.ReplacesBillID,
-			&i.VoidedAt,
-			&i.SplitMethod,
-			&i.MismatchCodes,
-			&i.ReviewedAt,
-			&i.ReviewedByMemberID,
-			&i.TotalItemDiscount,
-			&i.GeneralDiscount,
+			&i.Bill.ID,
+			&i.Bill.GroupID,
+			&i.Bill.CreditorMemberID,
+			&i.Bill.Status,
+			&i.Bill.MerchantName,
+			&i.Bill.BillDate,
+			&i.Bill.ImageObjectKey,
+			&i.Bill.Subtotal,
+			&i.Bill.ServiceCharge,
+			&i.Bill.Vat,
+			&i.Bill.Discount,
+			&i.Bill.Total,
+			&i.Bill.MismatchWarning,
+			&i.Bill.Version,
+			&i.Bill.CreatedAt,
+			&i.Bill.FinalizedAt,
+			&i.Bill.UpdatedAt,
+			&i.Bill.ReplacesBillID,
+			&i.Bill.VoidedAt,
+			&i.Bill.SplitMethod,
+			&i.Bill.MismatchCodes,
+			&i.Bill.ReviewedAt,
+			&i.Bill.ReviewedByMemberID,
+			&i.Bill.TotalItemDiscount,
+			&i.Bill.GeneralDiscount,
+			&i.PayerDisplayName,
+			&i.PaidMemberCount,
+			&i.MemberCount,
+			&i.MyShare,
+			&i.MyDebtStatus,
+			&i.OcrStatus,
 		); err != nil {
 			return nil, err
 		}

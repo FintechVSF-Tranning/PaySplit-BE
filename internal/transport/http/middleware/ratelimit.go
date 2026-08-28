@@ -16,8 +16,25 @@ type rateLimitEntry struct {
 	windowStart time.Time
 }
 
+// probePaths are liveness/readiness/metrics endpoints. They are polled by
+// infrastructure on a fixed schedule, so letting them consume the same per-IP
+// budget as user traffic means a monitoring agent can rate limit real users -
+// and worse, a rate limited health check reads as an outage.
+var probePaths = map[string]bool{
+	"/":             true,
+	"/health":       true,
+	"/health/live":  true,
+	"/health/ready": true,
+	"/metrics":      true,
+}
+
 // RateLimit limits each client IP to limit requests within each fixed window.
 // It is process-local and therefore appropriate for a single API instance.
+//
+// The key is the peer IP, which several people can share (office WiFi, a NAT,
+// or one developer signed into several accounts). Size the limit for the
+// busiest legitimate client behind one address, not for a single app session:
+// a cold start of the mobile app already costs a dozen requests.
 func RateLimit(limit int, window time.Duration) func(http.Handler) http.Handler {
 	if limit <= 0 {
 		panic("middleware: rate limit must be positive")
@@ -31,6 +48,11 @@ func RateLimit(limit int, window time.Duration) func(http.Handler) http.Handler 
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if probePaths[r.URL.Path] {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			clientIP := chiMiddleware.GetClientIP(r.Context())
 			if clientIP == "" {
 				clientIP = r.RemoteAddr

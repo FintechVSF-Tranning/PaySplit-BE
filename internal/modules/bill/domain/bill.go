@@ -69,6 +69,42 @@ type Bill struct {
 	Shares []*BillShare `json:"shares,omitempty"`
 }
 
+// BillListItem bổ sung dữ liệu hiển thị và tiến độ thanh toán cho danh sách bill.
+// Các trường của Bill được giữ ở top level để contract hiện tại tương thích ngược.
+type BillListItem struct {
+	*Bill
+	PayerDisplayName string `json:"payer_display_name"`
+	PaidMemberCount  int64  `json:"paid_member_count"`
+	MemberCount      int64  `json:"member_count"`
+
+	// MyShare là số tiền người đang xem phải trả cho hóa đơn này. Chỉ có sau
+	// khi hóa đơn được chốt sổ; nil nghĩa là chưa chốt hoặc người xem không
+	// gánh món nào.
+	MyShare *int64 `json:"my_share,omitempty"`
+
+	// MyShareStatus mô tả phần của người đang xem, tránh để client tự suy từ
+	// MyShare (nil vừa có thể là "chưa chốt" vừa là "không phải trả đồng nào").
+	MyShareStatus MyShareStatus `json:"my_share_status"`
+
+	// OCRStatus là trạng thái lần bóc tách OCR gần nhất, rỗng khi hóa đơn nhập
+	// tay. Cần thiết vì bill đang quét OCR và bill chờ gán món đều là 'draft'.
+	OCRStatus OCRJobStatus `json:"ocr_status,omitempty"`
+}
+
+// MyShareStatus là trạng thái phần tiền của người đang xem trong một hóa đơn.
+type MyShareStatus string
+
+const (
+	// MyShareStatusNone: hóa đơn chưa chốt, hoặc người xem không có phần nào.
+	MyShareStatusNone MyShareStatus = "none"
+	// MyShareStatusCreditor: người xem chính là người đã ứng tiền.
+	MyShareStatusCreditor MyShareStatus = "creditor"
+	// MyShareStatusPending: còn nợ người ứng tiền.
+	MyShareStatusPending MyShareStatus = "pending"
+	// MyShareStatusSettled: đã trả xong, hoặc khoản nợ đã được xóa khi rời nhóm.
+	MyShareStatusSettled MyShareStatus = "settled"
+)
+
 // BillImage đại diện cho một ảnh chụp hóa đơn được lưu trên Cloudinary (Spec 3 AC-1).
 type BillImage struct {
 	ID        uuid.UUID `json:"id"`
@@ -106,7 +142,7 @@ type BillItemAssignment struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// BillShare là snapshot số tiền nợ chi tiết của thành viên sau khi Hamilton allocation (Spec 3 AC-9).
+// BillShare là snapshot số tiền nợ chi tiết của thành viên sau khi phân bổ chính xác (Spec 3 AC-9).
 type BillShare struct {
 	ID                 uuid.UUID `json:"id"`
 	BillID             uuid.UUID `json:"bill_id"`

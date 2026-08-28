@@ -149,6 +149,33 @@ func TestLockSubmissions_OutsiderOrArchived_GroupNotFound_AC10(t *testing.T) {
 	}
 }
 
+func TestUnlockSubmissions_Success(t *testing.T) {
+	gid, uid := uuid.New(), uuid.New()
+	repo := newCloseRepo(gid, uid, "captain")
+	h := newCloseTestHandler(t, repo, uid)
+
+	status, body := doClose(t, h, http.MethodPost, "/api/v1/groups/"+gid.String()+"/bills/unlock-submissions", "")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d want 200, body=%v", status, body)
+	}
+	data := dataOf(body)
+	if data["bill_submission_locked"] != false {
+		t.Fatalf("bill_submission_locked = %v, want false", data["bill_submission_locked"])
+	}
+}
+
+func TestUnlockSubmissions_NonCaptain_Forbidden(t *testing.T) {
+	gid, uid := uuid.New(), uuid.New()
+	repo := newCloseRepo(gid, uid, "member")
+	repo.lockErr = domain.ErrCaptainRequired
+	h := newCloseTestHandler(t, repo, uid)
+
+	status, body := doClose(t, h, http.MethodPost, "/api/v1/groups/"+gid.String()+"/bills/unlock-submissions", "")
+	if status != http.StatusForbidden || errCode(body) != "CAPTAIN_REQUIRED" {
+		t.Fatalf("status=%d code=%q, want 403 CAPTAIN_REQUIRED", status, errCode(body))
+	}
+}
+
 func TestStartBulkFinalize_Accepted_202WithBatchSummaryAndLockState_AC4(t *testing.T) {
 	gid, uid := uuid.New(), uuid.New()
 	repo := newCloseRepo(gid, uid, "captain")

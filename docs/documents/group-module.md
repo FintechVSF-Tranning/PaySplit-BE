@@ -16,7 +16,7 @@ Mọi thay đổi quan trọng (tạo nhóm, tạo hoặc thu hồi mã mời, t
 
 Mã mời là đúng tám ký tự Base62 phân biệt hoa thường (`^[A-Za-z0-9]{8}$`), sinh bằng lấy mẫu không lệch từ `crypto/rand` (loại bỏ byte 248-255 trước khi lấy modulo 62 vì 248 là bội số lớn nhất của 62 biểu diễn được trong một byte — xem `domain.NewInviteCode`). Trùng mã (khó xảy ra nhưng ràng buộc unique DB vẫn bắt) khiến usecase thử lại ở một transaction boundary mới, tối đa `maxInviteCodeAttempts` lần.
 
-`invite_url` là `APP_INVITE_BASE_URL` cộng thẳng mã làm path segment cuối (`url.JoinPath`), dùng chung cho cả liên kết dán vào app lẫn nhập tay. Route xem trước và tham gia (`GET /groups/invites/{code}`, `POST /groups/join`) dùng chung một giới hạn tần suất theo phút UTC cố định (`HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE`), khóa độc lập theo cả tài khoản đăng nhập lẫn địa chỉ IP TCP trực tiếp — middleware này không tin header forwarding trong v1.
+`invite_url` là `APP_INVITE_BASE_URL` cộng thẳng mã làm path segment cuối (`url.JoinPath`), dùng chung cho cả liên kết dán vào app lẫn nhập tay. Route xem trước và tham gia (`GET /groups/invites/{code}`, `POST /groups/join`) dùng chung một giới hạn tần suất theo phút UTC cố định (`HTTP_INVITE_ATTEMPTS_PER_MINUTE`, tách riêng khỏi ngưỡng IP toàn cục), khóa độc lập theo cả tài khoản đăng nhập lẫn địa chỉ IP TCP trực tiếp — middleware này không tin header forwarding trong v1.
 
 ## Group row lock: điểm tựa cho toàn bộ tính đúng đắn
 

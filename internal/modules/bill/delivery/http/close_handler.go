@@ -18,12 +18,13 @@ func (h *Handler) RegisterGroupCloseRoutes(r chi.Router, authMiddleware func(htt
 	r.Group(func(protected chi.Router) {
 		protected.Use(authMiddleware)
 		protected.Post("/{groupId}/bills/lock-submissions", h.LockSubmissions)
+		protected.Post("/{groupId}/bills/unlock-submissions", h.UnlockSubmissions)
 		protected.Post("/{groupId}/bills/finalize-all", h.StartBulkFinalize)
 		protected.Get("/{groupId}/bill-finalize-batches/{batchId}", h.GetFinalizeBatch)
 	})
 }
 
-// LockSubmissions xử lý POST /groups/{groupId}/bills/lock-submissions (Spec 0008 AC-1).
+// LockSubmissions xử lý POST /groups/{groupId}/bills/lock-submissions.
 func (h *Handler) LockSubmissions(w http.ResponseWriter, r *http.Request) {
 	callerUserID := getUserID(r)
 	groupID, err := uuid.Parse(chi.URLParam(r, "groupId"))
@@ -48,6 +49,27 @@ func (h *Handler) LockSubmissions(w http.ResponseWriter, r *http.Request) {
 	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "lock_bill_submissions", rawKey, http.StatusOK, result, &resourceID)
 
 	_ = helpers.WriteJSON(w, http.StatusOK, result)
+}
+
+// UnlockSubmissions xử lý POST /groups/{groupId}/bills/unlock-submissions.
+func (h *Handler) UnlockSubmissions(w http.ResponseWriter, r *http.Request) {
+	callerUserID := getUserID(r)
+	groupID, err := uuid.Parse(chi.URLParam(r, "groupId"))
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_GROUP_ID", "invalid group ID", nil)
+		return
+	}
+
+	err = h.service.UnlockSubmissions(r.Context(), callerUserID, groupID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	_ = helpers.WriteJSON(w, http.StatusOK, map[string]any{
+		"bill_submission_locked":    false,
+		"bill_submission_locked_at": nil,
+	})
 }
 
 // StartBulkFinalize xử lý POST /groups/{groupId}/bills/finalize-all: mở batch chốt

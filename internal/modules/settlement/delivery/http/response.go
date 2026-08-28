@@ -76,6 +76,7 @@ type debtResponse struct {
 	Amount              string     `json:"amount"`
 	Status              string     `json:"status"`
 	ReminderCount       int32      `json:"reminder_count"`
+	LastRemindedAt      *time.Time `json:"last_reminded_at"`
 	PaymentID           *string    `json:"payment_id"`
 	CreatedAt           time.Time  `json:"created_at"`
 	SettledAt           *time.Time `json:"settled_at"`
@@ -93,7 +94,7 @@ func (h *Handler) debtPageResponse(page *domain.DebtPage) map[string]any {
 			v := h.avatarURL(*d.CreditorAvatarObjectKey)
 			ca = &v
 		}
-		items = append(items, debtResponse{d.ID, d.BillID, d.BillDate.Format("2006-01-02"), d.MerchantName, d.DebtorMemberID, d.DebtorDisplayName, da, d.CreditorMemberID, d.CreditorDisplayName, ca, strconv.FormatInt(d.Amount, 10), d.Status, d.ReminderCount, d.PaymentID, d.CreatedAt, d.SettledAt})
+		items = append(items, debtResponse{d.ID, d.BillID, d.BillDate.Format("2006-01-02"), d.MerchantName, d.DebtorMemberID, d.DebtorDisplayName, da, d.CreditorMemberID, d.CreditorDisplayName, ca, strconv.FormatInt(d.Amount, 10), d.Status, d.ReminderCount, d.LastRemindedAt, d.PaymentID, d.CreatedAt, d.SettledAt})
 	}
 	matrix := make([]map[string]any, 0, len(page.NetMatrix))
 	for _, m := range page.NetMatrix {

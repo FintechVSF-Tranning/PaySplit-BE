@@ -28,6 +28,10 @@ func (m *mockServiceRepo) LockSubmissions(ctx context.Context, groupID, callerUs
 	return &repository.LockSubmissionsResult{LockedAt: time.Now().UTC(), LockedNow: true}, nil
 }
 
+func (m *mockServiceRepo) UnlockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) error {
+	return nil
+}
+
 func (m *mockServiceRepo) StartBulkFinalize(ctx context.Context, p repository.StartBulkFinalizeParams) (*repository.StartBulkFinalizeResult, error) {
 	return nil, domain.ErrInvalidInput
 }

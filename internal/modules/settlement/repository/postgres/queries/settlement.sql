@@ -19,6 +19,26 @@ WITH page AS (
     SELECT bill_item_id, SUM(weight) AS total_weight
     FROM bill_item_assignments
     GROUP BY bill_item_id
+), raw_item_shares AS (
+    SELECT bi.bill_id,
+           bi.id AS item_id,
+           floor(bi.final_price * bia.weight / at.total_weight)::bigint AS item_base,
+           (bi.final_price * bia.weight / at.total_weight)
+               - floor(bi.final_price * bia.weight / at.total_weight) AS item_fraction,
+           bs.item_subtotal
+    FROM page
+    JOIN bill_items bi ON bi.bill_id = page.id
+    JOIN bill_item_assignments bia
+      ON bia.bill_item_id = bi.id AND bia.group_id = bi.group_id AND bia.member_id = $2
+    JOIN assignment_totals at ON at.bill_item_id = bia.bill_item_id
+    JOIN bill_shares bs ON bs.bill_id = bi.bill_id AND bs.member_id = bia.member_id
+), ranked_item_shares AS (
+    SELECT bill_id,
+           item_id,
+           item_base,
+           item_subtotal - SUM(item_base) OVER (PARTITION BY bill_id) AS residual,
+           ROW_NUMBER() OVER (PARTITION BY bill_id ORDER BY item_fraction DESC, item_id ASC) AS remainder_rank
+    FROM raw_item_shares
 )
 SELECT b.id AS bill_id,
        b.bill_date,
@@ -30,7 +50,7 @@ SELECT b.id AS bill_id,
        bi.discount_amount AS item_discount_amount,
        bi.final_price AS item_final_price,
        (bia.weight / at.total_weight)::text AS share_ratio,
-       floor(bi.final_price * bia.weight / at.total_weight)::bigint AS item_share,
+       (ris.item_base + CASE WHEN ris.remainder_rank <= ris.residual THEN 1 ELSE 0 END)::bigint AS item_share,
        bs.service_charge_share,
        bs.vat_share,
        bs.discount_share,
@@ -46,6 +66,7 @@ JOIN bills b ON b.id = page.id
 JOIN bill_items bi ON bi.bill_id = b.id AND bi.group_id = b.group_id
 JOIN bill_item_assignments bia ON bia.bill_item_id = bi.id AND bia.group_id = bi.group_id AND bia.member_id = $2
 JOIN assignment_totals at ON at.bill_item_id = bia.bill_item_id
+JOIN ranked_item_shares ris ON ris.bill_id = b.id AND ris.item_id = bi.id
 JOIN bill_shares bs ON bs.bill_id = b.id AND bs.member_id = bia.member_id
 JOIN group_members creditor_member ON creditor_member.id = b.creditor_member_id
 JOIN users creditor ON creditor.id = creditor_member.user_id
@@ -65,7 +86,7 @@ FROM debts d WHERE d.group_id = $1;
 SELECT d.id, d.bill_id, b.bill_date, COALESCE(b.merchant_name, '') AS merchant_name,
        d.debtor_member_id, du.display_name AS debtor_display_name, du.avatar_object_key AS debtor_avatar_object_key,
        d.creditor_member_id, cu.display_name AS creditor_display_name, cu.avatar_object_key AS creditor_avatar_object_key,
-       d.amount, d.status::text AS status, d.reminder_count, d.payment_id, d.created_at, d.settled_at
+       d.amount, d.status::text AS status, d.reminder_count, d.last_reminded_at, d.payment_id, d.created_at, d.settled_at
 FROM debts d
 JOIN bills b ON b.id = d.bill_id AND b.group_id = d.group_id
 JOIN group_members dm ON dm.id = d.debtor_member_id

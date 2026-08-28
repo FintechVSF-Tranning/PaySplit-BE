@@ -29,6 +29,13 @@ func (m *mockHandlerRepo) LockSubmissions(ctx context.Context, groupID, callerUs
 	return &repository.LockSubmissionsResult{LockedAt: time.Now().UTC(), LockedNow: true}, nil
 }
 
+func (m *mockHandlerRepo) UnlockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) error {
+	if m.lockErr != nil {
+		return m.lockErr
+	}
+	return nil
+}
+
 func (m *mockHandlerRepo) StartBulkFinalize(ctx context.Context, p repository.StartBulkFinalizeParams) (*repository.StartBulkFinalizeResult, error) {
 	if m.bulkErr != nil {
 		return nil, m.bulkErr

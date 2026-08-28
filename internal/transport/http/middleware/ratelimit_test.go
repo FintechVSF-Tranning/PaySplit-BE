@@ -10,6 +10,34 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
+func TestRateLimit_SkipsProbeEndpoints(t *testing.T) {
+	// Một agent giám sát poll /health không được phép tiêu hết ngân sách của
+	// người dùng thật đứng sau cùng địa chỉ IP.
+	limiter := RateLimit(1, time.Minute)
+	handler := limiter(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+
+	for _, path := range []string{"/health", "/health/live", "/health/ready", "/metrics", "/"} {
+		for i := 0; i < 5; i++ {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.RemoteAddr = "203.0.113.20:1234"
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s lần %d = %d, want 200", path, i+1, rec.Code)
+			}
+		}
+	}
+
+	// Ngân sách của route thật vẫn còn nguyên sau chuỗi probe ở trên.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/groups", nil)
+	req.RemoteAddr = "203.0.113.20:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("route thật bị chặn oan: %d", rec.Code)
+	}
+}
+
 func TestRateLimitByAccountAndIP_SharesBudgetAcrossInviteRoutes_AC12(t *testing.T) {
 	limiter := RateLimitByAccountAndIP(2, time.Minute)
 	preview := limiter(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))

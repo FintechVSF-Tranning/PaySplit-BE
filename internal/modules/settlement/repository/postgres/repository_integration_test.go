@@ -448,6 +448,71 @@ func TestSettlementListDebtsPostgres(t *testing.T) {
 	}
 }
 
+func TestListExpensesReconcilesNestedItemSharesToStoredSubtotal_AC1(t *testing.T) {
+	pool := settlementTestPool(t)
+	ctx := context.Background()
+	callerUser, creditorUser := uuid.New(), uuid.New()
+	groupID, callerMember, creditorMember := uuid.New(), uuid.New(), uuid.New()
+	billID, itemOne, itemTwo := uuid.New(), uuid.New(), uuid.New()
+	suffix := time.Now().UnixNano()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO users(id,email,phone_number,display_name,password_hash,status,email_verified_at)
+		VALUES($1,$2,$3,'Expense caller','x','active',now()),
+		      ($4,$5,$6,'Expense creditor','x','active',now())`,
+		callerUser, fmt.Sprintf("expense.caller.%d@example.invalid", suffix), fmt.Sprintf("+843%08d", suffix%100000000),
+		creditorUser, fmt.Sprintf("expense.creditor.%d@example.invalid", suffix), fmt.Sprintf("+842%08d", suffix%100000000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM groups WHERE id=$1`, groupID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=ANY($1::uuid[])`, []uuid.UUID{callerUser, creditorUser})
+	})
+
+	if _, err = pool.Exec(ctx, `INSERT INTO groups(id,name,currency,created_by) VALUES($1,'Expense rounding','VND',$2)`, groupID, callerUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO group_members(id,group_id,user_id,role,status) VALUES($1,$2,$3,'member','active'),($4,$2,$5,'captain','active')`, callerMember, groupID, callerUser, creditorMember, creditorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO bills(id,group_id,creditor_member_id,status,merchant_name,bill_date,subtotal,total,finalized_at) VALUES($1,$2,$3,'finalized','Exact items',current_date,3,3,now())`, billID, groupID, creditorMember); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `
+		INSERT INTO bill_items(id,bill_id,group_id,name,quantity,unit_price,line_total,discount_amount,final_price,position)
+		VALUES($1,$2,$3,'One',1,1,1,0,1,0),($4,$2,$3,'Two',1,2,2,0,2,1)`, itemOne, billID, groupID, itemTwo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `
+		INSERT INTO bill_item_assignments(bill_item_id,group_id,member_id,weight)
+		VALUES($1,$2,$3,1),($1,$2,$4,2),($5,$2,$3,1),($5,$2,$4,2)`, itemOne, groupID, callerMember, creditorMember, itemTwo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `
+		INSERT INTO bill_shares(bill_id,group_id,member_id,item_subtotal,final_amount)
+		VALUES($1,$2,$3,1,1),($1,$2,$4,2,2)`, billID, groupID, callerMember, creditorMember); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO debts(group_id,bill_id,debtor_member_id,creditor_member_id,amount,status) VALUES($1,$2,$3,$4,1,'awaiting')`, groupID, billID, callerMember, creditorMember); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := New(pool).ListExpenses(ctx, repository.ListInput{GroupID: groupID.String(), CallerUserID: callerUser.String(), Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expense rows=%d, want 2", len(page.Items))
+	}
+	if page.Items[0].ItemShare != 0 || page.Items[1].ItemShare != 1 {
+		t.Fatalf("item shares=%d/%d, want 0/1", page.Items[0].ItemShare, page.Items[1].ItemShare)
+	}
+	if page.Items[0].ItemShare+page.Items[1].ItemShare != 1 {
+		t.Fatalf("nested item sum=%d, want stored item_subtotal 1", page.Items[0].ItemShare+page.Items[1].ItemShare)
+	}
+}
+
 func TestSettlementDatabaseConstraints_AC11AndAC12RejectInvalidPaymentRows(t *testing.T) {
 	pool := settlementTestPool(t)
 	ctx := context.Background()

@@ -28,6 +28,7 @@ type Config struct {
 	OCR        OCRConfig
 	BillImage  BillImageConfig
 	BillSSE    BillSSEConfig
+	GroupSync  GroupSyncConfig
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
 }
@@ -47,6 +48,11 @@ type AppConfig struct {
 	RequestTimeout             time.Duration
 	CORSAllowedOrigins         []string
 	RateLimitRequestsPerMinute int
+
+	// InviteAttemptsPerMinute giới hạn riêng cho xem trước / tham gia bằng mã
+	// mời. Trước đây nó dùng chung ngưỡng với limiter IP toàn cục, nên nới lỏng
+	// cho lưu lượng bình thường sẽ vô tình nới cả cửa dò mã mời.
+	InviteAttemptsPerMinute int
 }
 
 // DatabaseConfig chứa cấu hình kết nối và pool PostgreSQL; giá trị này không
@@ -140,6 +146,16 @@ type BillSSEConfig struct {
 	MaxConnectionAge  time.Duration
 }
 
+// GroupSyncConfig chứa cấu hình đồng bộ realtime của nhóm: stream SSE và thời
+// gian giữ nhật ký group_events. Client tụt xa hơn EventRetention sẽ nhận
+// snapshot thay vì delta, nên đây cũng là ngưỡng offline tối đa còn được phục
+// vụ bằng đường rẻ.
+type GroupSyncConfig struct {
+	HeartbeatInterval time.Duration
+	MaxConnectionAge  time.Duration
+	EventRetention    time.Duration
+}
+
 type SettlementConfig struct {
 	VietQRServiceBaseURL   string
 	VietQRTemplate         string
@@ -183,7 +199,17 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	rateLimit, err := intEnv("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE", 30)
+	// Ngưỡng tính theo IP, mà một IP có thể là cả một văn phòng sau NAT hoặc một
+	// máy đang đăng nhập nhiều tài khoản. Mỗi lần mở app đã tốn hơn chục request
+	// (hồ sơ, nhóm, hóa đơn, công nợ, thông báo), nên mức cũ 30/phút chặn nhầm
+	// người dùng thật trước khi chặn được kẻ lạm dụng.
+	rateLimit, err := intEnv("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE", 300)
+	if err != nil {
+		return nil, err
+	}
+	// Dò mã mời là hành vi tấn công thật (8 ký tự Base62), nên ngưỡng của nó
+	// phải chặt và độc lập với lưu lượng đọc thông thường.
+	inviteAttempts, err := intEnv("HTTP_INVITE_ATTEMPTS_PER_MINUTE", 30)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +351,19 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	groupSSEHeartbeat, err := durationEnv("GROUP_SSE_HEARTBEAT_INTERVAL_SECONDS", 15, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	groupSSEMaxAge, err := durationEnv("GROUP_SSE_MAX_CONNECTION_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	groupEventRetention, err := durationEnv("GROUP_EVENT_RETENTION_DAYS", 7, 24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("HTTP_PORT", stringEnv("PORT", "8080"))
 	httpAddress := strings.TrimSpace(os.Getenv("HTTP_ADDRESS"))
@@ -352,6 +391,7 @@ func Load() (*Config, error) {
 			RequestTimeout:             requestTimeout,
 			CORSAllowedOrigins:         csvEnv("HTTP_CORS_ALLOWED_ORIGINS"),
 			RateLimitRequestsPerMinute: rateLimit,
+			InviteAttemptsPerMinute:    inviteAttempts,
 		},
 		Database: DatabaseConfig{
 			URL:               os.Getenv("DATABASE_URL"),
@@ -399,6 +439,11 @@ func Load() (*Config, error) {
 			HeartbeatInterval: billSSEHeartbeat,
 			MaxConnectionAge:  billSSEMaxAge,
 		},
+		GroupSync: GroupSyncConfig{
+			HeartbeatInterval: groupSSEHeartbeat,
+			MaxConnectionAge:  groupSSEMaxAge,
+			EventRetention:    groupEventRetention,
+		},
 		Metrics: MetricsConfig{
 			Enabled:     boolEnv("METRICS_ENABLED", true),
 			BearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
@@ -432,6 +477,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.App.CORSAllowedOrigins) == 0 {
 		return errors.New("HTTP_CORS_ALLOWED_ORIGINS must contain at least one origin")
+	}
+	if c.App.InviteAttemptsPerMinute <= 0 {
+		return errors.New("HTTP_INVITE_ATTEMPTS_PER_MINUTE must be positive")
 	}
 	if c.App.RateLimitRequestsPerMinute <= 0 {
 		return errors.New("HTTP_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")
@@ -493,6 +541,12 @@ func (c *Config) Validate() error {
 	}
 	if c.BillSSE.HeartbeatInterval >= c.BillSSE.MaxConnectionAge {
 		return errors.New("BILL_SSE_HEARTBEAT_INTERVAL must be less than BILL_SSE_MAX_CONNECTION_AGE")
+	}
+	if c.GroupSync.HeartbeatInterval <= 0 || c.GroupSync.MaxConnectionAge <= 0 || c.GroupSync.EventRetention <= 0 {
+		return errors.New("group sync settings must be positive")
+	}
+	if c.GroupSync.HeartbeatInterval >= c.GroupSync.MaxConnectionAge {
+		return errors.New("GROUP_SSE_HEARTBEAT_INTERVAL must be less than GROUP_SSE_MAX_CONNECTION_AGE")
 	}
 	vietQRURL, err := url.ParseRequestURI(c.Settlement.VietQRServiceBaseURL)
 	if err != nil || (vietQRURL.Scheme != "http" && vietQRURL.Scheme != "https") || vietQRURL.Host == "" {

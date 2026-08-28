@@ -58,12 +58,33 @@ ALTER TABLE payments ADD CONSTRAINT chk_payments_state_matrix CHECK (
 ) NOT VALID;
 ALTER TABLE payments VALIDATE CONSTRAINT chk_payments_state_matrix;
 
-ALTER TABLE payments DROP CONSTRAINT IF EXISTS uq_payments_payment_debt_identity;
-ALTER TABLE payments ADD CONSTRAINT uq_payments_payment_debt_identity
-    UNIQUE (id, group_id, debtor_member_id, creditor_member_id);
-ALTER TABLE debts DROP CONSTRAINT IF EXISTS uq_debts_payment_debt_identity;
-ALTER TABLE debts ADD CONSTRAINT uq_debts_payment_debt_identity
-    UNIQUE (id, group_id, debtor_member_id, creditor_member_id);
+-- Idempotent: bỏ qua nếu constraint đã tồn tại (có thể đang bị FK của payment_debts phụ thuộc)
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_payments_payment_debt_identity'
+          AND conrelid = 'payments'::regclass
+    ) THEN
+        ALTER TABLE payments ADD CONSTRAINT uq_payments_payment_debt_identity
+            UNIQUE (id, group_id, debtor_member_id, creditor_member_id);
+    END IF;
+END $$;
+-- +goose StatementEnd
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_debts_payment_debt_identity'
+          AND conrelid = 'debts'::regclass
+    ) THEN
+        ALTER TABLE debts ADD CONSTRAINT uq_debts_payment_debt_identity
+            UNIQUE (id, group_id, debtor_member_id, creditor_member_id);
+    END IF;
+END $$;
+-- +goose StatementEnd
 ALTER TABLE debts DROP CONSTRAINT IF EXISTS chk_debts_reminder_count;
 ALTER TABLE debts ADD CONSTRAINT chk_debts_reminder_count
     CHECK (reminder_count BETWEEN 0 AND 3) NOT VALID;

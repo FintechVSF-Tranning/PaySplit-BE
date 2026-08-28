@@ -476,6 +476,35 @@ paths:
         "403": {$ref: "#/components/responses/CaptainRequired"}
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
+  /api/v1/groups/{groupId}/bills/unlock-submissions:
+    post:
+      summary: Unlock bill submission for the group (allows new bills again)
+      operationId: unlockBillSubmissions
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: groupId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Bill submission unlocked successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          bill_submission_locked: {type: boolean, example: false}
+                          bill_submission_locked_at: {type: string, nullable: true, example: null}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/CaptainRequired"}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/v1/groups/{groupId}/bills/finalize-all:
     post:
       summary: Start one asynchronous bulk finalize batch over every open draft (spec 0008)
@@ -776,6 +805,89 @@ paths:
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/groups/{id}/sync:
+    get:
+      summary: Catch up a client's local group state
+      description: |
+        Đường catch-up nguội của giao thức đồng bộ nhóm. Client gửi version nó
+        đang giữ; server trả các sự kiện còn thiếu (mode=delta) hoặc toàn bộ
+        trạng thái (mode=snapshot) khi client tụt quá xa, chưa có version, hoặc
+        gửi version lớn hơn version hiện tại của nhóm.
+
+        Dùng khi mở app lạnh, app resume, mạng vừa nối lại, bị push đánh thức,
+        hoặc khi client không dùng được SSE và phải poll.
+      operationId: syncGroup
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: since
+          in: query
+          description: Version client đang giữ. Bỏ trống hoặc 0 luôn cho ra snapshot.
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: Delta hoặc snapshot, tùy khoảng cách giữa since và version hiện tại
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/GroupSyncResponse"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
+  /api/v1/groups/{id}/events:
+    get:
+      summary: Stream group events via Server-Sent Events (SSE)
+      description: |
+        Kênh nóng của giao thức đồng bộ nhóm. Không bọc SuccessEnvelope: response
+        là text/event-stream.
+
+        Sự kiện đầu tiên luôn là `snapshot` (khi client tụt quá xa hoặc chưa có
+        version) hoặc chuỗi sự kiện còn thiếu; client đã bắt kịp nhận một sự
+        kiện `sync` rỗng.
+
+        Thân của mỗi frame sự kiện nhật ký mang đúng shape với phần tử `events`
+        của `/sync` (`GroupSyncEvent`: {version, type, data}), nên client dùng
+        lại một hàm giải mã cho cả hai kênh. Trường `id:` của frame cũng là
+        version, dành cho client dùng EventSource chuẩn.
+
+        Ngoài ra: `heartbeat` mỗi 15 giây và `close` kèm `reason` khi kết nối
+        chạm tuổi thọ tối đa (`max_connection_age`), khi nhóm bị giải tán
+        (`group_archived`), hoặc khi chính caller không còn là thành viên
+        (`membership_ended`).
+
+        Client phải mở lại kết nối với `since` bằng version cuối cùng đã áp;
+        version nhảy cóc nghĩa là đã sót sự kiện và phải gọi `/sync`.
+      operationId: streamGroupEvents
+      tags: [Groups]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: since
+          in: query
+          description: Version client đang giữ. Bỏ trống hoặc 0 sẽ nhận snapshot.
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+
   /api/v1/notifications:
     get:
       operationId: listNotifications
@@ -981,6 +1093,19 @@ paths:
           in: query
           required: true
           schema: {type: string, format: uuid}
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Filter by bill status. Repeat the param (?status=draft&status=reviewed)
+            or pass a comma separated list (?status=draft,reviewed). Omit for all
+            statuses. An unknown value returns 400 VALIDATION_FAILED. Not supported
+            together with offset pagination.
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: {type: string, enum: [draft, reviewed, finalized, voided]}
         - name: limit
           in: query
           schema: {type: integer, default: 20}
@@ -1002,12 +1127,70 @@ paths:
                         properties:
                           bills:
                             type: array
-                            items: {$ref: "#/components/schemas/Bill"}
+                            items: {$ref: "#/components/schemas/BillListItem"}
+                          counts: {$ref: "#/components/schemas/BillStatusCounts"}
                           next_cursor: {type: string}
         "400":
-          description: "Validation failed (VALIDATION_FAILED), or an invalid cursor was supplied (INVALID_CURSOR)"
+          description: "Validation failed (VALIDATION_FAILED), an unknown status filter, a status filter combined with offset pagination, or an invalid cursor (INVALID_CURSOR)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /api/v1/bills/calculate:
+    post:
+      summary: Preview and calculate provisional bill breakdown without persisting
+      operationId: calculateBillBreakdown
+      tags: [Bills]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: group_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+          description: ID của nhóm (tuỳ chọn nếu đã có trong request body)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creditor_member_id]
+              properties:
+                group_id: {type: string, format: uuid}
+                creditor_member_id: {type: string, format: uuid}
+                subtotal: {type: integer, minimum: 0}
+                service_charge: {type: integer, minimum: 0}
+                vat: {type: integer, minimum: 0}
+                discount: {type: integer, minimum: 0}
+                total: {type: integer, minimum: 0}
+                split_method:
+                  type: string
+                  enum: [item_ratio, even]
+                items:
+                  type: array
+                  items: {$ref: "#/components/schemas/CreateBillItemRequest"}
+      responses:
+        "200":
+          description: "Calculation succeeded"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, example: true}
+                  message: {type: string, example: "Thành công"}
+                  data:
+                    type: object
+                    required: [total, is_balanced, breakdown]
+                    properties:
+                      total: {type: integer, example: 760000}
+                      is_balanced: {type: boolean, example: true}
+                      breakdown:
+                        type: array
+                        items: {$ref: "#/components/schemas/MemberAllocation"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /api/v1/bills/{id}:
     get:
@@ -1257,6 +1440,66 @@ paths:
         "422":
           description: "OCR candidate failed validation (OCR_CANDIDATE_INVALID)"
           content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
+  /api/v1/bills/{id}/calculate:
+    post:
+      summary: Preview and calculate provisional bill breakdown for an existing bill
+      operationId: calculateExistingBillBreakdown
+      tags: [Bills]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+        - name: group_id
+          in: query
+          required: false
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [creditor_member_id]
+              properties:
+                group_id: {type: string, format: uuid}
+                creditor_member_id: {type: string, format: uuid}
+                subtotal: {type: integer, minimum: 0}
+                service_charge: {type: integer, minimum: 0}
+                vat: {type: integer, minimum: 0}
+                discount: {type: integer, minimum: 0}
+                total: {type: integer, minimum: 0}
+                split_method:
+                  type: string
+                  enum: [item_ratio, even]
+                items:
+                  type: array
+                  items: {$ref: "#/components/schemas/CreateBillItemRequest"}
+      responses:
+        "200":
+          description: "Calculation succeeded"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: {type: boolean, example: true}
+                  message: {type: string, example: "Thành công"}
+                  data:
+                    type: object
+                    required: [total, is_balanced, breakdown]
+                    properties:
+                      total: {type: integer, example: 760000}
+                      is_balanced: {type: boolean, example: true}
+                      breakdown:
+                        type: array
+                        items: {$ref: "#/components/schemas/MemberAllocation"}
+        "400": {$ref: "#/components/responses/ValidationError"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
 
   /api/v1/bills/{id}/review:
     post:
@@ -1798,11 +2041,11 @@ components:
       type: object
       required: [item_subtotal, service_charge_share, vat_share, discount_share, rounding_adjustment, final_amount]
       properties:
-        item_subtotal: {type: string}
+        item_subtotal: {type: string, description: "Floor of the member exact item shares after aggregation across all participated items. Nested item_share values reconcile to this amount."}
         service_charge_share: {type: string}
         vat_share: {type: string}
         discount_share: {type: string}
-        rounding_adjustment: {type: string}
+        rounding_adjustment: {type: string, description: "final_amount - (item_subtotal + service_charge_share + vat_share - discount_share). It can belong to any member."}
         final_amount: {type: string}
     ExpenseBill:
       type: object
@@ -2076,12 +2319,36 @@ components:
         net_balance: {type: string, description: Decimal VND string; positive means the member is owed}
     GroupListItem:
       type: object
-      required: [group, caller_membership_id, caller_role, active_member_count]
+      description: >-
+        One group card. Every display field is built in a single query so the
+        group list never needs a follow-up GET /groups/{id} per group.
+      required: [group, caller_membership_id, caller_role, active_member_count,
+                 caller_net_balance, pending_bill_count, last_activity]
       properties:
         group: {$ref: "#/components/schemas/Group"}
         caller_membership_id: {type: string, format: uuid}
         caller_role: {type: string, enum: [captain, member]}
         active_member_count: {type: integer}
+        caller_net_balance:
+          type: string
+          pattern: '^-?[0-9]+$'
+          description: >-
+            The caller's net VND balance in this group, sent as a string so large
+            values survive JSON parsing. Positive means owed to the caller,
+            negative means the caller owes, 0 when the group has no open debts.
+        pending_bill_count:
+          type: integer
+          description: Bills that are neither finalized nor voided, the same definition the disband guard uses
+        last_activity:
+          nullable: true
+          description: The group's most recent activity; null when the group has none
+          allOf: [{$ref: "#/components/schemas/ActivitySummary"}]
+    ActivitySummary:
+      type: object
+      required: [description, created_at]
+      properties:
+        description: {type: string, description: Vietnamese description already rendered by the backend}
+        created_at: {type: string, format: date-time}
     CreateGroupResponse:
       type: object
       required: [group, membership]
@@ -2096,14 +2363,49 @@ components:
         next_cursor: {type: string, nullable: true}
     GroupDetailResponse:
       type: object
-      required: [group, members, balances, caller_role]
+      required: [group, members, balances, caller_role, caller_membership_id, version]
       properties:
         group: {$ref: "#/components/schemas/Group"}
         members: {type: array, items: {$ref: "#/components/schemas/Member"}}
         balances: {type: array, items: {$ref: "#/components/schemas/Balance"}}
         caller_role: {type: string, enum: [captain, member]}
+        caller_membership_id: {type: string, format: uuid, description: "membership_id của chính người gọi, để client đánh dấu \"tôi\" trong members mà không phải suy từ vai trò"}
+        version: {type: integer, format: int64, minimum: 0, description: "roster_version của nhóm tại thời điểm đọc. Client lưu lại làm điểm xuất phát cho /events và /sync; danh sách members trong cùng response là trạng thái tại đúng version này."}
         active_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: ID of the queued or processing bulk finalize batch; omitted for ordinary members (spec 0008)"}
         latest_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: newest batch by (created_at, id); omitted for ordinary members"}
+    GroupSyncEvent:
+      type: object
+      required: [version, type, data, created_at]
+      properties:
+        version: {type: integer, format: int64, minimum: 1, description: Thứ tự đơn điệu tăng trong phạm vi một nhóm, liền mạch và đúng thứ tự commit}
+        type:
+          type: string
+          enum: [member_joined, member_reactivated, member_left, member_removed, captain_transferred, group_renamed, group_archived]
+        data:
+          type: object
+          description: |
+            Payload phụ thuộc type. member_joined/member_reactivated mang
+            {member, active_member_count}; member_left/member_removed mang
+            {membership_id, user_id, actor_membership_id, active_member_count};
+            captain_transferred mang {previous_captain_membership_id,
+            current_captain_membership_id}; group_renamed mang {old_name, name}.
+            Có thể là object rỗng khi envelope bị cắt vì vượt giới hạn payload
+            của kênh đẩy — khi đó client gọi /sync để lấy nội dung đầy đủ.
+        created_at: {type: string, format: date-time}
+    GroupSyncResponse:
+      type: object
+      required: [version, mode]
+      properties:
+        version: {type: integer, format: int64, minimum: 0, description: Version client nên lưu lại sau khi áp xong response này}
+        mode: {type: string, enum: [delta, snapshot]}
+        events:
+          type: array
+          description: Chỉ có khi mode=delta. Sắp xếp theo version tăng dần, liền mạch từ since+1.
+          items: {$ref: "#/components/schemas/GroupSyncEvent"}
+        snapshot:
+          allOf:
+            - $ref: "#/components/schemas/GroupDetailResponse"
+          description: Chỉ có khi mode=snapshot. Client thay toàn bộ state cục bộ bằng nội dung này.
     LockSubmissionsResponse:
       type: object
       required: [bill_submission_locked, bill_submission_locked_at]
@@ -2316,6 +2618,69 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
 
+    BillStatusCounts:
+      type: object
+      description: >-
+        Bill counts per status for the whole group. Never narrowed by the status
+        filter of the request, so filter badges stay correct on every page.
+      required: [draft, reviewed, finalized, voided, total]
+      properties:
+        draft: {type: integer, format: int64, minimum: 0}
+        reviewed: {type: integer, format: int64, minimum: 0}
+        finalized: {type: integer, format: int64, minimum: 0}
+        voided: {type: integer, format: int64, minimum: 0}
+        total: {type: integer, format: int64, minimum: 0}
+
+    BillListItem:
+      allOf:
+        - $ref: "#/components/schemas/Bill"
+        - type: object
+          required: [payer_display_name, paid_member_count, member_count]
+          properties:
+            payer_display_name:
+              type: string
+              description: Current display name of the bill Creditor
+            paid_member_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: >-
+                Finalized shares already complete: the Creditor's own share, zero
+                amount shares, and shares whose debt is settled or voided. A voided
+                debt counts as complete because the debtor left the group and the
+                amount was written off. Zero when progress is not applicable
+            member_count:
+              type: integer
+              format: int64
+              minimum: 0
+              description: >-
+                Immutable share count for a finalized bill, the Creditor included.
+                Zero for draft, reviewed, and voided bills
+            my_share:
+              type: integer
+              format: int64
+              minimum: 0
+              nullable: true
+              description: >-
+                Amount the caller owes for this bill, taken from the stored
+                shares. Absent until the bill is finalized, and absent when the
+                caller carries none of it
+            my_share_status:
+              type: string
+              enum: [none, creditor, pending, settled]
+              description: >-
+                creditor when the caller paid up front, pending while they still
+                owe the Creditor, settled once the debt is paid or was written
+                off after they left the group, none when the bill is not
+                finalized or the caller has no share
+            ocr_status:
+              type: string
+              enum: [queued, processing, succeeded, failed]
+              description: >-
+                Status of the most recent OCR job, omitted for manually entered
+                bills. Distinguishes a bill still being scanned from one waiting
+                for item assignment - both are draft
+
     BillImage:
       type: object
       required: [id, bill_id, image_key, position]
@@ -2364,7 +2729,7 @@ components:
         bill_id: {type: string, format: uuid}
         group_id: {type: string, format: uuid}
         member_id: {type: string, format: uuid}
-        item_subtotal: {type: integer, format: int64}
+        item_subtotal: {type: integer, format: int64, description: "Floor of the member exact item shares after aggregation across all participated items."}
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
@@ -2372,9 +2737,9 @@ components:
           type: integer
           format: int64
           description: >-
-            Zero for every member except the Creditor. For the Creditor it is the residual left after
-            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
-            be negative when discount remainders dominate.
+            final_amount minus item_subtotal, service_charge_share, and vat_share, plus discount_share.
+            It records the exact reconciliation once and can belong to any member selected by the
+            largest remainder rule. The Creditor has no rounding priority.
         final_amount: {type: integer, format: int64}
         created_at: {type: string, format: date-time}
 
@@ -2383,7 +2748,7 @@ components:
       required: [member_id, item_subtotal, service_charge_share, vat_share, discount_share, final_amount]
       properties:
         member_id: {type: string, format: uuid}
-        item_subtotal: {type: integer, format: int64}
+        item_subtotal: {type: integer, format: int64, description: "Floor of the member exact item shares after aggregation across all participated items."}
         service_charge_share: {type: integer, format: int64}
         vat_share: {type: integer, format: int64}
         discount_share: {type: integer, format: int64}
@@ -2391,9 +2756,9 @@ components:
           type: integer
           format: int64
           description: >-
-            Zero for every member except the Creditor. For the Creditor it is the residual left after
-            floor allocation, the capped discount cascade, and the Creditor reconciliation, so it can
-            be negative when discount remainders dominate.
+            final_amount minus item_subtotal, service_charge_share, and vat_share, plus discount_share.
+            It records the exact reconciliation once and can belong to any member selected by the
+            largest remainder rule. The Creditor has no rounding priority.
         final_amount: {type: integer, format: int64}
 
     OCRJob:

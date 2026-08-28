@@ -109,6 +109,55 @@ Every member receives the floor of each component. The Creditor final amount is 
 
 Option B was chosen. The deciding factor is that it makes the sum to total invariant structural rather than emergent, which is the property the review found missing.
 
+## Allocation algorithm revision, 2026 08 27
+
+The Creditor absorption implementation fixed the missing total invariant, but it introduced cumulative early rounding. When 400000 VND and 800000 VND are each shared by six people, flooring each item produces 199999 VND per ordinary member even though adding the exact fractions first produces exactly 200000 VND. The Creditor then receives the six lost VND despite having no larger fractional entitlement.
+
+Three migration choices were evaluated.
+
+### Option A: Fix in place with exact aggregation and largest remainder (chosen)
+
+Keep the current API, snapshots, item ratios, discount rules, and pure allocation boundary. Replace only the arithmetic core with exact rational aggregation and a deterministic largest remainder pass.
+
+**Pros**:
+
+1. Fixes the root cause because money is rounded after aggregation rather than once per item.
+2. Removes systematic rounding preference for the Creditor.
+3. Needs no public API or schema change.
+
+**Cons**:
+
+1. Exact fraction operations and sorting are more complex than a linear floor pass.
+2. Draft previews can change after deployment and must be reviewed again.
+
+### Option B: Run old and new allocators side by side
+
+Version each bill by allocation algorithm and retain both paths during a gradual rollout.
+
+**Pros**:
+
+1. Supports a gradual comparison and instant cutover.
+
+**Cons**:
+
+1. Requires algorithm version persistence and doubles financial test and maintenance paths.
+2. The current scale and bounded pure function do not justify a permanent dual system.
+
+### Option C: Keep Creditor absorption
+
+Accept early rounding as the cost of the simplest structural total invariant.
+
+**Pros**:
+
+1. No implementation or deployment change.
+
+**Cons**:
+
+1. Repeated items can accumulate a visible and systematically biased difference.
+2. The result is harder to explain because the payer receives money unrelated to their item fractions.
+
+Option A is chosen. It preserves the structural sum invariant while making fairness part of the arithmetic rather than a special payer rule. `math/big.Rat` is the preferred implementation because it is in the Go standard library and avoids a new fraction type with its own overflow and comparison risks. The direct replacement is safe only when all unfinalized reviewed bills are invalidated for review and all preview and finalize paths switch together. Finalized snapshots remain unchanged.
+
 ## References
 
 **Project sources**:
@@ -125,7 +174,7 @@ Option B was chosen. The deciding factor is that it makes the sum to total invar
 **Practices and standards**:
 
 1. Idempotency keys for money and external side effects.
-2. Exact integer money arithmetic and deterministic floor allocation with Creditor remainder absorption.
+2. Exact rational money allocation, aggregate before rounding, and deterministic largest remainder distribution.
 3. Short database transactions and consistent row lock ordering.
 4. Composite group foreign keys for tenant isolation.
 5. Partial indexes for active work and cursor pagination for stable list reads.

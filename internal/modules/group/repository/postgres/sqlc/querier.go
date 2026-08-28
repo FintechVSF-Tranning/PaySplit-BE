@@ -11,12 +11,14 @@ import (
 )
 
 type Querier interface {
+	BumpRosterVersion(ctx context.Context, id pgtype.UUID) (int64, error)
 	CountActiveMembers(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	CountOpenDebts(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	CountUnfinishedBills(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	CreateGroup(ctx context.Context, arg CreateGroupParams) (Group, error)
 	CreateInitialCaptainMembership(ctx context.Context, arg CreateInitialCaptainMembershipParams) (GroupMember, error)
 	CreateInvite(ctx context.Context, arg CreateInviteParams) (GroupInvite, error)
+	DeleteGroupEventsBefore(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error)
 	DemoteToMember(ctx context.Context, id pgtype.UUID) error
 	FindAvailableInvite(ctx context.Context, arg FindAvailableInviteParams) (GroupInvite, error)
 	GetActiveCaptainDisplayName(ctx context.Context, groupID pgtype.UUID) (string, error)
@@ -26,19 +28,25 @@ type Querier interface {
 	// ============================================================================
 	GetBillFinalizeBatchNavigation(ctx context.Context, groupID pgtype.UUID) (GetBillFinalizeBatchNavigationRow, error)
 	GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, error)
+	GetGroupSyncCursor(ctx context.Context, id pgtype.UUID) (GetGroupSyncCursorRow, error)
 	GetInviteByCode(ctx context.Context, code string) (GroupInvite, error)
 	GetInviteByCodeForUpdate(ctx context.Context, code string) (GroupInvite, error)
 	GetInviteByIDForGroup(ctx context.Context, arg GetInviteByIDForGroupParams) (GroupInvite, error)
 	GetInviteGroupIDByCode(ctx context.Context, code string) (pgtype.UUID, error)
+	GetMemberSnapshot(ctx context.Context, arg GetMemberSnapshotParams) (GetMemberSnapshotRow, error)
 	GetMembershipByUserForUpdate(ctx context.Context, arg GetMembershipByUserForUpdateParams) (GroupMember, error)
 	GetUserDisplayName(ctx context.Context, id pgtype.UUID) (string, error)
 	IncrementInviteUse(ctx context.Context, id pgtype.UUID) error
+	InsertGroupEvent(ctx context.Context, arg InsertGroupEventParams) error
 	InsertMembership(ctx context.Context, arg InsertMembershipParams) (GroupMember, error)
+	// Mỗi hàng mang đủ dữ liệu cho một thẻ nhóm ở FE nên danh sách không cần
+	// gọi thêm GET /groups/{id} cho từng nhóm (báo cáo đối chiếu mục 3.2, 3.3).
 	ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error)
 	ListActiveMembers(ctx context.Context, groupID pgtype.UUID) ([]ListActiveMembersRow, error)
 	ListAvailableInvites(ctx context.Context, arg ListAvailableInvitesParams) ([]GroupInvite, error)
 	ListGroupActivities(ctx context.Context, arg ListGroupActivitiesParams) ([]ListGroupActivitiesRow, error)
 	ListGroupBalances(ctx context.Context, groupID pgtype.UUID) ([]ListGroupBalancesRow, error)
+	ListGroupEventsSince(ctx context.Context, arg ListGroupEventsSinceParams) ([]ListGroupEventsSinceRow, error)
 	LockGroup(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	LockMembership(ctx context.Context, arg LockMembershipParams) (GroupMember, error)
 	MarkMembershipInactive(ctx context.Context, arg MarkMembershipInactiveParams) error

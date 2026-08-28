@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpRosterVersion = `-- name: BumpRosterVersion :one
+UPDATE groups SET roster_version = roster_version + 1 WHERE id = $1 RETURNING roster_version
+`
+
+func (q *Queries) BumpRosterVersion(ctx context.Context, id pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, bumpRosterVersion, id)
+	var roster_version int64
+	err := row.Scan(&roster_version)
+	return roster_version, err
+}
+
 const countActiveMembers = `-- name: CountActiveMembers :one
 SELECT count(*) FROM group_members WHERE group_id = $1 AND status = 'active'
 `
@@ -49,7 +60,7 @@ func (q *Queries) CountUnfinishedBills(ctx context.Context, groupID pgtype.UUID)
 const createGroup = `-- name: CreateGroup :one
 INSERT INTO groups (name, currency, created_by)
 VALUES ($1, $2, $3)
-RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at
+RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at, roster_version
 `
 
 type CreateGroupParams struct {
@@ -69,6 +80,7 @@ func (q *Queries) CreateGroup(ctx context.Context, arg CreateGroupParams) (Group
 		&i.CreatedAt,
 		&i.Status,
 		&i.BillSubmissionLockedAt,
+		&i.RosterVersion,
 	)
 	return i, err
 }
@@ -134,6 +146,18 @@ func (q *Queries) CreateInvite(ctx context.Context, arg CreateInviteParams) (Gro
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const deleteGroupEventsBefore = `-- name: DeleteGroupEventsBefore :execrows
+DELETE FROM group_events WHERE created_at < $1
+`
+
+func (q *Queries) DeleteGroupEventsBefore(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGroupEventsBefore, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const demoteToMember = `-- name: DemoteToMember :exec
@@ -243,7 +267,7 @@ func (q *Queries) GetBillFinalizeBatchNavigation(ctx context.Context, groupID pg
 }
 
 const getGroupByID = `-- name: GetGroupByID :one
-SELECT id, name, currency, created_by, created_at, status, bill_submission_locked_at FROM groups WHERE id = $1 AND status = 'active'
+SELECT id, name, currency, created_by, created_at, status, bill_submission_locked_at, roster_version FROM groups WHERE id = $1 AND status = 'active'
 `
 
 func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, error) {
@@ -257,7 +281,27 @@ func (q *Queries) GetGroupByID(ctx context.Context, id pgtype.UUID) (Group, erro
 		&i.CreatedAt,
 		&i.Status,
 		&i.BillSubmissionLockedAt,
+		&i.RosterVersion,
 	)
+	return i, err
+}
+
+const getGroupSyncCursor = `-- name: GetGroupSyncCursor :one
+SELECT g.roster_version::bigint AS current_version,
+       COALESCE((SELECT MIN(e.version) FROM group_events e WHERE e.group_id = g.id), 0)::bigint AS oldest_version
+FROM groups g
+WHERE g.id = $1
+`
+
+type GetGroupSyncCursorRow struct {
+	CurrentVersion int64 `json:"current_version"`
+	OldestVersion  int64 `json:"oldest_version"`
+}
+
+func (q *Queries) GetGroupSyncCursor(ctx context.Context, id pgtype.UUID) (GetGroupSyncCursorRow, error) {
+	row := q.db.QueryRow(ctx, getGroupSyncCursor, id)
+	var i GetGroupSyncCursorRow
+	err := row.Scan(&i.CurrentVersion, &i.OldestVersion)
 	return i, err
 }
 
@@ -343,6 +387,41 @@ func (q *Queries) GetInviteGroupIDByCode(ctx context.Context, code string) (pgty
 	return group_id, err
 }
 
+const getMemberSnapshot = `-- name: GetMemberSnapshot :one
+SELECT m.id AS membership_id, m.user_id, u.display_name, u.avatar_object_key, m.role, m.joined_at
+FROM group_members m
+JOIN users u ON u.id = m.user_id
+WHERE m.id = $1 AND m.group_id = $2
+`
+
+type GetMemberSnapshotParams struct {
+	ID      pgtype.UUID `json:"id"`
+	GroupID pgtype.UUID `json:"group_id"`
+}
+
+type GetMemberSnapshotRow struct {
+	MembershipID    pgtype.UUID        `json:"membership_id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	DisplayName     string             `json:"display_name"`
+	AvatarObjectKey pgtype.Text        `json:"avatar_object_key"`
+	Role            interface{}        `json:"role"`
+	JoinedAt        pgtype.Timestamptz `json:"joined_at"`
+}
+
+func (q *Queries) GetMemberSnapshot(ctx context.Context, arg GetMemberSnapshotParams) (GetMemberSnapshotRow, error) {
+	row := q.db.QueryRow(ctx, getMemberSnapshot, arg.ID, arg.GroupID)
+	var i GetMemberSnapshotRow
+	err := row.Scan(
+		&i.MembershipID,
+		&i.UserID,
+		&i.DisplayName,
+		&i.AvatarObjectKey,
+		&i.Role,
+		&i.JoinedAt,
+	)
+	return i, err
+}
+
 const getMembershipByUserForUpdate = `-- name: GetMembershipByUserForUpdate :one
 SELECT id, group_id, user_id, role, status, joined_at, left_at FROM group_members WHERE group_id = $1 AND user_id = $2 FOR UPDATE
 `
@@ -387,6 +466,27 @@ func (q *Queries) IncrementInviteUse(ctx context.Context, id pgtype.UUID) error 
 	return err
 }
 
+const insertGroupEvent = `-- name: InsertGroupEvent :exec
+INSERT INTO group_events (group_id, version, event_type, payload) VALUES ($1, $2, $3, $4)
+`
+
+type InsertGroupEventParams struct {
+	GroupID   pgtype.UUID `json:"group_id"`
+	Version   int64       `json:"version"`
+	EventType string      `json:"event_type"`
+	Payload   []byte      `json:"payload"`
+}
+
+func (q *Queries) InsertGroupEvent(ctx context.Context, arg InsertGroupEventParams) error {
+	_, err := q.db.Exec(ctx, insertGroupEvent,
+		arg.GroupID,
+		arg.Version,
+		arg.EventType,
+		arg.Payload,
+	)
+	return err
+}
+
 const insertMembership = `-- name: InsertMembership :one
 INSERT INTO group_members (group_id, user_id, role, status)
 VALUES ($1, $2, 'member', 'active')
@@ -417,7 +517,20 @@ const listActiveGroupsForUser = `-- name: ListActiveGroupsForUser :many
 SELECT g.id, g.name, g.currency, g.created_by, g.created_at,
        g.bill_submission_locked_at,
        m.id AS membership_id, m.role,
-       (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count
+       (SELECT count(*) FROM group_members am WHERE am.group_id = g.id AND am.status = 'active') AS active_member_count,
+       -- Số dư ròng của chính caller trong nhóm; v_member_balances chỉ có hàng
+       -- khi thành viên có công nợ nên COALESCE về 0 cho nhóm chưa phát sinh.
+       COALESCE((SELECT b.net_balance FROM v_member_balances b WHERE b.member_id = m.id), 0)::bigint AS caller_net_balance,
+       -- Hóa đơn chưa chốt, dùng chung định nghĩa với CountUnfinishedBills.
+       (SELECT count(*) FROM bills bi WHERE bi.group_id = g.id AND bi.status NOT IN ('finalized', 'voided')) AS pending_bill_count,
+       -- Hoạt động gần nhất, NULL khi nhóm chưa có hoạt động nào. Gói thành
+       -- jsonb thay vì hai cột phẳng vì sqlc suy cột phẳng lấy từ subquery
+       -- thành NOT NULL (description là NOT NULL trong bảng) và sẽ vỡ khi
+       -- scan NULL. Truy vấn dùng idx_group_activities_timeline.
+       (SELECT jsonb_build_object('description', a.description, 'created_at', a.created_at)
+        FROM group_activities a
+        WHERE a.group_id = g.id
+        ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS last_activity
 FROM group_members m
 JOIN groups g ON g.id = m.group_id
 WHERE m.user_id = $1
@@ -446,8 +559,13 @@ type ListActiveGroupsForUserRow struct {
 	MembershipID           pgtype.UUID        `json:"membership_id"`
 	Role                   interface{}        `json:"role"`
 	ActiveMemberCount      int64              `json:"active_member_count"`
+	CallerNetBalance       int64              `json:"caller_net_balance"`
+	PendingBillCount       int64              `json:"pending_bill_count"`
+	LastActivity           []byte             `json:"last_activity"`
 }
 
+// Mỗi hàng mang đủ dữ liệu cho một thẻ nhóm ở FE nên danh sách không cần
+// gọi thêm GET /groups/{id} cho từng nhóm (báo cáo đối chiếu mục 3.2, 3.3).
 func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGroupsForUserParams) ([]ListActiveGroupsForUserRow, error) {
 	rows, err := q.db.Query(ctx, listActiveGroupsForUser,
 		arg.UserID,
@@ -472,6 +590,9 @@ func (q *Queries) ListActiveGroupsForUser(ctx context.Context, arg ListActiveGro
 			&i.MembershipID,
 			&i.Role,
 			&i.ActiveMemberCount,
+			&i.CallerNetBalance,
+			&i.PendingBillCount,
+			&i.LastActivity,
 		); err != nil {
 			return nil, err
 		}
@@ -671,6 +792,52 @@ func (q *Queries) ListGroupBalances(ctx context.Context, groupID pgtype.UUID) ([
 	return items, nil
 }
 
+const listGroupEventsSince = `-- name: ListGroupEventsSince :many
+SELECT version, event_type, payload, created_at
+FROM group_events
+WHERE group_id = $1 AND version > $2
+ORDER BY version ASC
+LIMIT $3
+`
+
+type ListGroupEventsSinceParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	Version int64       `json:"version"`
+	Limit   int32       `json:"limit"`
+}
+
+type ListGroupEventsSinceRow struct {
+	Version   int64              `json:"version"`
+	EventType string             `json:"event_type"`
+	Payload   []byte             `json:"payload"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListGroupEventsSince(ctx context.Context, arg ListGroupEventsSinceParams) ([]ListGroupEventsSinceRow, error) {
+	rows, err := q.db.Query(ctx, listGroupEventsSince, arg.GroupID, arg.Version, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGroupEventsSinceRow
+	for rows.Next() {
+		var i ListGroupEventsSinceRow
+		if err := rows.Scan(
+			&i.Version,
+			&i.EventType,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockGroup = `-- name: LockGroup :one
 SELECT id FROM groups WHERE id = $1 AND status = 'active' FOR UPDATE
 `
@@ -760,7 +927,7 @@ const renameGroup = `-- name: RenameGroup :one
 UPDATE groups
 SET name = $2
 WHERE id = $1 AND status = 'active'
-RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at
+RETURNING id, name, currency, created_by, created_at, status, bill_submission_locked_at, roster_version
 `
 
 type RenameGroupParams struct {
@@ -779,6 +946,7 @@ func (q *Queries) RenameGroup(ctx context.Context, arg RenameGroupParams) (Group
 		&i.CreatedAt,
 		&i.Status,
 		&i.BillSubmissionLockedAt,
+		&i.RosterVersion,
 	)
 	return i, err
 }

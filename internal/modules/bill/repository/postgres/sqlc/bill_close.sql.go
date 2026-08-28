@@ -44,6 +44,20 @@ func (q *Queries) CaptureOpenBills(ctx context.Context, groupID pgtype.UUID) ([]
 	return items, nil
 }
 
+const clearGroupSubmissionLockedAt = `-- name: ClearGroupSubmissionLockedAt :one
+UPDATE groups
+SET bill_submission_locked_at = NULL
+WHERE id = $1 AND status = 'active'
+RETURNING bill_submission_locked_at
+`
+
+func (q *Queries) ClearGroupSubmissionLockedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, clearGroupSubmissionLockedAt, id)
+	var bill_submission_locked_at pgtype.Timestamptz
+	err := row.Scan(&bill_submission_locked_at)
+	return bill_submission_locked_at, err
+}
+
 const completeFinalizeBatch = `-- name: CompleteFinalizeBatch :execrows
 UPDATE group_bill_finalize_batches
 SET status = 'completed',

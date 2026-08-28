@@ -102,7 +102,7 @@ func (r *postgresRepository) LockSubmissions(ctx context.Context, groupID, calle
 			GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
 			ActorMemberID: member.ID,
 			ActionType:    "bill_submission_locked",
-			Description:   "đã khóa gửi hóa đơn mới cho nhóm",
+			Description:   "Đã tạm khóa nhận hóa đơn mới cho nhóm",
 			Metadata:      meta,
 		}); err != nil {
 			return nil, fmt.Errorf("insert bill_submission_locked activity: %w", err)
@@ -113,6 +113,71 @@ func (r *postgresRepository) LockSubmissions(ctx context.Context, groupID, calle
 		return nil, fmt.Errorf("commit lock submissions tx: %w", err)
 	}
 	return result, nil
+}
+
+// UnlockSubmissions mở khóa gửi hóa đơn trong đúng một transaction: khóa dòng nhóm,
+// kiểm tra Captain, xóa bill_submission_locked_at (về NULL) và ghi activity
+// bill_submission_unlocked chỉ khi trạng thái thay đổi.
+func (r *postgresRepository) UnlockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin unlock submissions tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := sqlc.New(tx)
+
+	if err = database.LockActiveGroup(ctx, tx, groupID); err != nil {
+		if errors.Is(err, database.ErrGroupNotActive) {
+			return domain.ErrGroupNotFound
+		}
+		return fmt.Errorf("lock group for submission unlock: %w", err)
+	}
+
+	member, err := q.GetGroupMember(ctx, sqlc.GetGroupMemberParams{
+		GroupID: pgtype.UUID{Bytes: groupID, Valid: true},
+		UserID:  pgtype.UUID{Bytes: callerUserID, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrGroupNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("get caller membership for unlock submissions: %w", err)
+	}
+	if fmt.Sprintf("%v", member.Role) != "captain" {
+		return domain.ErrCaptainRequired
+	}
+
+	current, err := q.GetGroupSubmissionLock(ctx, pgtype.UUID{Bytes: groupID, Valid: true})
+	if err != nil {
+		return fmt.Errorf("read submission lock: %w", err)
+	}
+
+	if current.Valid {
+		if _, err := q.ClearGroupSubmissionLockedAt(ctx, pgtype.UUID{Bytes: groupID, Valid: true}); err != nil {
+			return fmt.Errorf("clear submission lock: %w", err)
+		}
+
+		meta, _ := json.Marshal(map[string]any{
+			"group_id":    groupID.String(),
+			"unlocked_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		if _, err := q.InsertGroupActivity(ctx, sqlc.InsertGroupActivityParams{
+			ID:            pgtype.UUID{Bytes: uuid.Must(uuid.NewV7()), Valid: true},
+			GroupID:       pgtype.UUID{Bytes: groupID, Valid: true},
+			ActorMemberID: member.ID,
+			ActionType:    "bill_submission_unlocked",
+			Description:   "Đã mở khóa nhận hóa đơn cho nhóm",
+			Metadata:      meta,
+		}); err != nil {
+			return fmt.Errorf("insert bill_submission_unlocked activity: %w", err)
+		}
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit unlock submissions tx: %w", err)
+	}
+	return nil
 }
 
 // StartBulkFinalize mở batch chốt toàn bộ trong một transaction theo đúng trình
@@ -177,7 +242,7 @@ func (r *postgresRepository) StartBulkFinalize(ctx context.Context, p repository
 			GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
 			ActorMemberID: member.ID,
 			ActionType:    "bill_submission_locked",
-			Description:   "đã khóa gửi hóa đơn mới cho nhóm",
+			Description:   "Đã tạm khóa nhận hóa đơn mới cho nhóm",
 			Metadata:      meta,
 		}); err != nil {
 			return nil, fmt.Errorf("insert bill_submission_locked activity for bulk finalize: %w", err)
@@ -256,7 +321,7 @@ func (r *postgresRepository) StartBulkFinalize(ctx context.Context, p repository
 		GroupID:       pgtype.UUID{Bytes: p.GroupID, Valid: true},
 		ActorMemberID: member.ID,
 		ActionType:    "bill_bulk_finalize_started",
-		Description:   fmt.Sprintf("đã bắt đầu chốt toàn bộ %d hóa đơn", len(capturedRows)),
+		Description:   fmt.Sprintf("Đã bắt đầu chốt toàn bộ %d hóa đơn", len(capturedRows)),
 		Metadata:      startMeta,
 	}); err != nil {
 		return nil, fmt.Errorf("insert bill_bulk_finalize_started activity: %w", err)
@@ -320,7 +385,7 @@ func (r *postgresRepository) insertBulkCompletionNotificationTx(ctx context.Cont
 		GroupID:       batchRow.GroupID,
 		ActorMemberID: batchRow.RequestedByMemberID,
 		ActionType:    "bill_bulk_finalize_completed",
-		Description:   fmt.Sprintf("đã hoàn tất chốt toàn bộ (%d/%d hóa đơn)", batchRow.FinalizedCount, batchRow.TargetCount),
+		Description:   fmt.Sprintf("Đã hoàn tất chốt toàn bộ (%d/%d hóa đơn)", batchRow.FinalizedCount, batchRow.TargetCount),
 		Metadata:      meta,
 	}); err != nil {
 		return nil, fmt.Errorf("insert bill_bulk_finalize_completed activity: %w", err)

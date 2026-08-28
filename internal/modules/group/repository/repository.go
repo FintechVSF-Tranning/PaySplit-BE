@@ -52,6 +52,16 @@ type Repository interface {
 	RenameGroup(ctx context.Context, groupID, callerUserID, name string) (*domain.Group, error)
 	DisbandGroup(ctx context.Context, groupID, callerUserID string) error
 	ListActivities(context.Context, ListActivitiesParams) ([]domain.Activity, *string, error)
+
+	// GetSyncCursor trả cặp mốc (version hiện tại, version cũ nhất còn giữ) của
+	// nhóm sau khi đã xác thực caller là thành viên active. Nhóm không tồn tại
+	// và caller không phải thành viên cùng trả ErrGroupNotFound.
+	GetSyncCursor(ctx context.Context, groupID, callerUserID string) (domain.SyncCursor, error)
+	// ListEventsSince đọc nhật ký theo thứ tự version tăng dần. Không tự xác
+	// thực: caller phải gọi GetSyncCursor trước.
+	ListEventsSince(ctx context.Context, groupID string, since int64, limit int) ([]domain.SyncEvent, error)
+	// DeleteEventsBefore dọn nhật ký cũ hơn cutoff, trả số dòng đã xóa.
+	DeleteEventsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type ListActivitiesParams struct {

@@ -56,11 +56,17 @@ type ListBillsCursorParams struct {
 	GroupID uuid.UUID
 	Cursor  *string
 	Limit   int32
+	// Statuses lọc theo trạng thái hóa đơn. Rỗng nghĩa là "Tất cả" — giữ nguyên
+	// hành vi cho client không gửi bộ lọc.
+	Statuses []string
+	// CallerMemberID là membership của người đang xem trong nhóm, dùng để lấy
+	// phần tiền của chính họ trong từng hóa đơn.
+	CallerMemberID uuid.UUID
 }
 
 // ListBillsCursorResult chứa kết quả phân trang cursor cho danh sách bill.
 type ListBillsCursorResult struct {
-	Bills      []*domain.Bill
+	Bills      []*domain.BillListItem
 	NextCursor *string
 }
 
@@ -82,7 +88,7 @@ type UpdateDraftParams struct {
 	ActorMemberID   uuid.UUID
 }
 
-// FinalizeBillParams chứa dữ liệu chốt hóa đơn và lưu snapshot phân bổ nợ Hamilton.
+// FinalizeBillParams chứa dữ liệu chốt hóa đơn và lưu snapshot phân bổ nợ chính xác.
 type FinalizeBillParams struct {
 	BillID          uuid.UUID
 	GroupID         uuid.UUID
@@ -202,10 +208,13 @@ type Repository interface {
 	GetBillByIDForUpdate(ctx context.Context, id, groupID uuid.UUID) (*domain.Bill, error)
 
 	// ListBillsByGroup lấy danh sách hóa đơn trong nhóm có phân trang offset (legacy).
-	ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error)
+	ListBillsByGroup(ctx context.Context, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error)
 
 	// ListBillsByGroupCursor lấy danh sách hóa đơn trong nhóm theo cursor pagination (created_at DESC, id DESC).
 	ListBillsByGroupCursor(ctx context.Context, params ListBillsCursorParams) (*ListBillsCursorResult, error)
+
+	// CountBillsByGroupStatus đếm hóa đơn của nhóm theo từng trạng thái.
+	CountBillsByGroupStatus(ctx context.Context, groupID uuid.UUID) (map[string]int64, error)
 
 	// UpdateDraftBill cập nhật hóa đơn draft và ghi đè danh sách món ăn trong 1 transaction có kiểm tra version.
 	UpdateDraftBill(ctx context.Context, params UpdateDraftParams) (*domain.Bill, error)
@@ -262,10 +271,15 @@ type Repository interface {
 	// Nhóm không tồn tại hoặc đã archive trả về ErrBillNotFound (Spec 0008 Bill creation gate).
 	GetGroupSubmissionLock(ctx context.Context, groupID uuid.UUID) (*time.Time, error)
 
-	// LockSubmissions thực hiện trọn vẹn bước khóa một chiều trong một transaction:
+	// LockSubmissions thực hiện trọn vẹn bước khóa trong một transaction:
 	// khóa dòng nhóm, kiểm tra Captain, bật bill_submission_locked_at khi chưa có,
-	// ghi activity bill_submission_locked khi khóa thay đổi (Spec 0008 AC-1).
+	// ghi activity bill_submission_locked khi khóa thay đổi.
 	LockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) (*LockSubmissionsResult, error)
+
+	// UnlockSubmissions mở khóa gửi hóa đơn cho nhóm trong một transaction:
+	// khóa dòng nhóm, kiểm tra Captain, xóa bill_submission_locked_at (về NULL),
+	// ghi activity bill_submission_unlocked khi có thay đổi.
+	UnlockSubmissions(ctx context.Context, groupID, callerUserID uuid.UUID) error
 
 	// StartBulkFinalize mở batch chốt toàn bộ trong một transaction theo đúng trình tự
 	// spec: khóa nhóm, kiểm tra Captain, bật khóa gửi hóa đơn, từ chối khi còn batch

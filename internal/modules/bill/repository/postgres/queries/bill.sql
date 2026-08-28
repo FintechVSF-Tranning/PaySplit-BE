@@ -37,21 +37,111 @@ WHERE id = $1 AND group_id = $2
 FOR UPDATE;
 
 -- name: ListBillsByGroup :many
-SELECT * FROM bills
-WHERE group_id = $1
-ORDER BY created_at DESC
+SELECT
+    sqlc.embed(b),
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN LATERAL (
+    SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status IN ('settled', 'voided')
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+ORDER BY b.created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: ListBillsByGroupCursor :many
-SELECT * FROM bills
-WHERE group_id = $1
+SELECT
+    sqlc.embed(b),
+    u.display_name AS payer_display_name,
+    COALESCE(progress.paid_member_count, 0)::bigint AS paid_member_count,
+    COALESCE(progress.member_count, 0)::bigint AS member_count,
+    -- Phần tiền của người đang xem. NULL khi hóa đơn chưa chốt hoặc người xem
+    -- không gánh món nào; bill_shares có UNIQUE(bill_id, member_id) nên join
+    -- này không nhân dòng.
+    my_share.final_amount AS my_share,
+    -- Trạng thái khoản nợ tương ứng của người đang xem, cũng UNIQUE theo
+    -- (bill_id, debtor_member_id, creditor_member_id).
+    COALESCE(my_debt.status::text, '')::text AS my_debt_status,
+    -- Tiến trình OCR mới nhất: phân biệt "đang quét" với "chờ gán món", vì cả
+    -- hai đều mang bills.status = 'draft'.
+    COALESCE(ocr.status::text, '')::text AS ocr_status
+FROM bills b
+JOIN group_members creditor ON creditor.id = b.creditor_member_id
+    AND creditor.group_id = b.group_id
+JOIN users u ON u.id = creditor.user_id
+LEFT JOIN bill_shares my_share ON my_share.bill_id = b.id
+    AND my_share.member_id = $6
+LEFT JOIN debts my_debt ON my_debt.bill_id = b.id
+    AND my_debt.debtor_member_id = $6
+    AND my_debt.creditor_member_id = b.creditor_member_id
+LEFT JOIN LATERAL (
+    SELECT jobs.status
+    FROM ocr_jobs jobs
+    WHERE jobs.bill_id = b.id
+    ORDER BY jobs.created_at DESC
+    LIMIT 1
+) ocr ON true
+LEFT JOIN LATERAL (
+    SELECT
+        -- Một share coi như đã xong khi: chính người ứng tiền, phần chia bằng 0,
+        -- khoản nợ đã tất toán, hoặc khoản nợ đã bị void vì thành viên rời nhóm
+        -- (Spec 0002 AC-6). Bỏ 'voided' ra khỏi đây thì một hóa đơn có người rời
+        -- nhóm sẽ không bao giờ đạt 100%.
+        COUNT(*) FILTER (
+            WHERE shares.member_id = b.creditor_member_id
+                OR shares.final_amount = 0
+                OR debts.status IN ('settled', 'voided')
+        ) AS paid_member_count,
+        COUNT(*) AS member_count
+    FROM bill_shares shares
+    LEFT JOIN debts ON debts.bill_id = b.id
+        AND debts.debtor_member_id = shares.member_id
+        AND debts.creditor_member_id = b.creditor_member_id
+    WHERE b.status = 'finalized'
+        AND shares.bill_id = b.id
+) progress ON true
+WHERE b.group_id = $1
+  -- Bộ lọc trạng thái của tab Hóa đơn trong nhóm. Mảng rỗng (hoặc NULL) nghĩa là
+  -- "Tất cả", nên client cũ không gửi tham số này vẫn giữ nguyên hành vi.
+  AND (
+    COALESCE(cardinality($5::text[]), 0) = 0
+    OR b.status::text = ANY($5::text[])
+  )
   AND (
     $2::timestamptz IS NULL 
-    OR created_at < $2 
-    OR (created_at = $2 AND id < $3)
+    OR b.created_at < $2
+    OR (b.created_at = $2 AND b.id < $3)
   )
-ORDER BY created_at DESC, id DESC
+ORDER BY b.created_at DESC, b.id DESC
 LIMIT $4;
+
+-- name: CountBillsByGroupStatus :many
+-- Đếm hóa đơn theo từng trạng thái để badge của các chip lọc không phụ thuộc
+-- vào trang dữ liệu đã tải.
+SELECT b.status::text AS status, COUNT(*)::bigint AS count
+FROM bills b
+WHERE b.group_id = $1
+GROUP BY b.status;
 
 -- name: UpdateDraftBill :one
 UPDATE bills
@@ -189,7 +279,7 @@ DELETE FROM bill_item_assignments
 WHERE bill_item_id = $1;
 
 -- ============================================================================
--- BILL SHARES (Hamilton Finalized Snapshot)
+-- BILL SHARES (Exact Finalized Snapshot)
 -- ============================================================================
 
 -- name: CreateBillShare :one

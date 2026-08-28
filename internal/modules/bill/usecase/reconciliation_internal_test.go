@@ -129,12 +129,58 @@ func TestEvaluateAllocation_DiscountExceedsBill(t *testing.T) {
 }
 
 func TestEvaluateAllocation_MissingCreditor(t *testing.T) {
-	// covers: AC-6 (không có Creditor thì không có người hấp thụ dư)
+	// covers: AC-6 (không có Creditor thì hóa đơn chưa đủ dữ liệu người trả trước)
 	m := uuid.New()
 	bill := billFixture(uuid.Nil, []*domain.BillItem{itemFixture(1000, m)}, 1000, 0, 0, 0, 1000)
 
 	if _, blockers := evaluateAllocation(bill, map[uuid.UUID]bool{m: true}); !hasCode(blockers, BlockerCreditorRequired) {
 		t.Fatalf("mong đợi %s, nhận %v", BlockerCreditorRequired, blockers)
+	}
+}
+
+func TestEvaluateAllocation_InactiveCreditor(t *testing.T) {
+	// covers: AC-6 (Creditor phải còn là thành viên active)
+	creditor, member := uuid.New(), uuid.New()
+	bill := billFixture(creditor, []*domain.BillItem{itemFixture(1000, member)}, 1000, 0, 0, 0, 1000)
+
+	if _, blockers := evaluateAllocation(bill, map[uuid.UUID]bool{member: true}); !hasCode(blockers, BlockerCreditorRequired) {
+		t.Fatalf("mong đợi %s cho Creditor inactive, nhận %v", BlockerCreditorRequired, blockers)
+	}
+}
+
+func TestParseWeightToScaledIntStrict_UsesExactDecimalParsing(t *testing.T) {
+	// covers: AC-6 (trọng số đi vào allocator dưới dạng số nguyên, không qua float)
+	tests := []struct {
+		name    string
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{name: "integer", input: "1", want: weightScale},
+		{name: "eight decimal places", input: "0.33333333", want: 33_333_333},
+		{name: "rounds ninth decimal half up", input: "0.333333335", want: 33_333_334},
+		{name: "trims whitespace", input: " 2.5000 ", want: 250_000_000},
+		{name: "zero", input: "0", wantErr: true},
+		{name: "negative", input: "-1", wantErr: true},
+		{name: "not decimal", input: "NaN", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseWeightToScaledIntStrict(test.input)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("parseWeightToScaledIntStrict(%q) succeeded with %d", test.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseWeightToScaledIntStrict(%q) error = %v", test.input, err)
+			}
+			if got != test.want {
+				t.Fatalf("parseWeightToScaledIntStrict(%q) = %d, want %d", test.input, got, test.want)
+			}
+		})
 	}
 }
 

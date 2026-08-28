@@ -68,6 +68,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware func(http.Handler)
 		}
 		protected.Post("/{id}/ocr-retry", h.RetryOCR)
 		protected.Post("/{id}/apply-candidate", h.ApplyCandidate)
+		protected.Post("/calculate", h.CalculateBreakdown)
+		protected.Post("/{id}/calculate", h.CalculateBreakdown)
 		protected.Put("/{id}", h.UpdateDraftBill)
 		protected.Patch("/{id}", h.UpdateDraftBill)
 		protected.Post("/{id}/review", h.ReviewBill)
@@ -228,13 +230,25 @@ func (h *Handler) GetBillDetail(w http.ResponseWriter, r *http.Request) {
 	_ = helpers.WriteJSON(w, http.StatusOK, detail)
 }
 
-// ListBills xử lý GET /api/v1/bills?group_id=...&limit=...&cursor=...
+// ListBills xử lý GET /api/v1/bills?group_id=...&status=...&limit=...&cursor=...
 func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 	callerUserID := getUserID(r)
 	groupIDStr := r.URL.Query().Get("group_id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
 		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_GROUP_ID", "group_id query param is required", nil)
+		return
+	}
+
+	// `status` nhận cả dạng lặp (?status=draft&status=reviewed) lẫn CSV
+	// (?status=draft,reviewed). Bỏ trống = tất cả trạng thái.
+	rawStatuses := make([]string, 0, 4)
+	for _, value := range r.URL.Query()["status"] {
+		rawStatuses = append(rawStatuses, strings.Split(value, ",")...)
+	}
+	statuses, err := usecase.ParseBillStatuses(rawStatuses)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "status must be one of draft, reviewed, finalized, voided", nil)
 		return
 	}
 
@@ -253,6 +267,12 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 
 	offsetStr := r.URL.Query().Get("offset")
 	if offsetStr != "" && cursor == nil {
+		// Đường offset là lối cũ không mang bộ lọc trạng thái. Trả lỗi rõ ràng
+		// còn hơn im lặng trả về một trang "tất cả" mà client tưởng đã lọc.
+		if len(statuses) > 0 {
+			_ = helpers.WriteAPIError(w, http.StatusBadRequest, "VALIDATION_FAILED", "status filter requires cursor pagination, not offset", nil)
+			return
+		}
 		offset := 0
 		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
 			offset = o
@@ -268,14 +288,15 @@ func (h *Handler) ListBills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.service.ListBillsCursor(r.Context(), callerUserID, groupID, cursor, int32(limit))
+	res, err := h.service.ListBillsCursor(r.Context(), callerUserID, groupID, cursor, int32(limit), statuses)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
 
 	resp := map[string]any{
-		"bills": res.Bills,
+		"bills":  res.Bills,
+		"counts": res.Counts,
 	}
 	if res.NextCursor != nil {
 		resp["next_cursor"] = *res.NextCursor
@@ -373,6 +394,44 @@ func (h *Handler) ApplyCandidate(w http.ResponseWriter, r *http.Request) {
 	_ = h.service.CompleteIdempotency(r.Context(), callerUserID, "apply_candidate", rawKey, http.StatusOK, resp, &billID)
 
 	_ = helpers.WriteJSON(w, http.StatusOK, resp)
+}
+
+// CalculateBreakdown xử lý POST /api/v1/bills/calculate (tính toán phân bổ tạm tính mà không lưu DB).
+func (h *Handler) CalculateBreakdown(w http.ResponseWriter, r *http.Request) {
+	callerUserID := getUserID(r)
+	if callerUserID == uuid.Nil {
+		_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized", nil)
+		return
+	}
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "cannot read request body", nil)
+		return
+	}
+
+	var req usecase.CalculateBreakdownRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		_ = helpers.WriteAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body", nil)
+		return
+	}
+
+	// Hỗ trợ truyền group_id qua query params nếu body chưa có
+	if req.GroupID == uuid.Nil {
+		if groupIDStr := r.URL.Query().Get("group_id"); groupIDStr != "" {
+			if gID, err := uuid.Parse(groupIDStr); err == nil {
+				req.GroupID = gID
+			}
+		}
+	}
+
+	result, err := h.service.CalculateBreakdown(r.Context(), callerUserID, req)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	_ = helpers.WriteJSON(w, http.StatusOK, result)
 }
 
 // UpdateDraftBill xử lý PUT /api/v1/bills/{id}?group_id=...

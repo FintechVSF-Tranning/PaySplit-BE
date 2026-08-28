@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +136,7 @@ type BillDetailResponse struct {
 	Bill       *domain.Bill        `json:"bill"`
 	Breakdown  []*MemberAllocation `json:"breakdown,omitempty"`
 	SignedURLs map[string]string   `json:"signed_urls,omitempty"`
+	OCRJob     *domain.OCRJob      `json:"ocr_job,omitempty"`
 }
 
 type UpdateDraftRequest struct {
@@ -148,6 +150,38 @@ type UpdateDraftRequest struct {
 	Total         int64                   `json:"total"`
 	SplitMethod   domain.SplitMethod      `json:"split_method"`
 	Items         []CreateBillItemRequest `json:"items"`
+}
+
+type EnrichedMemberAllocation struct {
+	MemberID           uuid.UUID  `json:"member_id"`
+	UserID             *uuid.UUID `json:"user_id,omitempty"`
+	DisplayName        string     `json:"display_name,omitempty"`
+	AvatarURL          *string    `json:"avatar_url,omitempty"`
+	ItemSubtotal       int64      `json:"item_subtotal"`
+	ServiceChargeShare int64      `json:"service_charge_share"`
+	VATShare           int64      `json:"vat_share"`
+	DiscountShare      int64      `json:"discount_share"`
+	RoundingAdjustment int64      `json:"rounding_adjustment"`
+	FinalAmount        int64      `json:"final_amount"`
+	IsCreditor         bool       `json:"is_creditor"`
+}
+
+type CalculateBreakdownRequest struct {
+	GroupID          uuid.UUID               `json:"group_id"`
+	CreditorMemberID uuid.UUID               `json:"creditor_member_id"`
+	Subtotal         int64                   `json:"subtotal"`
+	ServiceCharge    int64                   `json:"service_charge"`
+	VAT              int64                   `json:"vat"`
+	Discount         int64                   `json:"discount"`
+	Total            int64                   `json:"total"`
+	SplitMethod      domain.SplitMethod      `json:"split_method"`
+	Items            []CreateBillItemRequest `json:"items"`
+}
+
+type CalculateBreakdownResponse struct {
+	Total      int64                       `json:"total"`
+	IsBalanced bool                        `json:"is_balanced"`
+	Breakdown  []*EnrichedMemberAllocation `json:"breakdown"`
 }
 
 // ============================================================================
@@ -426,15 +460,114 @@ func (s *Service) GetBillDetail(ctx context.Context, callerUserID, billID, group
 		platformmetrics.RecordBillPreview(outcome, time.Since(previewStart))
 	}
 
+	var latestOCRJob *domain.OCRJob
+	if job, jobErr := s.repo.GetLatestOCRJobByBillID(ctx, billID); jobErr == nil {
+		latestOCRJob = job
+	}
+
 	return &BillDetailResponse{
 		Bill:       bill,
 		Breakdown:  breakdown,
 		SignedURLs: signedURLs,
+		OCRJob:     latestOCRJob,
+	}, nil
+}
+
+// CalculateBreakdown tính toán phân bổ chính xác số tiền từng người mà không lưu DB.
+func (s *Service) CalculateBreakdown(ctx context.Context, callerUserID uuid.UUID, req CalculateBreakdownRequest) (*CalculateBreakdownResponse, error) {
+	if req.GroupID == uuid.Nil {
+		return nil, domain.ErrInvalidInput
+	}
+	if req.CreditorMemberID == uuid.Nil {
+		return nil, domain.ErrCreditorRequired
+	}
+	if req.Subtotal < 0 || req.ServiceCharge < 0 || req.VAT < 0 || req.Discount < 0 || req.Total < 0 {
+		return nil, fmt.Errorf("%w: monetary values must be non-negative", domain.ErrInvalidInput)
+	}
+
+	// 1. Kiểm tra caller có thuộc nhóm không
+	member, err := s.repo.GetGroupMember(ctx, req.GroupID, callerUserID)
+	if err != nil || member == nil || member.Status != "active" {
+		return nil, domain.ErrForbidden
+	}
+
+	// 2. Chuyển đổi danh sách món sang ItemInput
+	items := make([]ItemInput, 0, len(req.Items))
+	var itemsTotal int64
+	for _, it := range req.Items {
+		var assignments []ItemAssignmentInput
+		for _, a := range it.Assignments {
+			weight, parseErr := parseWeightToScaledIntStrict(a.Weight)
+			if parseErr != nil {
+				return nil, fmt.Errorf("%w: assignment weight must be a positive number", domain.ErrInvalidInput)
+			}
+			assignments = append(assignments, ItemAssignmentInput{
+				MemberID: a.MemberID,
+				Weight:   weight,
+			})
+		}
+		itemsTotal += it.LineTotal
+		items = append(items, ItemInput{
+			LineTotal:   it.LineTotal,
+			Assignments: assignments,
+		})
+	}
+
+	// 3. Thực thi thuật toán phân bổ chính xác.
+	allocInput := AllocationInput{
+		CreditorID:    req.CreditorMemberID,
+		Subtotal:      req.Subtotal,
+		ServiceCharge: req.ServiceCharge,
+		VAT:           req.VAT,
+		Discount:      req.Discount,
+		Total:         req.Total,
+		Items:         items,
+	}
+
+	allocations, err := CalculateAllocation(allocInput)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Lấy thông tin thành viên active trong nhóm để enrich UserID
+	activeMembers, err := s.repo.ListActiveGroupMembers(ctx, req.GroupID)
+	memberMap := make(map[uuid.UUID]*repository.GroupMember)
+	if err == nil {
+		for _, m := range activeMembers {
+			memberMap[m.ID] = m
+		}
+	}
+
+	enriched := make([]*EnrichedMemberAllocation, 0, len(allocations))
+	var sumFinal int64
+	for _, a := range allocations {
+		sumFinal += a.FinalAmount
+		e := &EnrichedMemberAllocation{
+			MemberID:           a.MemberID,
+			ItemSubtotal:       a.ItemSubtotal,
+			ServiceChargeShare: a.ServiceChargeShare,
+			VATShare:           a.VATShare,
+			DiscountShare:      a.DiscountShare,
+			RoundingAdjustment: a.RoundingAdjustment,
+			FinalAmount:        a.FinalAmount,
+			IsCreditor:         a.MemberID == req.CreditorMemberID,
+		}
+		if gm, ok := memberMap[a.MemberID]; ok {
+			e.UserID = &gm.UserID
+		}
+		enriched = append(enriched, e)
+	}
+
+	allocTotal := itemsTotal + req.ServiceCharge + req.VAT - req.Discount
+	return &CalculateBreakdownResponse{
+		Total:      allocTotal,
+		IsBalanced: sumFinal == allocTotal,
+		Breakdown:  enriched,
 	}, nil
 }
 
 // ListBills lấy danh sách hóa đơn trong nhóm có phân trang (offset legacy).
-func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.Bill, error) {
+func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID, limit, offset int32) ([]*domain.BillListItem, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden
@@ -450,18 +583,84 @@ func (s *Service) ListBills(ctx context.Context, callerUserID, groupID uuid.UUID
 	return s.repo.ListBillsByGroup(ctx, groupID, limit, offset)
 }
 
-// ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12).
-func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32) (*repository.ListBillsCursorResult, error) {
+// ListBillsResult là kết quả của danh sách hóa đơn: trang dữ liệu theo cursor
+// kèm số lượng hóa đơn theo từng trạng thái để client dựng badge bộ lọc mà
+// không phải đoán từ trang đã tải.
+type ListBillsResult struct {
+	Bills      []*domain.BillListItem `json:"bills"`
+	NextCursor *string                `json:"next_cursor,omitempty"`
+	Counts     BillStatusCounts       `json:"counts"`
+}
+
+// BillStatusCounts đếm hóa đơn của nhóm theo trạng thái (không bị bộ lọc
+// `statuses` của request cắt bớt).
+type BillStatusCounts struct {
+	Draft     int64 `json:"draft"`
+	Reviewed  int64 `json:"reviewed"`
+	Finalized int64 `json:"finalized"`
+	Voided    int64 `json:"voided"`
+	Total     int64 `json:"total"`
+}
+
+// ParseBillStatuses kiểm tra danh sách trạng thái do client gửi lên. Danh sách
+// rỗng nghĩa là "Tất cả"; một giá trị lạ làm cả request hỏng thay vì bị bỏ qua
+// âm thầm, để client biết mình gửi sai chứ không nhận nhầm một trang "Tất cả".
+func ParseBillStatuses(raw []string) ([]string, error) {
+	statuses := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, value := range raw {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		switch domain.BillStatus(v) {
+		case domain.BillStatusDraft, domain.BillStatusReviewed, domain.BillStatusFinalized, domain.BillStatusVoided:
+		default:
+			return nil, fmt.Errorf("%w: unknown bill status %q", domain.ErrInvalidInput, v)
+		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		statuses = append(statuses, v)
+	}
+	return statuses, nil
+}
+
+// ListBillsCursor lấy danh sách hóa đơn theo keyset cursor (Spec 3 AC-12),
+// lọc theo trạng thái nếu client yêu cầu.
+func (s *Service) ListBillsCursor(ctx context.Context, callerUserID, groupID uuid.UUID, cursor *string, limit int32, statuses []string) (*ListBillsResult, error) {
 	member, err := s.repo.GetGroupMember(ctx, groupID, callerUserID)
 	if err != nil || member == nil || member.Status != "active" {
 		return nil, domain.ErrForbidden
 	}
 
-	return s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
-		GroupID: groupID,
-		Cursor:  cursor,
-		Limit:   limit,
+	page, err := s.repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+		GroupID:        groupID,
+		Cursor:         cursor,
+		Limit:          limit,
+		Statuses:       statuses,
+		CallerMemberID: member.ID,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := &ListBillsResult{Bills: page.Bills, NextCursor: page.NextCursor}
+
+	// Badge bộ lọc không được phép chặn danh sách: nếu đếm lỗi, trả trang dữ
+	// liệu với counts rỗng thay vì làm hỏng cả màn hình.
+	if counts, countErr := s.repo.CountBillsByGroupStatus(ctx, groupID); countErr == nil {
+		result.Counts = BillStatusCounts{
+			Draft:     counts[string(domain.BillStatusDraft)],
+			Reviewed:  counts[string(domain.BillStatusReviewed)],
+			Finalized: counts[string(domain.BillStatusFinalized)],
+			Voided:    counts[string(domain.BillStatusVoided)],
+		}
+		result.Counts.Total = result.Counts.Draft + result.Counts.Reviewed + result.Counts.Finalized + result.Counts.Voided
+	}
+
+	return result, nil
 }
 
 // RetryOCR kích hoạt lại quá trình bóc tách OCR thủ công (tối đa 5 lần / 24h, Spec 3 AC-2, AC-8).
@@ -833,7 +1032,7 @@ func (s *Service) finalizeBillImpl(ctx context.Context, callerUserID, billID, gr
 		return nil, domain.ErrReviewRequired
 	}
 
-	// 2. Kiểm tra version khớp trước khi chạy thuật toán Hamilton (Spec 3 AC-9)
+	// 2. Kiểm tra version khớp trước khi chạy thuật toán phân bổ chính xác (Spec 3 AC-9)
 	if bill.Version != expectedVersion {
 		return nil, domain.ErrVersionConflict
 	}
@@ -899,7 +1098,7 @@ type finalizationPlan struct {
 	beforeCommit  func(ctx context.Context, tx pgx.Tx) error
 }
 
-// buildFinalizationPlan biến kết quả phân bổ Hamilton thành snapshot shares,
+// buildFinalizationPlan biến kết quả phân bổ chính xác thành snapshot shares,
 // debts và thông báo cho từng thành viên. Hàm thuần túy, không IO, dùng chung
 // cho finalize đơn lẻ và item batch chốt toàn bộ (Spec 0008 Batch item transaction).
 func (s *Service) buildFinalizationPlan(bill *domain.Bill, groupID, actorMemberID uuid.UUID, allocations []*MemberAllocation, memberUserMap map[uuid.UUID]uuid.UUID) *finalizationPlan {
@@ -909,7 +1108,7 @@ func (s *Service) buildFinalizationPlan(bill *domain.Bill, groupID, actorMemberI
 	notifications := make([]*repository.NotificationParam, 0, len(allocations))
 
 	for _, a := range allocations {
-		// CalculateFloorAllocation đã bảo đảm FinalAmount không âm và tổng khớp Total, nên ở đây
+		// CalculateAllocation đã bảo đảm FinalAmount không âm và tổng khớp Total, nên ở đây
 		// không kẹp lại lần nữa. Việc kẹp thừa từng che mất lỗi tổng vượt hóa đơn (Spec 3 AC-10).
 		amount := a.FinalAmount
 		roundingAdj := a.RoundingAdjustment
@@ -1087,15 +1286,31 @@ func toAllocationInput(b *domain.Bill) AllocationInput {
 }
 
 func parseWeightToScaledInt(weightStr string) int64 {
-	w, err := strconv.ParseFloat(weightStr, 64)
-	if err != nil || w <= 0 {
-		return 10000 // default 1.0000
-	}
-	scaled := int64(math.Round(w * 10000))
-	if scaled <= 0 {
-		return 10000
+	scaled, err := parseWeightToScaledIntStrict(weightStr)
+	if err != nil {
+		return weightScale
 	}
 	return scaled
+}
+
+// parseWeightToScaledIntStrict chuyển chuỗi thập phân sang trọng số nguyên mà không đi qua
+// float. Khi đầu vào có nhiều hơn tám chữ số thập phân, hàm làm tròn nửa lên ở biên này.
+func parseWeightToScaledIntStrict(weightStr string) (int64, error) {
+	weight, ok := new(big.Rat).SetString(strings.TrimSpace(weightStr))
+	if !ok || weight.Sign() <= 0 {
+		return 0, errors.New("weight must be a positive decimal")
+	}
+
+	scaled := new(big.Rat).Mul(weight, new(big.Rat).SetInt64(weightScale))
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(scaled.Num(), scaled.Denom(), remainder)
+	if new(big.Int).Lsh(remainder, 1).Cmp(scaled.Denom()) >= 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	if !quotient.IsInt64() || quotient.Sign() <= 0 {
+		return 0, errors.New("weight exceeds supported range")
+	}
+	return quotient.Int64(), nil
 }
 
 func computeLineTotal(unitPrice int64, quantityStr string) int64 {

@@ -104,6 +104,311 @@ func setupTestUser(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	return userID
 }
 
+func TestIntegration_ListBillsMyShareAndOCRStatus(t *testing.T) {
+	// covers: my_share / my_share_status / ocr_status trên thẻ hóa đơn.
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, debtorID := setupTestGroupAndMembers(t, pool)
+	ctx := context.Background()
+
+	finalizedID := uuid.New()
+	scanningID := uuid.New()
+	for _, bill := range []*domain.Bill{
+		{ID: finalizedID, GroupID: groupID, CreditorMemberID: creditorID, Status: domain.BillStatusDraft, Total: 150000, SplitMethod: domain.SplitMethodEven},
+		{ID: scanningID, GroupID: groupID, CreditorMemberID: creditorID, Status: domain.BillStatusDraft, Total: 0, SplitMethod: domain.SplitMethodEven},
+	} {
+		if _, err := repo.CreateBill(ctx, repository.CreateBillParams{Bill: bill}); err != nil {
+			t.Fatalf("CreateBill() error = %v", err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE bills SET status='finalized', finalized_at=now() WHERE id=$1`, finalizedID); err != nil {
+		t.Fatalf("finalize fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO bill_shares(id,bill_id,group_id,member_id,final_amount)
+		VALUES ($1,$2,$3,$4,50000),($5,$2,$3,$6,100000)`,
+		uuid.New(), finalizedID, groupID, creditorID, uuid.New(), debtorID); err != nil {
+		t.Fatalf("insert shares: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO debts(id,group_id,bill_id,debtor_member_id,creditor_member_id,amount,status)
+		VALUES ($1,$2,$3,$4,$5,100000,'awaiting')`,
+		uuid.New(), groupID, finalizedID, debtorID, creditorID); err != nil {
+		t.Fatalf("insert debt: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO ocr_jobs(id,bill_id,status) VALUES ($1,$2,'processing')`,
+		uuid.New(), scanningID); err != nil {
+		t.Fatalf("insert ocr job: %v", err)
+	}
+
+	load := func(memberID uuid.UUID) map[uuid.UUID]*domain.BillListItem {
+		page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+			GroupID:        groupID,
+			Limit:          20,
+			CallerMemberID: memberID,
+		})
+		if err != nil {
+			t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+		}
+		out := make(map[uuid.UUID]*domain.BillListItem, len(page.Bills))
+		for _, item := range page.Bills {
+			out[item.ID] = item
+		}
+		return out
+	}
+
+	t.Run("người nợ thấy phần của mình và trạng thái pending", func(t *testing.T) {
+		item := load(debtorID)[finalizedID]
+		if item == nil || item.MyShare == nil {
+			t.Fatalf("thiếu my_share cho người nợ: %+v", item)
+		}
+		if *item.MyShare != 100000 {
+			t.Errorf("my_share = %d, want 100000", *item.MyShare)
+		}
+		if item.MyShareStatus != domain.MyShareStatusPending {
+			t.Errorf("my_share_status = %q, want pending", item.MyShareStatus)
+		}
+	})
+
+	t.Run("người ứng tiền được đánh dấu là creditor", func(t *testing.T) {
+		item := load(creditorID)[finalizedID]
+		if item == nil || item.MyShareStatus != domain.MyShareStatusCreditor {
+			t.Fatalf("creditor status sai: %+v", item)
+		}
+	})
+
+	t.Run("khoản nợ đã xóa khi rời nhóm thì là settled", func(t *testing.T) {
+		// 'voided' (thành viên rời nhóm, số tiền được xóa) tính như đã xong,
+		// cùng quy ước với paid_member_count. Dùng 'voided' thay 'settled' vì
+		// settled bắt buộc phải gắn payment_id (debts_check1).
+		if _, err := pool.Exec(ctx, `UPDATE debts SET status='voided', voided_at=now() WHERE bill_id=$1`, finalizedID); err != nil {
+			t.Fatalf("không cập nhật được debt fixture: %v", err)
+		}
+		item := load(debtorID)[finalizedID]
+		if item == nil || item.MyShareStatus != domain.MyShareStatusSettled {
+			t.Fatalf("settled status sai: %+v", item)
+		}
+	})
+
+	t.Run("bill đang quét OCR mang ocr_status", func(t *testing.T) {
+		item := load(debtorID)[scanningID]
+		if item == nil || item.OCRStatus != domain.OCRJobStatusProcessing {
+			t.Fatalf("ocr_status sai: %+v", item)
+		}
+		if item.MyShare != nil || item.MyShareStatus != domain.MyShareStatusNone {
+			t.Errorf("bill chưa chốt không được có my_share: %+v", item)
+		}
+	})
+}
+
+func TestIntegration_ListBillsStatusFilterAndCounts(t *testing.T) {
+	// covers: bộ lọc trạng thái + counts của tab Hóa đơn trong nhóm.
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, _ := setupTestGroupAndMembers(t, pool)
+	ctx := context.Background()
+
+	draftID := uuid.New()
+	reviewedID := uuid.New()
+	voidedID := uuid.New()
+	for _, bill := range []*domain.Bill{
+		{ID: draftID, GroupID: groupID, CreditorMemberID: creditorID, Status: domain.BillStatusDraft, Total: 10000, SplitMethod: domain.SplitMethodEven},
+		{ID: reviewedID, GroupID: groupID, CreditorMemberID: creditorID, Status: domain.BillStatusDraft, Total: 20000, SplitMethod: domain.SplitMethodEven},
+		{ID: voidedID, GroupID: groupID, CreditorMemberID: creditorID, Status: domain.BillStatusDraft, Total: 30000, SplitMethod: domain.SplitMethodEven},
+	} {
+		if _, err := repo.CreateBill(ctx, repository.CreateBillParams{Bill: bill}); err != nil {
+			t.Fatalf("CreateBill() error = %v", err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE bills SET status='reviewed' WHERE id=$1`, reviewedID); err != nil {
+		t.Fatalf("review fixture bill: %v", err)
+	}
+	// `bills_finalized_check` buộc finalized_at có mặt cho cả finalized lẫn voided.
+	if _, err := pool.Exec(ctx, `UPDATE bills SET status='voided', voided_at=now(), finalized_at=now() WHERE id=$1`, voidedID); err != nil {
+		t.Fatalf("void fixture bill: %v", err)
+	}
+
+	cases := []struct {
+		name     string
+		statuses []string
+		want     []uuid.UUID
+	}{
+		{name: "tất cả", statuses: nil, want: []uuid.UUID{draftID, reviewedID, voidedID}},
+		{name: "chỉ nháp", statuses: []string{"draft"}, want: []uuid.UUID{draftID}},
+		{name: "chờ duyệt + đã hủy", statuses: []string{"reviewed", "voided"}, want: []uuid.UUID{reviewedID, voidedID}},
+		{name: "đã chốt (nhóm chưa có)", statuses: []string{"finalized"}, want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+				GroupID:  groupID,
+				Limit:    20,
+				Statuses: tc.statuses,
+			})
+			if err != nil {
+				t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+			}
+			if len(page.Bills) != len(tc.want) {
+				t.Fatalf("số bill = %d, want %d", len(page.Bills), len(tc.want))
+			}
+			got := make(map[uuid.UUID]bool, len(page.Bills))
+			for _, item := range page.Bills {
+				got[item.ID] = true
+			}
+			for _, id := range tc.want {
+				if !got[id] {
+					t.Errorf("thiếu bill %s trong kết quả lọc", id)
+				}
+			}
+		})
+	}
+
+	counts, err := repo.CountBillsByGroupStatus(ctx, groupID)
+	if err != nil {
+		t.Fatalf("CountBillsByGroupStatus() error = %v", err)
+	}
+	if counts["draft"] != 1 || counts["reviewed"] != 1 || counts["voided"] != 1 {
+		t.Fatalf("counts sai: %+v", counts)
+	}
+	if _, ok := counts["finalized"]; ok {
+		t.Errorf("trạng thái không có bill nào phải vắng mặt trong map, got %+v", counts)
+	}
+}
+
+func TestIntegration_ListBillsIncludesPayerAndPaymentProgress(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, debtorID := setupTestGroupAndMembers(t, pool)
+	ctx := context.Background()
+
+	finalizedID := uuid.New()
+	draftID := uuid.New()
+	for _, bill := range []*domain.Bill{
+		{
+			ID: finalizedID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Total: 200000, SplitMethod: domain.SplitMethodEven,
+		},
+		{
+			ID: draftID, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, Total: 50000, SplitMethod: domain.SplitMethodEven,
+		},
+	} {
+		if _, err := repo.CreateBill(ctx, repository.CreateBillParams{Bill: bill}); err != nil {
+			t.Fatalf("CreateBill() error = %v", err)
+		}
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE bills SET status='finalized', finalized_at=now() WHERE id=$1`, finalizedID); err != nil {
+		t.Fatalf("finalize fixture bill: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO bill_shares(id,bill_id,group_id,member_id,final_amount)
+		VALUES ($1,$2,$3,$4,100000),($5,$2,$3,$6,100000)`,
+		uuid.New(), finalizedID, groupID, creditorID, uuid.New(), debtorID); err != nil {
+		t.Fatalf("insert share fixtures: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO debts(id,group_id,bill_id,debtor_member_id,creditor_member_id,amount,status)
+		VALUES ($1,$2,$3,$4,$5,100000,'awaiting')`,
+		uuid.New(), groupID, finalizedID, debtorID, creditorID); err != nil {
+		t.Fatalf("insert debt fixture: %v", err)
+	}
+
+	page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+		GroupID: groupID,
+		Limit:   20,
+	})
+	if err != nil {
+		t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+	}
+	byID := make(map[uuid.UUID]*domain.BillListItem, len(page.Bills))
+	for _, item := range page.Bills {
+		byID[item.ID] = item
+	}
+	finalized := byID[finalizedID]
+	if finalized == nil {
+		t.Fatal("finalized bill missing from list")
+	}
+	if finalized.PayerDisplayName != "User 1" || finalized.PaidMemberCount != 1 || finalized.MemberCount != 2 {
+		t.Fatalf("unexpected finalized summary: %+v", finalized)
+	}
+	draft := byID[draftID]
+	if draft == nil || draft.PaidMemberCount != 0 || draft.MemberCount != 0 {
+		t.Fatalf("unexpected draft summary: %+v", draft)
+	}
+
+	legacy, err := repo.ListBillsByGroup(ctx, groupID, 20, 0)
+	if err != nil {
+		t.Fatalf("ListBillsByGroup() error = %v", err)
+	}
+	if len(legacy) != 2 {
+		t.Fatalf("legacy list length = %d, want 2", len(legacy))
+	}
+
+	// Khoản nợ chuyển trạng thái thì tiến độ phải chạy theo. 'voided' (thành viên
+	// rời nhóm, Spec 0002 AC-6) cũng tính là đã xong, nếu không hóa đơn sẽ kẹt
+	// dưới 100% vĩnh viễn.
+	paymentID := uuid.New()
+	// reference_code là UNIQUE toàn cục và các integration test không dọn dữ liệu,
+	// nên phải sinh mã mới mỗi lần chạy. Bảng chữ cái theo constraint ^PAY[A-HJ-NP-Z2-9]{8}$.
+	const refAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	refCode := []byte("PAY")
+	for _, b := range paymentID[:8] {
+		refCode = append(refCode, refAlphabet[int(b)%len(refAlphabet)])
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payments(id,group_id,debtor_member_id,creditor_member_id,amount,reference_code,status,
+			submitted_at,image_object_key,recipient_bank_code,recipient_bank_name,
+			recipient_account_number,recipient_account_holder)
+		VALUES ($1,$2,$3,$4,100000,$5,'pending_confirmation',
+			now(),'proofs/test.jpg','970415','Vietinbank','0123456789','USER ONE')`,
+		paymentID, groupID, debtorID, creditorID, string(refCode)); err != nil {
+		t.Fatalf("insert payment fixture: %v", err)
+	}
+
+	for _, tc := range []struct {
+		status    string
+		paymentID any
+		settledAt any
+		voidedAt  any
+		wantPaid  int64
+	}{
+		{status: "awaiting", wantPaid: 1},
+		{status: "pending_confirmation", paymentID: paymentID, wantPaid: 1},
+		{status: "settled", paymentID: paymentID, settledAt: time.Now(), wantPaid: 2},
+		{status: "voided", voidedAt: time.Now(), wantPaid: 2},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, `
+				UPDATE debts SET status=$2, payment_id=$3, settled_at=$4, voided_at=$5
+				WHERE bill_id=$1`,
+				finalizedID, tc.status, tc.paymentID, tc.settledAt, tc.voidedAt); err != nil {
+				t.Fatalf("set debt status %s: %v", tc.status, err)
+			}
+			page, err := repo.ListBillsByGroupCursor(ctx, repository.ListBillsCursorParams{
+				GroupID: groupID,
+				Limit:   20,
+			})
+			if err != nil {
+				t.Fatalf("ListBillsByGroupCursor() error = %v", err)
+			}
+			var got *domain.BillListItem
+			for _, item := range page.Bills {
+				if item.ID == finalizedID {
+					got = item
+				}
+			}
+			if got == nil {
+				t.Fatal("finalized bill missing from list")
+			}
+			if got.PaidMemberCount != tc.wantPaid || got.MemberCount != 2 {
+				t.Fatalf("debt status %s: paid/member = %d/%d, want %d/2",
+					tc.status, got.PaidMemberCount, got.MemberCount, tc.wantPaid)
+			}
+		})
+	}
+}
+
 func TestIntegration_CreateBillRejectsArchivedGroup_AC9(t *testing.T) {
 	pool := testPool(t)
 	repo := postgres.New(pool)

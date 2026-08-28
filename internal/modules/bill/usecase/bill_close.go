@@ -70,6 +70,12 @@ func (s *Service) LockSubmissions(ctx context.Context, callerUserID, groupID uui
 	return &LockResult{BillSubmissionLocked: true, BillSubmissionLockedAt: result.LockedAt}, nil
 }
 
+// UnlockSubmissions cho phép Captain đang active mở khóa việc tạo bill mới của nhóm.
+// Idempotent: nhóm chưa khóa vẫn thành công mà không sinh activity thừa.
+func (s *Service) UnlockSubmissions(ctx context.Context, callerUserID, groupID uuid.UUID) error {
+	return s.repo.UnlockSubmissions(ctx, groupID, callerUserID)
+}
+
 // StartBulkFinalize cho phép Captain đang active mở một batch chốt toàn bộ: bật
 // khóa gửi hóa đơn ngay lập tức, capture mọi bill còn mở kèm version và review
 // state, rồi enqueue từng item vào River để xử lý độc lập (Spec 0008 AC-4).

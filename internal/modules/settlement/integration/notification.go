@@ -46,16 +46,18 @@ func message(kind string) (string, string) {
 	words := strings.ReplaceAll(kind, "_", " ")
 	switch kind {
 	case "payment_submitted":
-		return "Payment proof submitted", "A payment proof is waiting for your confirmation"
+		return "Minh chứng thanh toán mới", "Có minh chứng chuyển tiền mới đang chờ bạn xác nhận."
 	case "payment_confirmed":
-		return "Payment confirmed", "Your payment was confirmed"
+		return "Thanh toán đã xác nhận", "Thanh toán của bạn đã được chủ nợ xác nhận thành công."
 	case "payment_rejected":
-		return "Payment rejected", "Your payment proof was rejected"
+		return "Thanh toán bị từ chối", "Minh chứng chuyển tiền bị từ chối. Vui lòng kiểm tra và gửi lại."
 	case "debt_reminded":
-		return "Payment reminder", "You have an outstanding debt to settle"
+		return "Nhắc nhở thanh toán nợ", "Bạn có khoản nợ chưa thanh toán. Vui lòng kiểm tra và chuyển khoản."
 	case "payment_stalled_confirmation":
-		return "Confirmation reminder", "A submitted payment is still waiting for confirmation"
+		return "Nhắc duyệt minh chứng", "Minh chứng thanh toán đã gửi lâu chưa được duyệt. Vui lòng xác nhận."
+	case "payment_created":
+		return "Yêu cầu thanh toán mới", "Đã tạo mã thanh toán VietQR cho khoản nợ."
 	default:
-		return "PaySplit update", words
+		return "Thông báo từ PaySplit", words
 	}
 }

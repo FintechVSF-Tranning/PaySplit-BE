@@ -12,11 +12,15 @@ import (
 
 type Querier interface {
 	CaptureOpenBills(ctx context.Context, groupID pgtype.UUID) ([]CaptureOpenBillsRow, error)
+	ClearGroupSubmissionLockedAt(ctx context.Context, id pgtype.UUID) (pgtype.Timestamptz, error)
 	CompleteFinalizeBatch(ctx context.Context, arg CompleteFinalizeBatchParams) (int64, error)
 	CountActiveBatchesForGroup(ctx context.Context, groupID pgtype.UUID) (int64, error)
 	// Nguồn sự thật cho gauge paysplit_ocr_queue_depth: đếm trực tiếp trên bảng thay vì cộng/trừ trong
 	// tiến trình, để chính xác qua restart, rollback và nhiều replica (Spec 3 AC-14).
 	CountActiveOCRJobs(ctx context.Context) (int64, error)
+	// Đếm hóa đơn theo từng trạng thái để badge của các chip lọc không phụ thuộc
+	// vào trang dữ liệu đã tải.
+	CountBillsByGroupStatus(ctx context.Context, groupID pgtype.UUID) ([]CountBillsByGroupStatusRow, error)
 	CountManualOCRAttemptsInWindow(ctx context.Context, arg CountManualOCRAttemptsInWindowParams) (int64, error)
 	CountNonAwaitingDebtsByBillID(ctx context.Context, billID pgtype.UUID) (int64, error)
 	CountPendingBatchItems(ctx context.Context, batchID pgtype.UUID) (int64, error)
@@ -31,7 +35,7 @@ type Querier interface {
 	CreateBillItem(ctx context.Context, arg CreateBillItemParams) (BillItem, error)
 	CreateBillItemAssignment(ctx context.Context, arg CreateBillItemAssignmentParams) (BillItemAssignment, error)
 	// ============================================================================
-	// BILL SHARES (Hamilton Finalized Snapshot)
+	// BILL SHARES (Exact Finalized Snapshot)
 	// ============================================================================
 	CreateBillShare(ctx context.Context, arg CreateBillShareParams) (BillShare, error)
 	CreateDebt(ctx context.Context, arg CreateDebtParams) (Debt, error)
@@ -85,8 +89,8 @@ type Querier interface {
 	ListBillItemAssignmentsByItem(ctx context.Context, billItemID pgtype.UUID) ([]BillItemAssignment, error)
 	ListBillItems(ctx context.Context, billID pgtype.UUID) ([]BillItem, error)
 	ListBillShares(ctx context.Context, billID pgtype.UUID) ([]BillShare, error)
-	ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]Bill, error)
-	ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]Bill, error)
+	ListBillsByGroup(ctx context.Context, arg ListBillsByGroupParams) ([]ListBillsByGroupRow, error)
+	ListBillsByGroupCursor(ctx context.Context, arg ListBillsByGroupCursorParams) ([]ListBillsByGroupCursorRow, error)
 	ListDebtsByBillIDForUpdate(ctx context.Context, billID pgtype.UUID) ([]Debt, error)
 	LockBatchItemForUpdate(ctx context.Context, arg LockBatchItemForUpdateParams) (GroupBillFinalizeItem, error)
 	LockBatchRowForUpdate(ctx context.Context, id pgtype.UUID) (GroupBillFinalizeBatch, error)

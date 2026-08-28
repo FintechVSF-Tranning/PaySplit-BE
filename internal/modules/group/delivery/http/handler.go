@@ -77,29 +77,7 @@ func (h *Handler) GetGroupDetail(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	members := make([]memberResponse, 0, len(detail.Members))
-	for _, m := range detail.Members {
-		members = append(members, h.newMemberResponse(m))
-	}
-	balances := make([]balanceResponse, 0, len(detail.Balances))
-	for _, b := range detail.Balances {
-		balances = append(balances, newBalanceResponse(b))
-	}
-	resp := map[string]any{
-		"group":       newGroupResponse(detail.Group),
-		"members":     members,
-		"balances":    balances,
-		"caller_role": detail.CallerRole,
-	}
-	// Captain batch navigation (Spec 0008 Public response fields): omitted hoàn
-	// toàn cho thành viên thường để không suy ra được ID batch hay kết quả item.
-	if detail.ActiveBillFinalizeBatchID != nil {
-		resp["active_bill_finalize_batch_id"] = *detail.ActiveBillFinalizeBatchID
-	}
-	if detail.LatestBillFinalizeBatchID != nil {
-		resp["latest_bill_finalize_batch_id"] = *detail.LatestBillFinalizeBatchID
-	}
-	writeJSON(w, r, http.StatusOK, resp)
+	writeJSON(w, r, http.StatusOK, h.newGroupDetailResponse(*detail))
 }
 
 func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
