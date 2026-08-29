@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -45,6 +46,16 @@ func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbCheck
 	router.Get("/health/ready", healthReady(dbChecker))
 
 	router.Method(http.MethodGet, "/metrics", platformmetrics.MetricsHandler(metricsConfig.Enabled, metricsConfig.BearerToken))
+
+	// Phục vụ giao diện web Admin Portal từ thư mục web/admin nếu tồn tại
+	adminWebDir := "./web/admin"
+	if _, err := os.Stat(adminWebDir); err == nil {
+		fs := http.FileServer(http.Dir(adminWebDir))
+		router.Get("/admin-portal", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin-portal/", http.StatusPermanentRedirect)
+		})
+		router.Handle("/admin-portal/*", http.StripPrefix("/admin-portal", fs))
+	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		if err := helpers.WriteAPIError(w, http.StatusNotFound, "ROUTE_NOT_FOUND", "route not found", nil); err != nil {
