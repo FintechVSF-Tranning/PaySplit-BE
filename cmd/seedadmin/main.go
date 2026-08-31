@@ -42,10 +42,22 @@ func main() {
 		rows.Close()
 	}
 
-	adminEmail := "admin@paysplit.app"
-	adminPassword := "Admin@123456"
-	adminDisplayName := "PaySplit Admin"
-	adminPhone := "+84999999999"
+	adminEmail := os.Getenv("ADMIN_SEED_EMAIL")
+	if adminEmail == "" {
+		adminEmail = "admin@paysplit.app"
+	}
+	adminPassword := os.Getenv("ADMIN_SEED_PASSWORD")
+	if adminPassword == "" {
+		adminPassword = "Admin@123456"
+	}
+	adminDisplayName := os.Getenv("ADMIN_SEED_NAME")
+	if adminDisplayName == "" {
+		adminDisplayName = "PaySplit Admin"
+	}
+	adminPhone := os.Getenv("ADMIN_SEED_PHONE")
+	if adminPhone == "" {
+		adminPhone = "+84999999999"
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
 	if err != nil {

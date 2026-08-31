@@ -4,29 +4,23 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PaySplit — Cổng Quản Trị Hệ Thống (Admin Portal)</title>
-  <!-- Google Fonts -->
+  <!-- Google Fonts: Newsreader (Headings), Roboto Slab (Body/Labels), JetBrains Mono (Numbers) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Roboto+Slab:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <!-- Stylesheet -->
   <link rel="stylesheet" href="style.css">
 </head>
-<body class="dark-theme">
+<body>
   <!-- Top App Navigation -->
   <header class="app-header" id="app-header">
     <div class="header-left">
       <div class="brand-logo">
         <div class="logo-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="url(#logo-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M2 17L12 22L22 17" stroke="url(#logo-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M2 12L12 17L22 12" stroke="url(#logo-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <defs>
-              <linearGradient id="logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6366F1"/>
-                <stop offset="1" stop-color="#EC4899"/>
-              </linearGradient>
-            </defs>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7L12 12L22 7L12 2Z"/>
+            <path d="M2 17L12 22L22 17"/>
+            <path d="M2 12L12 17L22 12"/>
           </svg>
         </div>
         <div class="brand-text">
@@ -63,15 +57,9 @@
     <div class="auth-card">
       <div class="auth-header">
         <div class="auth-icon-wrap">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="url(#login-grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
             <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            <defs>
-              <linearGradient id="login-grad" x1="3" y1="7" x2="21" y2="22" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#6366F1"/>
-                <stop offset="1" stop-color="#A855F7"/>
-              </linearGradient>
-            </defs>
           </svg>
         </div>
         <h2 class="auth-title">Đăng Nhập Quản Trị</h2>
@@ -83,7 +71,7 @@
           <label for="login-email">Email Admin</label>
           <div class="input-wrapper">
             <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
-            <input type="email" id="login-email" placeholder="admin@paysplit.app" required autocomplete="email" value="admin@paysplit.app">
+            <input type="email" id="login-email" placeholder="admin@paysplit.app" required autocomplete="email">
           </div>
         </div>
 
@@ -91,7 +79,7 @@
           <label for="login-password">Mật khẩu</label>
           <div class="input-wrapper">
             <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-            <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password" value="Admin@123456">
+            <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
           </div>
         </div>
 
@@ -104,10 +92,9 @@
         </div>
 
         <div class="quick-admin-box">
-          <div class="quick-admin-title">Tài khoản Admin có sẵn trong hệ thống:</div>
+          <div class="quick-admin-title">Hướng dẫn đăng nhập:</div>
           <div class="quick-admin-creds">
-            <div><strong>Email:</strong> <code>admin@paysplit.app</code></div>
-            <div><strong>Mật khẩu:</strong> <code>Admin@123456</code></div>
+            <div>Sử dụng tài khoản Quản trị viên (đã cấu hình qua <code>cmd/seedadmin</code> hoặc database).</div>
           </div>
         </div>
 
@@ -245,6 +232,81 @@
           </div>
         </div>
 
+        <!-- Visual Analytics & Charts Grid -->
+        <div class="analytics-charts-grid">
+          <!-- Chart 1: Real-time Runtime Performance -->
+          <div class="glass-panel chart-panel chart-panel-wide">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                <span>Biểu Đồ Giám Sát Go Runtime & Bộ Nhớ (Live RAM / Goroutines)</span>
+              </div>
+              <div class="chart-legend-wrap">
+                <span class="legend-badge"><span class="legend-dot" style="background:#0F766E;"></span> RAM (MB)</span>
+                <span class="legend-badge"><span class="legend-dot" style="background:#D97706;"></span> Goroutines</span>
+              </div>
+            </div>
+            <div class="chart-canvas-container">
+              <canvas id="chart-runtime-canvas"></canvas>
+            </div>
+            <div class="chart-footer-stats">
+              <div class="chart-stat-chip">Đỉnh RAM: <strong id="chip-peak-ram">0 MB</strong></div>
+              <div class="chart-stat-chip">Goroutines trung bình: <strong id="chip-avg-goroutines">0</strong></div>
+              <div class="chart-stat-chip">Thời gian máy chủ (Uptime): <strong id="chip-uptime-val">0s</strong></div>
+            </div>
+          </div>
+
+          <!-- Chart 2: Debts Settlement Distribution -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <span>Cơ Cấu Quyết Toán Công Nợ</span>
+              </div>
+            </div>
+            <div class="donut-chart-container">
+              <div class="donut-svg-box">
+                <svg id="donut-debts-svg" viewBox="0 0 160 160" width="140" height="140"></svg>
+                <div class="donut-center-stat">
+                  <span class="donut-center-val" id="donut-debts-total">0</span>
+                  <span class="donut-center-label">Khoản nợ</span>
+                </div>
+              </div>
+              <div class="donut-legend-list" id="debts-legend-list"></div>
+            </div>
+          </div>
+
+          <!-- Chart 3: OCR Jobs & River Queue -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                <span>Tác Vụ River Queue & OCR</span>
+              </div>
+              <span class="badge badge-active" id="ocr-success-rate-badge">100% Thành công</span>
+            </div>
+            <div class="ocr-queue-analytics">
+              <div class="stacked-bar-label-row">
+                <span>Tỷ lệ hoàn thành tác vụ:</span>
+                <strong id="ocr-completion-ratio">0/0</strong>
+              </div>
+              <div class="stacked-progress-bar" id="ocr-stacked-bar"></div>
+              <div class="ocr-metrics-grid" id="ocr-metrics-grid"></div>
+            </div>
+          </div>
+
+          <!-- Chart 4: User Accounts & Bills Distribution -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                <span>Phân Bổ Người Dùng & Hóa Đơn</span>
+              </div>
+            </div>
+            <div class="users-bills-analytics" id="users-bills-analytics"></div>
+          </div>
+        </div>
+
         <!-- Runtime Stats Panel -->
         <div class="glass-panel runtime-panel">
           <div class="panel-header">
@@ -284,6 +346,14 @@
               <span>Tải lại</span>
             </button>
           </div>
+        </div>
+
+        <!-- Quick Summary Stats Pills -->
+        <div class="accounts-summary-row" id="accounts-summary-pills">
+          <div class="summary-pill"><span class="pill-dot dot-active"></span> Hoạt động: <strong id="acc-pill-active">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-pending"></span> Chờ xác thực: <strong id="acc-pill-pending">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-suspended"></span> Đình chỉ: <strong id="acc-pill-suspended">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-locked"></span> Đã khóa: <strong id="acc-pill-locked">0</strong></div>
         </div>
 
         <!-- Filter and Search Bar -->
@@ -388,7 +458,43 @@
           </div>
         </div>
 
-        <div class="monitoring-grid">
+        <!-- System Core Services Health Matrix -->
+        <div class="service-health-grid">
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg></div>
+              <span class="badge badge-active">Active</span>
+            </div>
+            <div class="service-title">PostgreSQL 18 Pool</div>
+            <div class="service-sub">Max: 6 conns · Min: 1 conn</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg></div>
+              <span class="badge badge-active">Running</span>
+            </div>
+            <div class="service-title">River Queue Engine</div>
+            <div class="service-sub">5 Background Workers</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg></div>
+              <span class="badge badge-active">Ready</span>
+            </div>
+            <div class="service-title">Firebase Cloud Messaging</div>
+            <div class="service-sub">Push Notification Hub</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg></div>
+              <span class="badge badge-active">Connected</span>
+            </div>
+            <div class="service-title">Gmail SMTP Mailer</div>
+            <div class="service-sub">Port 587 (TLS Mail Delivery)</div>
+          </div>
+        </div>
+
+        <div class="monitoring-grid" style="margin-top:1.5rem;">
           <div class="glass-panel">
             <div class="panel-header">
               <div class="panel-header-title">
@@ -403,7 +509,10 @@
                   <span class="probe-path">/health</span>
                   <span class="probe-desc">Liveness probe cơ bản của HTTP Server</span>
                 </div>
-                <button class="btn-sm btn-secondary" onclick="testProbe('/health')">Test</button>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-health"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health', 'badge-probe-health')">Test</button>
+                </div>
               </div>
 
               <div class="probe-item">
@@ -412,7 +521,10 @@
                   <span class="probe-path">/health/live</span>
                   <span class="probe-desc">Process liveness check</span>
                 </div>
-                <button class="btn-sm btn-secondary" onclick="testProbe('/health/live')">Test</button>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-live"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health/live', 'badge-probe-live')">Test</button>
+                </div>
               </div>
 
               <div class="probe-item">
@@ -421,7 +533,10 @@
                   <span class="probe-path">/health/ready</span>
                   <span class="probe-desc">Readiness probe kiểm tra kết nối PostgreSQL 18</span>
                 </div>
-                <button class="btn-sm btn-secondary" onclick="testProbe('/health/ready')">Test</button>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-ready"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health/ready', 'badge-probe-ready')">Test</button>
+                </div>
               </div>
 
               <div class="probe-item">
@@ -430,7 +545,9 @@
                   <span class="probe-path">/metrics</span>
                   <span class="probe-desc">Prometheus Metrics text exposition</span>
                 </div>
-                <button class="btn-sm btn-secondary" onclick="openMetrics()">Mở /metrics</button>
+                <div class="probe-action-box">
+                  <button class="btn-sm btn-secondary" onclick="openMetrics()">Mở /metrics</button>
+                </div>
               </div>
             </div>
 

@@ -2,9 +2,9 @@ package router
 
 import (
 	"context"
+	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +14,7 @@ import (
 	platformmetrics "paysplit-backend/internal/platform/metrics"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
+	"paysplit-backend/web"
 )
 
 // DBPingChecker kiểm tra kết nối DB cho readiness probe.
@@ -47,14 +48,13 @@ func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbCheck
 
 	router.Method(http.MethodGet, "/metrics", platformmetrics.MetricsHandler(metricsConfig.Enabled, metricsConfig.BearerToken))
 
-	// Phục vụ giao diện web Admin Portal từ thư mục web/admin nếu tồn tại
-	adminWebDir := "./web/admin"
-	if _, err := os.Stat(adminWebDir); err == nil {
-		fs := http.FileServer(http.Dir(adminWebDir))
+	// Phục vụ giao diện web Admin Portal từ embedded assets
+	if adminSubFS, err := fs.Sub(web.AdminFS, "admin"); err == nil {
+		fileServer := http.FileServer(http.FS(adminSubFS))
 		router.Get("/admin-portal", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin-portal/", http.StatusPermanentRedirect)
 		})
-		router.Handle("/admin-portal/*", http.StripPrefix("/admin-portal", fs))
+		router.Handle("/admin-portal/*", http.StripPrefix("/admin-portal", fileServer))
 	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {

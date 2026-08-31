@@ -108,9 +108,35 @@
   };
 
   // ==========================================
-  // API CLIENT HELPER
+  // API CLIENT HELPER (WITH AUTO-REFRESH)
   // ==========================================
-  async function apiRequest(endpoint, options = {}) {
+  async function tryRefreshToken() {
+    if (!state.refreshToken) return false;
+    try {
+      const url = `${state.apiBaseUrl.replace(/\/$/, '')}/api/v1/auth/refresh`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: state.refreshToken })
+      });
+      if (!res.ok) return false;
+      const json = await res.json();
+      const data = json.data || {};
+      if (data.access_token && data.refresh_token) {
+        state.token = data.access_token;
+        state.refreshToken = data.refresh_token;
+        localStorage.setItem('paysplit_admin_token', state.token);
+        localStorage.setItem('paysplit_admin_refresh_token', state.refreshToken);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn('Auto token refresh failed:', e);
+      return false;
+    }
+  }
+
+  async function apiRequest(endpoint, options = {}, isRetry = false) {
     const url = `${state.apiBaseUrl.replace(/\/$/, '')}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -127,8 +153,14 @@
         headers
       });
 
-      // Special handling for 401 Unauthorized
+      // Special handling for 401 Unauthorized -> Attempt auto token refresh
       if (response.status === 401) {
+        if (!isRetry && state.refreshToken && endpoint !== '/api/v1/auth/sign-in' && endpoint !== '/api/v1/auth/refresh') {
+          const refreshed = await tryRefreshToken();
+          if (refreshed) {
+            return apiRequest(endpoint, options, true);
+          }
+        }
         showToast('Phiên làm việc đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.', 'error');
         handleLogout();
         throw new Error('Unauthorized (401)');
@@ -467,11 +499,17 @@
       // Runtime
       const runtime = ov.runtime || {};
       document.getElementById('stat-runtime-goroutines').textContent = runtime.goroutines_count || 0;
-      const memMB = ((runtime.alloc_memory_bytes || 0) / (1024 * 1024)).toFixed(2);
+      const memMB = parseFloat(((runtime.alloc_memory_bytes || 0) / (1024 * 1024)).toFixed(2));
       document.getElementById('stat-runtime-memory').textContent = `${memMB} MB`;
       const uptimeStr = formatUptime(runtime.uptime_seconds);
       document.getElementById('stat-runtime-uptime').textContent = uptimeStr;
       el.sidebarUptime.textContent = `Uptime: ${uptimeStr}`;
+
+      // Update Visual Analytics & Charts
+      updateRuntimeHistory(memMB, runtime.goroutines_count || 0, uptimeStr);
+      renderDebtsDonutChart(debts);
+      renderOcrQueueAnalytics(ocr, cleanup);
+      renderUserAndBillsDistribution(users, bills);
 
     } catch (err) {
       if (err.status !== 401) {
@@ -479,6 +517,378 @@
       }
     }
   }
+
+  // ==========================================
+  // VISUAL ANALYTICS & CHARTS ENGINE
+  // ==========================================
+  const runtimeHistory = [];
+  const MAX_HISTORY_POINTS = 16;
+
+  function updateRuntimeHistory(memMB, goroutines, uptimeStr) {
+    const timeLabel = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    runtimeHistory.push({
+      time: timeLabel,
+      mem: memMB,
+      goroutines: goroutines
+    });
+
+    if (runtimeHistory.length > MAX_HISTORY_POINTS) {
+      runtimeHistory.shift();
+    }
+
+    // Update chips
+    const peakMem = Math.max(...runtimeHistory.map(h => h.mem), memMB);
+    const avgGoroutines = Math.round(runtimeHistory.reduce((acc, h) => acc + h.goroutines, 0) / runtimeHistory.length);
+
+    const peakChip = document.getElementById('chip-peak-ram');
+    if (peakChip) peakChip.textContent = `${peakMem.toFixed(2)} MB`;
+
+    const avgChip = document.getElementById('chip-avg-goroutines');
+    if (avgChip) avgChip.textContent = `${avgGoroutines}`;
+
+    const uptimeChip = document.getElementById('chip-uptime-val');
+    if (uptimeChip) uptimeChip.textContent = uptimeStr;
+
+    renderRuntimeLineChart();
+  }
+
+  function renderRuntimeLineChart() {
+    const canvas = document.getElementById('chart-runtime-canvas');
+    if (!canvas || !canvas.parentElement) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const w = rect.width;
+    const h = rect.height;
+    const padding = { top: 20, right: 30, bottom: 25, left: 45 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    ctx.clearRect(0, 0, w, h);
+
+    if (runtimeHistory.length < 2) {
+      // Need at least 2 points for a line, seed dummy initial point if just started
+      const pt = runtimeHistory[0] || { time: '', mem: 0, goroutines: 0 };
+      runtimeHistory.unshift({ time: '', mem: pt.mem, goroutines: pt.goroutines });
+    }
+
+    // Calculate Scales
+    const maxMem = Math.max(...runtimeHistory.map(d => d.mem), 10) * 1.25;
+    const maxGoroutines = Math.max(...runtimeHistory.map(d => d.goroutines), 10) * 1.25;
+
+    // Draw Gridlines
+    ctx.strokeStyle = '#DBE0CE';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+
+    const gridSteps = 3;
+    for (let i = 0; i <= gridSteps; i++) {
+      const y = padding.top + (chartH / gridSteps) * i;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(padding.left + chartW, y);
+      ctx.stroke();
+
+      // Axis labels
+      const memVal = (maxMem * (1 - i / gridSteps)).toFixed(1);
+      ctx.fillStyle = '#676E5F';
+      ctx.font = '10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${memVal}M`, padding.left - 6, y + 3);
+    }
+    ctx.setLineDash([]);
+
+    // Helper: Point coords
+    const getX = (index) => padding.left + (chartW / (runtimeHistory.length - 1)) * index;
+    const getYMem = (val) => padding.top + chartH - (val / maxMem) * chartH;
+    const getYGoroutines = (val) => padding.top + chartH - (val / maxGoroutines) * chartH;
+
+    // Draw RAM Gradient Fill & Line
+    const memPoints = runtimeHistory.map((d, idx) => ({ x: getX(idx), y: getYMem(d.mem) }));
+    
+    // Fill
+    const memGrad = ctx.createLinearGradient(0, padding.top, 0, padding.top + chartH);
+    memGrad.addColorStop(0, 'rgba(15, 118, 110, 0.2)');
+    memGrad.addColorStop(1, 'rgba(15, 118, 110, 0.01)');
+
+    ctx.beginPath();
+    ctx.moveTo(memPoints[0].x, padding.top + chartH);
+    memPoints.forEach((p, i) => {
+      if (i === 0) ctx.lineTo(p.x, p.y);
+      else {
+        const prev = memPoints[i - 1];
+        const cx = (prev.x + p.x) / 2;
+        ctx.bezierCurveTo(cx, prev.y, cx, p.y, p.x, p.y);
+      }
+    });
+    ctx.lineTo(memPoints[memPoints.length - 1].x, padding.top + chartH);
+    ctx.closePath();
+    ctx.fillStyle = memGrad;
+    ctx.fill();
+
+    // RAM Stroke Line
+    ctx.beginPath();
+    memPoints.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else {
+        const prev = memPoints[i - 1];
+        const cx = (prev.x + p.x) / 2;
+        ctx.bezierCurveTo(cx, prev.y, cx, p.y, p.x, p.y);
+      }
+    });
+    ctx.strokeStyle = '#0F766E';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Goroutines Stroke Line
+    const goroutinePoints = runtimeHistory.map((d, idx) => ({ x: getX(idx), y: getYGoroutines(d.goroutines) }));
+    ctx.beginPath();
+    goroutinePoints.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else {
+        const prev = goroutinePoints[i - 1];
+        const cx = (prev.x + p.x) / 2;
+        ctx.bezierCurveTo(cx, prev.y, cx, p.y, p.x, p.y);
+      }
+    });
+    ctx.strokeStyle = '#D97706';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw End Dots with pulse
+    const lastMem = memPoints[memPoints.length - 1];
+    ctx.fillStyle = '#0F766E';
+    ctx.beginPath();
+    ctx.arc(lastMem.x, lastMem.y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    const lastG = goroutinePoints[goroutinePoints.length - 1];
+    ctx.fillStyle = '#D97706';
+    ctx.beginPath();
+    ctx.arc(lastG.x, lastG.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Time Labels on bottom
+    ctx.fillStyle = '#676E5F';
+    ctx.font = '10px "Roboto Slab", serif';
+    ctx.textAlign = 'center';
+    runtimeHistory.forEach((d, i) => {
+      if (i % 3 === 0 || i === runtimeHistory.length - 1) {
+        ctx.fillText(d.time, getX(i), padding.top + chartH + 16);
+      }
+    });
+  }
+
+  function renderDebtsDonutChart(debts) {
+    const total = (debts.awaiting || 0) + (debts.pending_confirmation || 0) + 
+                  (debts.stalled_confirmation || 0) + (debts.rejected || 0) + (debts.settled || 0);
+
+    const totalEl = document.getElementById('donut-debts-total');
+    if (totalEl) totalEl.textContent = total;
+
+    const svg = document.getElementById('donut-debts-svg');
+    const legendList = document.getElementById('debts-legend-list');
+    if (!svg || !legendList) return;
+
+    const segments = [
+      { key: 'settled', label: 'Đã tất toán', count: debts.settled || 0, color: '#10B981' },
+      { key: 'awaiting', label: 'Chờ trả (Awaiting)', count: debts.awaiting || 0, color: '#0F766E' },
+      { key: 'pending', label: 'Chờ xác nhận', count: debts.pending_confirmation || 0, color: '#F59E0B' },
+      { key: 'stalled', label: 'Bị treo (Stalled)', count: debts.stalled_confirmation || 0, color: '#EA580C' },
+      { key: 'rejected', label: 'Bị từ chối', count: debts.rejected || 0, color: '#EF4444' }
+    ];
+
+    // Build SVG Donut Ring
+    const radius = 55;
+    const cx = 80;
+    const cy = 80;
+    const strokeWidth = 20;
+    const circumference = 2 * Math.PI * radius;
+
+    let svgHtml = '';
+    let accumulatedAngle = 0;
+
+    if (total === 0) {
+      svgHtml = `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="transparent" stroke="#EDF0E6" stroke-width="${strokeWidth}" />`;
+    } else {
+      segments.forEach(seg => {
+        if (seg.count <= 0) return;
+        const ratio = seg.count / total;
+        const strokeDasharray = `${ratio * circumference} ${circumference}`;
+        const strokeDashoffset = -accumulatedAngle * circumference;
+
+        svgHtml += `
+          <circle cx="${cx}" cy="${cy}" r="${radius}" fill="transparent"
+                  stroke="${seg.color}" stroke-width="${strokeWidth}"
+                  stroke-dasharray="${strokeDasharray}"
+                  stroke-dashoffset="${strokeDashoffset}"
+                  transform="rotate(-90 ${cx} ${cy})"
+                  style="transition: stroke-dasharray 0.4s ease;" />
+        `;
+        accumulatedAngle += ratio;
+      });
+    }
+
+    svg.innerHTML = svgHtml;
+
+    // Build Legend List
+    legendList.innerHTML = segments.map(seg => {
+      const pct = total > 0 ? ((seg.count / total) * 100).toFixed(0) : 0;
+      return `
+        <div class="donut-legend-item">
+          <div class="donut-legend-item-left">
+            <span class="legend-dot" style="background:${seg.color};"></span>
+            <span>${escapeHtml(seg.label)}</span>
+          </div>
+          <div class="donut-legend-item-val">
+            <strong>${seg.count}</strong>
+            <span style="font-size:0.7rem; color:var(--color-text-muted); margin-left:3px;">(${pct}%)</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderOcrQueueAnalytics(ocr, cleanup) {
+    const totalOcr = (ocr.queued || 0) + (ocr.processing || 0) + (ocr.succeeded || 0) + (ocr.failed || 0);
+    const succeeded = ocr.succeeded || 0;
+    const failed = ocr.failed || 0;
+    const queued = ocr.queued || 0;
+    const processing = ocr.processing || 0;
+
+    const successPct = totalOcr > 0 ? Math.round((succeeded / totalOcr) * 100) : 100;
+    const badge = document.getElementById('ocr-success-rate-badge');
+    if (badge) {
+      badge.textContent = `${successPct}% Thành công`;
+      badge.className = successPct >= 80 ? 'badge badge-active' : (successPct >= 50 ? 'badge badge-pending' : 'badge badge-locked');
+    }
+
+    const ratioLabel = document.getElementById('ocr-completion-ratio');
+    if (ratioLabel) ratioLabel.textContent = `${succeeded}/${totalOcr} jobs`;
+
+    // Stacked Progress Bar
+    const stackedBar = document.getElementById('ocr-stacked-bar');
+    if (stackedBar) {
+      if (totalOcr === 0) {
+        stackedBar.innerHTML = `<div class="stacked-bar-segment" style="width:100%; background:var(--color-surface-subtle);"></div>`;
+      } else {
+        const sucPct = (succeeded / totalOcr) * 100;
+        const procPct = (processing / totalOcr) * 100;
+        const qPct = (queued / totalOcr) * 100;
+        const failPct = (failed / totalOcr) * 100;
+
+        stackedBar.innerHTML = `
+          <div class="stacked-bar-segment" style="width:${sucPct}%; background:#10B981;" title="Thành công: ${succeeded}"></div>
+          <div class="stacked-bar-segment" style="width:${procPct}%; background:#0284C7;" title="Đang xử lý: ${processing}"></div>
+          <div class="stacked-bar-segment" style="width:${qPct}%; background:#F59E0B;" title="Đang chờ: ${queued}"></div>
+          <div class="stacked-bar-segment" style="width:${failPct}%; background:#EF4444;" title="Thất bại: ${failed}"></div>
+        `;
+      }
+    }
+
+    // Grid of mini chips
+    const metricsGrid = document.getElementById('ocr-metrics-grid');
+    if (metricsGrid) {
+      metricsGrid.innerHTML = `
+        <div class="ocr-metric-item">
+          <span class="ocr-metric-item-label">Queued (Chờ)</span>
+          <span class="ocr-metric-item-val" style="color:#D97706;">${queued}</span>
+        </div>
+        <div class="ocr-metric-item">
+          <span class="ocr-metric-item-label">Processing (Đang chạy)</span>
+          <span class="ocr-metric-item-val" style="color:#0284C7;">${processing}</span>
+        </div>
+        <div class="ocr-metric-item">
+          <span class="ocr-metric-item-label">Succeeded (Thành công)</span>
+          <span class="ocr-metric-item-val" style="color:#10B981;">${succeeded}</span>
+        </div>
+        <div class="ocr-metric-item">
+          <span class="ocr-metric-item-label">Failed (Thất bại)</span>
+          <span class="ocr-metric-item-val" style="color:#EF4444;">${failed}</span>
+        </div>
+        <div class="ocr-metric-item" style="grid-column: 1 / -1;">
+          <span class="ocr-metric-item-label">Media Cleanup Tasks chờ</span>
+          <span class="ocr-metric-item-val" style="color:var(--color-primary);">${cleanup.pending_jobs_count || 0}</span>
+        </div>
+      `;
+    }
+  }
+
+  function renderUserAndBillsDistribution(users, bills) {
+    const container = document.getElementById('users-bills-analytics');
+    if (!container) return;
+
+    const totalUsers = users.total || 0;
+    const activeU = users.active || 0;
+    const pendingU = users.pending_verification || 0;
+    const suspendedU = users.suspended || 0;
+    const lockedU = users.locked || 0;
+
+    const activePct = totalUsers > 0 ? (activeU / totalUsers) * 100 : 100;
+    const pendingPct = totalUsers > 0 ? (pendingU / totalUsers) * 100 : 0;
+    const suspPct = totalUsers > 0 ? (suspendedU / totalUsers) * 100 : 0;
+    const lockPct = totalUsers > 0 ? (lockedU / totalUsers) * 100 : 0;
+
+    // Bills
+    const finBills = bills.total_finalized || 0;
+    const draftBills = bills.total_draft || 0;
+    const totalBills = finBills + draftBills;
+    const finPct = totalBills > 0 ? Math.round((finBills / totalBills) * 100) : 0;
+
+    container.innerHTML = `
+      <!-- User Distribution Bar -->
+      <div class="distribution-section">
+        <div class="distribution-header">
+          <span class="distribution-header-title">Trạng thái Tài khoản (${totalUsers} người dùng)</span>
+          <span class="distribution-header-val" style="color:#047857;">${activeU} Active (${activePct.toFixed(0)}%)</span>
+        </div>
+        <div class="distribution-bar">
+          <div style="width:${activePct}%; background:#10B981;" title="Hoạt động: ${activeU}"></div>
+          <div style="width:${pendingPct}%; background:#F59E0B;" title="Chờ xác thực: ${pendingU}"></div>
+          <div style="width:${suspPct}%; background:#EA580C;" title="Đình chỉ: ${suspendedU}"></div>
+          <div style="width:${lockPct}%; background:#EF4444;" title="Đã khóa: ${lockedU}"></div>
+        </div>
+        <div class="distribution-legend">
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:#10B981;"></span> Hoạt động (${activeU})</span>
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:#F59E0B;"></span> Chờ duyệt (${pendingU})</span>
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:#EA580C;"></span> Đình chỉ (${suspendedU})</span>
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:#EF4444;"></span> Đã khóa (${lockedU})</span>
+        </div>
+      </div>
+
+      <!-- Bills Distribution Bar -->
+      <div class="distribution-section" style="margin-top:0.5rem; padding-top:0.75rem; border-top:1px solid var(--color-border);">
+        <div class="distribution-header">
+          <span class="distribution-header-title">Tiến độ Hóa đơn (${totalBills} tổng hóa đơn)</span>
+          <span class="distribution-header-val" style="color:var(--color-primary);">${finBills} Đã chốt (${finPct}%)</span>
+        </div>
+        <div class="distribution-bar">
+          <div style="width:${finPct}%; background:var(--color-primary);" title="Đã chốt: ${finBills}"></div>
+          <div style="width:${100 - finPct}%; background:var(--color-border-strong);" title="Bản nháp: ${draftBills}"></div>
+        </div>
+        <div class="distribution-legend">
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:var(--color-primary);"></span> Đã chốt sổ (${finBills})</span>
+          <span class="distribution-legend-item"><span class="legend-dot" style="background:var(--color-border-strong);"></span> Bản nháp (${draftBills})</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // Handle window resize for charts
+  window.addEventListener('resize', () => {
+    if (state.currentTab === 'tab-overview') {
+      renderRuntimeLineChart();
+    }
+  });
 
   function startAutoRefresh() {
     if (state.autoRefreshTimer) clearInterval(state.autoRefreshTimer);
@@ -621,6 +1031,9 @@
 
     el.accountsTableBody.innerHTML = html;
 
+    // Update quick summary pills
+    updateAccountsSummaryPills(items);
+
     // Attach row events
     el.accountsTableBody.querySelectorAll('.btn-view-detail').forEach(b => {
       b.addEventListener('click', () => openAccountDetailModal(b.dataset.id));
@@ -629,6 +1042,25 @@
     el.accountsTableBody.querySelectorAll('.btn-change-status').forEach(b => {
       b.addEventListener('click', () => openUpdateStatusModal(b.dataset.id, b.dataset.name, b.dataset.status));
     });
+  }
+
+  function updateAccountsSummaryPills(items) {
+    let active = 0, pending = 0, suspended = 0, locked = 0;
+    items.forEach(u => {
+      if (u.status === 'active') active++;
+      else if (u.status === 'pending_verification') pending++;
+      else if (u.status === 'suspended') suspended++;
+      else if (u.status === 'locked') locked++;
+    });
+
+    const pActive = document.getElementById('acc-pill-active');
+    if (pActive) pActive.textContent = active;
+    const pPending = document.getElementById('acc-pill-pending');
+    if (pPending) pPending.textContent = pending;
+    const pSuspended = document.getElementById('acc-pill-suspended');
+    if (pSuspended) pSuspended.textContent = suspended;
+    const pLocked = document.getElementById('acc-pill-locked');
+    if (pLocked) pLocked.textContent = locked;
   }
 
   function renderPagination() {
@@ -673,8 +1105,14 @@
       const bankHolder = bank.bank_account_holder || 'Chưa thiết lập';
       const bankAcc = bank.bank_account_number || 'Chưa thiết lập';
 
-      // Financials
+      // Financials & Net Balance
       const fin = d.financials || {};
+      const totalDebt = fin.total_debt_amount_vnd || 0;
+      const totalCredit = fin.total_credit_amount_vnd || 0;
+      const netBalance = totalCredit - totalDebt;
+      const isPositive = netBalance >= 0;
+      const netBadgeClass = isPositive ? 'badge-active' : 'badge-locked';
+      const netBadgeLabel = isPositive ? '+ Bạn được nhận' : '- Bạn cần trả';
 
       // Groups table
       const groups = d.groups || [];
@@ -737,17 +1175,32 @@
       }
 
       el.detailModalBody.innerHTML = `
+        <!-- Hero Net Balance Card -->
+        <div class="user-hero-balance-box">
+          <div class="user-hero-balance-top">
+            <div>
+              <div class="user-hero-balance-label">Tổng số dư ròng (Net Balance):</div>
+              <div class="user-hero-balance-val">${formatMoneyVND(Math.abs(netBalance))}</div>
+            </div>
+            <span class="badge ${netBadgeClass}">${netBadgeLabel}</span>
+          </div>
+          <div class="user-hero-balance-split">
+            <div>Đang cho nợ: <strong style="color:var(--color-status-success-text); font-family:var(--font-mono);">+${formatMoneyVND(totalCredit)}</strong> (${fin.outstanding_credits_count || 0} khoản)</div>
+            <div>Đang nợ: <strong style="color:var(--color-status-danger-text); font-family:var(--font-mono);">-${formatMoneyVND(totalDebt)}</strong> (${fin.outstanding_debts_count || 0} khoản)</div>
+          </div>
+        </div>
+
         <div class="detail-grid">
           <!-- User Profile Block -->
           <div class="detail-block">
             <div class="detail-block-title">👤 Thông tin tài khoản</div>
             <div class="detail-item">
               <span class="detail-label">Mã ID:</span>
-              <span class="detail-val" style="font-size:0.7rem;">${d.id}</span>
+              <span class="detail-val" style="font-size:0.7rem; font-family:var(--font-mono);">${d.id}</span>
             </div>
             <div class="detail-item">
               <span class="detail-label">Số điện thoại:</span>
-              <span class="detail-val">${escapeHtml(d.phone_number || '—')}</span>
+              <span class="detail-val" style="font-family:var(--font-mono);">${escapeHtml(d.phone_number || '—')}</span>
             </div>
             <div class="detail-item">
               <span class="detail-label">Vai trò:</span>
@@ -768,11 +1221,11 @@
             <div class="detail-block-title">🔒 Bảo mật & Phiên hoạt động</div>
             <div class="detail-item">
               <span class="detail-label">Phiên đang mở:</span>
-              <span class="detail-val" style="color:#818CF8;">${d.active_sessions_count || 0} session</span>
+              <span class="detail-val" style="color:var(--color-primary); font-family:var(--font-mono);">${d.active_sessions_count || 0} session</span>
             </div>
             <div class="detail-item">
               <span class="detail-label">Số lần đăng nhập sai:</span>
-              <span class="detail-val" style="color:${(d.failed_login_count || 0) > 0 ? 'var(--color-danger)' : 'inherit'};">${d.failed_login_count || 0}</span>
+              <span class="detail-val" style="color:${(d.failed_login_count || 0) > 0 ? 'var(--color-status-danger-text)' : 'inherit'}; font-family:var(--font-mono);">${d.failed_login_count || 0}</span>
             </div>
             <div class="detail-item">
               <span class="detail-label">Khóa đăng nhập đến:</span>
@@ -780,52 +1233,39 @@
             </div>
             <div class="detail-item">
               <span class="detail-label">Xác thực Email:</span>
-              <span class="detail-val">${d.email_verified_at ? formatDate(d.email_verified_at) : 'Chưa'}</span>
+              <span class="detail-val">${d.email_verified_at ? '✓ Đã xác thực' : 'Chưa'}</span>
             </div>
           </div>
 
           <!-- Bank Account Block -->
-          <div class="detail-block">
-            <div class="detail-block-title">🏦 Ngân hàng mặc định (Masked)</div>
-            <div class="detail-item">
-              <span class="detail-label">Mã ngân hàng:</span>
-              <span class="detail-val">${escapeHtml(bankCode)}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">Số tài khoản:</span>
-              <span class="detail-val" style="color:#34D399;">${escapeHtml(bankAcc)}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">Chủ tài khoản:</span>
-              <span class="detail-val">${escapeHtml(bankHolder)}</span>
-            </div>
-          </div>
-
-          <!-- Financial Summary Block -->
-          <div class="detail-block">
-            <div class="detail-block-title">💰 Công nợ trong các nhóm</div>
-            <div class="detail-item">
-              <span class="detail-label">Nợ chưa trả:</span>
-              <span class="detail-val" style="color:var(--color-danger);">${fin.outstanding_debts_count || 0} khoản (${formatMoneyVND(fin.total_debt_amount_vnd)})</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">Phải thu chưa nhận:</span>
-              <span class="detail-val" style="color:var(--color-success);">${fin.outstanding_credits_count || 0} khoản (${formatMoneyVND(fin.total_credit_amount_vnd)})</span>
+          <div class="detail-block" style="grid-column: 1 / -1;">
+            <div class="detail-block-title">🏦 Tài khoản ngân hàng nhận tiền VietQR (Masked)</div>
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:1rem;">
+              <div class="detail-item" style="flex:1; min-width:180px;">
+                <span class="detail-label">Ngân hàng:</span>
+                <span class="detail-val">${escapeHtml(bankCode)}</span>
+              </div>
+              <div class="detail-item" style="flex:1; min-width:180px;">
+                <span class="detail-label">Số tài khoản:</span>
+                <span class="detail-val" style="font-family:var(--font-mono); color:var(--color-primary);">${escapeHtml(bankAcc)}</span>
+              </div>
+              <div class="detail-item" style="flex:1; min-width:180px;">
+                <span class="detail-label">Chủ tài khoản:</span>
+                <span class="detail-val">${escapeHtml(bankHolder)}</span>
+              </div>
             </div>
           </div>
         </div>
 
         <!-- Groups Section -->
-        <div class="detail-section-title">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
-          <span>Danh sách nhóm tham gia (${groups.length})</span>
+        <div class="detail-section-title" style="font-family:var(--font-display); font-size:1.05rem; font-weight:600; margin-top:1rem;">
+          Danh sách nhóm tham gia (${groups.length})
         </div>
         ${groupsHtml}
 
         <!-- Audit Logs Section -->
-        <div class="detail-section-title" style="margin-top:1.5rem;">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
-          <span>Nhật ký kiểm toán Admin gần nhất (10 bản ghi)</span>
+        <div class="detail-section-title" style="font-family:var(--font-display); font-size:1.05rem; font-weight:600; margin-top:1.5rem;">
+          Nhật ký kiểm toán Admin gần nhất (${auditLogs.length} bản ghi)
         </div>
         ${auditHtml}
       `;
@@ -1042,10 +1482,16 @@
   // ==========================================
   // PROBES TESTING (AC-6, AC-8)
   // ==========================================
-  window.testProbe = async function (path) {
+  window.testProbe = async function (path, badgeId) {
     const box = document.getElementById('probe-output-box');
     const title = document.getElementById('probe-output-title');
     const content = document.getElementById('probe-output-content');
+    const badge = badgeId ? document.getElementById(badgeId) : null;
+
+    if (badge) {
+      badge.textContent = '...';
+      badge.className = 'probe-result-badge';
+    }
 
     box.style.display = 'block';
     title.textContent = `GET ${path} (Đang gọi...)`;
@@ -1056,10 +1502,16 @@
       const t0 = performance.now();
       const res = await fetch(url);
       const t1 = performance.now();
+      const latency = (t1 - t0).toFixed(0);
       const status = res.status;
       const text = await res.text();
 
-      title.textContent = `GET ${path} — HTTP ${status} (${(t1 - t0).toFixed(1)}ms)`;
+      if (badge) {
+        badge.textContent = `${status} ${res.statusText || 'OK'} · ${latency}ms`;
+        badge.className = `probe-result-badge ${res.ok ? 'success' : 'error'}`;
+      }
+
+      title.textContent = `GET ${path} — HTTP ${status} (${latency}ms)`;
       try {
         const json = JSON.parse(text);
         content.textContent = JSON.stringify(json, null, 2);
@@ -1067,6 +1519,10 @@
         content.textContent = text;
       }
     } catch (err) {
+      if (badge) {
+        badge.textContent = 'Offline';
+        badge.className = 'probe-result-badge error';
+      }
       title.textContent = `GET ${path} — Lỗi`;
       content.textContent = err.message;
     }
