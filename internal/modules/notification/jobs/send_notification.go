@@ -76,7 +76,16 @@ func (w *NotificationWorker) Work(ctx context.Context, job *river.Job[Notificati
 		return nil
 	}
 
-	msg := domain.PushMessage{Title: notif.Title, Body: notif.Body, Data: payloadToData(notif.Payload)}
+	data := payloadToData(notif.Payload)
+	if data == nil {
+		data = make(map[string]string, 1)
+	}
+	if notif.Type != "" {
+		// Notification.Type is the authoritative routing contract. Payloads are
+		// producer supplied metadata and older producers did not duplicate it.
+		data["type"] = notif.Type
+	}
+	msg := domain.PushMessage{Title: notif.Title, Body: notif.Body, Data: data}
 
 	if sendErr := w.pushNotifier.SendToDevice(ctx, token, msg); sendErr != nil {
 		// Nếu token không còn hợp lệ (user gỡ app) -> Xóa khỏi DB và kết thúc job
