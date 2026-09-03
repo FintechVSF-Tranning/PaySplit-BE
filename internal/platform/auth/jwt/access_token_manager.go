@@ -51,7 +51,7 @@ func NewAccessTokenManager(secret, issuer string, ttl time.Duration) (*AccessTok
 }
 
 // Issue phát hành access token có role mặc định là user và trả về token cùng
-// thời gian hiệu lực tính bằng giây. Dùng IssueWithRole khi cần chỉ định role.
+// thời gian hiệu lực tính bằng giây.
 // Issue phát hành access token chứa ID người dùng, role và ID phiên đăng nhập.
 func (i *AccessTokenManager) Issue(userID, role, sessionID string) (string, time.Time, error) {
 	if strings.TrimSpace(userID) == "" {

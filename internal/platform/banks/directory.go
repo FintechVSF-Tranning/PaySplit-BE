@@ -40,6 +40,8 @@ func Load() (*Directory, error) {
 	return parse(snapshot)
 }
 
+// parse phân tích snapshot danh mục ngân hàng.
+// Nó được gọi duy nhất một lần tại thời điểm build-time thông qua biến toàn cục snapshot.
 func parse(raw []byte) (*Directory, error) {
 	var data payload
 	if err := json.Unmarshal(raw, &data); err != nil {
