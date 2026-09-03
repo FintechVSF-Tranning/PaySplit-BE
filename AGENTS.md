@@ -1,77 +1,159 @@
-# PaySplit-BE
+# Repository Guidelines
 
-Go 1.26 HTTP API (`paysplit-backend`). Entry: `cmd/api` → `internal/bootstrap/app.go` (the only wiring site). Companion apps: `PaySplit-FE` (Flutter), `PaySplit-RP` (product docs).
+## Project Overview
 
-Locked design lives in `docs/specs/`. Public contract: `docs/openapi.yaml`. Feature status: `docs/scope/scope.md`. Module write-ups: `docs/documents/`. Do not contradict a spec without updating it.
+PaySplit Backend (`PaySplit-BE`) is a RESTful API and background worker service written in Go (Go 1.26+) powering the PaySplit smart bill-splitting and group settlement ecosystem. Companion repositories include `PaySplit-FE` (Flutter mobile app) and `PaySplit-RP` (product requirements and documentation).
 
-## Commands
+> **Note on Language:** In-repository code comments, error messages, domain terms, and documentation are predominantly written in Vietnamese. Code symbols, file names, commit messages, and API contracts are written in English.
+
+---
+
+## Project Structure & Clean Architecture
+
+The codebase follows Clean Architecture with a feature-first modular organization under `internal/modules/`. Dependency flow strictly points inward:
+
+```text
+HTTP Request → delivery/http → usecase → repository (interface) ← repository/postgres (adapter)
+                                  ↓
+                                domain
+```
+
+### Directory Organization
+
+```text
+PaySplit-BE/
+├── cmd/
+│   └── api/main.go               # Application entry point & graceful shutdown
+├── db/migrations/                # Goose database migrations (PostgreSQL)
+├── docs/                         # PRD, OpenAPI 3.0 spec, architecture specs & scopes
+├── internal/
+│   ├── bootstrap/
+│   │   └── app.go                # Central dependency injection & application wiring
+│   ├── config/                   # Environment configuration loader & validation
+│   ├── modules/                  # Business modules (Clean Architecture per module)
+│   │   ├── admin/                # System administration, telemetry & analytics
+│   │   ├── auth/                 # Identity, sessions, JWT, OTP, password reset
+│   │   ├── bill/                 # Bill creation, itemization, OCR receipt integration
+│   │   ├── group/                # Group management, members, invites & timeline
+│   │   ├── notification/         # In-app notifications & Firebase push (FCM)
+│   │   └── settlement/           # Debt calculation, expense splitting & VietQR payments
+│   ├── platform/                 # Shared infrastructure adapters
+│   │   ├── auth/jwt/             # Access token manager (JWT with session ID)
+│   │   ├── banks/                # Embedded VietQR bank directory
+│   │   ├── database/             # PostgreSQL connection pool (pgxpool)
+│   │   ├── email/gmail/          # SMTP email adapter
+│   │   ├── image/                # Avatar & receipt image processing (EXIF, WebP)
+│   │   ├── metrics/              # Prometheus telemetry metrics
+│   │   ├── notification/fcm/     # Firebase Cloud Messaging adapter
+│   │   ├── ocr/llamaextract/     # Receipt OCR parser adapter
+│   │   ├── queue/river/          # River Queue transactional job processor
+│   │   ├── security/password/    # Bcrypt password hashing
+│   │   ├── storage/cloudinary/   # Cloudinary asset storage
+│   │   └── vietqr/               # Dynamic VietQR payment payload generator
+│   └── transport/http/           # Cross-cutting HTTP transport layer
+│       ├── helpers/              # JSON response helpers, error formatting, pagination
+│       ├── middleware/           # Auth, session, CORS, rate limiting, 15s timeout
+│       └── router/               # Chi root router, public health check (/health)
+├── Makefile                      # Standard project development and build tasks
+├── sqlc.yaml                     # SQL-to-Go generation configuration
+└── docker-compose.yaml           # Local PostgreSQL 18 service
+```
+
+### Layer Responsibilities & Isolation Rules
+
+- **`domain/`**: Contains pure business entities and domain error sentinels (`ErrNotFound`, `ErrInvalidInput`, etc.). Must **never** import external libraries, HTTP packages, or database drivers.
+- **`usecase/`**: Implements application business logic. Declares input/output interfaces (ports) and receives implementations via constructor injection. Must **never** import `pgx`, `chi`, or `net/http`.
+- **`repository/`**: Defines the data-access port (`repository.go`).
+- **`repository/postgres/`**: Implements repository ports using PostgreSQL. Hand-written queries live in `queries/*.sql`. Typed models and query functions in `sqlc/` are auto-generated via `make sqlc`. **Never manually edit files in `sqlc/`**.
+- **`delivery/http/`**: Contains Chi HTTP handlers, request/response DTOs, route mounting, input validation, and HTTP status code mappings.
+- **`internal/bootstrap/app.go`**: The **sole location** where concrete implementations are instantiated and wired together (config → database pool → platform adapters → modules → router → server). Never scatter dependency wiring across other packages.
+
+---
+
+## Build, Test, and Development Commands
+
+Local environment variables are managed via `.env` (copied from `.env.example`). The `Makefile` includes and exports `.env` automatically.
 
 ```bash
-cp .env.example .env          # required: Makefile does `include .env` and will fail without it
-docker compose up -d postgres # Postgres 18 on host port 5433, not 5432
-make migrate-up               # goose against DATABASE_URL
-make run                      # go run ./cmd/api
-make test                     # go test ./... (exports .env)
-make sqlc                     # after editing queries/*.sql or adding a sqlc.yaml block
-make fmt                      # gofmt -w ./cmd ./internal  (no golangci-lint / no CI)
+# Infrastructure
+docker compose up -d postgres # Start local PostgreSQL 18 container
+cp .env.example .env          # Prepare local environment variables
 
-go test ./internal/modules/bill/usecase/...
-go test -run TestLoad ./internal/config
+# Running & Building
+make run                      # Run API server (go run ./cmd/api)
+make build                    # Compile binary to bin/paysplit-api
+make tidy                     # Tidy Go dependencies (go mod tidy)
+make fmt                      # Format Go source code (gofmt -w ./cmd ./internal)
+
+# Database & Code Generation
+make sqlc                     # Regenerate typed Go code from queries/ and db/migrations/
+make migrate-up               # Apply all pending Goose migrations
+make migrate-down             # Roll back the latest migration
+make migrate-status           # Show current migration version status
+make goose-install            # Install goose CLI tool
+
+# Testing
+make test                     # Run all unit tests (go test ./...)
+go test ./internal/config/... # Run tests for a specific package
+go test -run TestLoad ./internal/config # Run a specific unit test
 ```
 
-`make goose-install` if `goose` is missing. No other task runner.
+> **Integration Tests:** Repository- and handler-level integration tests (`*_integration_test.go`) connect to a real database and are automatically skipped unless `TEST_DATABASE_URL` is configured in the environment.
 
-## Env and startup
+---
 
-- `config.Load` reads `.env` via godotenv; existing process env wins. Startup `Validate()` requires JWT, Gmail SMTP, Cloudinary, HTTPS `APP_INVITE_BASE_URL`, and **exact** auth TTLs: access 15m, refresh 168h, email/reset 10m. Changing those values will not boot.
-- FCM is optional (`FIREBASE_CREDENTIALS_*` empty → disabled). `fcm.New` returns a nil `*Notifier`; check the concrete pointer before assigning to an interface (typed-nil trap is documented in `bootstrap/app.go`).
-- `PORT` overrides `HTTP_PORT`. `HTTP_ADDRESS` overrides host:port.
-- River tables are auto-migrated at process start (`riverpkg.AutoMigrate`), not by goose. Register every worker **before** `river.NewClient`. `RIVER_WORKER_COUNT` must be `< DB_MAX_CONNS`.
+## Database & Migration Workflow
 
-## Architecture
+1. **Migration Files**: Stored in `db/migrations/` using format `NNNNNN_<description>.sql`.
+   - Each version must be a **single file** containing both `-- +goose Up` and `-- +goose Down` blocks.
+   - Do not split into separate `.up.sql` and `.down.sql` files (Goose treats them as duplicate versions).
+2. **Query Files**: SQL queries live in `internal/modules/<module>/repository/postgres/queries/*.sql`.
+3. **Code Generation**: Run `make sqlc` whenever schemas or SQL queries are modified.
+4. **Application**: Run `make migrate-up` to apply migrations against `DATABASE_URL`.
 
-Modules under `internal/modules/{auth,group,notification,bill,admin,settlement}`:
+---
 
-```
-delivery/http → usecase → repository (port) → repository/postgres (adapter)
-                    ↓
-                 domain
-```
+## Coding Style & Naming Conventions
 
-- `domain`: entities + business errors only. No pgx/chi/http/sqlc.
-- `usecase`: interfaces + constructor injection. Never import `pgx`, `chi`, or `net/http`.
-- `repository/postgres/queries/*.sql` are hand-written. Generated code is `repository/postgres/sqlc/` — **never edit**. After a new module, add a **separate** block in `sqlc.yaml` (do not share `out` packages).
-- Shared infra: `internal/platform/`. Cross-module HTTP: `internal/transport/http/`.
-- New module: copy `auth` layout, add sqlc block, migrate, then construct + mount in `bootstrap/app.go` under `/api/v1`.
+- **Formatting**: Strictly follow standard Go conventions (`gofmt -w ./cmd ./internal`). Run `make fmt` before committing.
+- **Context Handling**: Pass `ctx context.Context` as the first parameter to all handlers, usecases, and repository methods.
+- **Constructors**: Export constructor functions using `New(...)` or `New<Type>(...)` and return interfaces where appropriate.
+- **Error Handling**: Use sentinel domain errors defined in `domain/errors.go` (e.g., `var ErrUserNotFound = errors.New(...)`). Wrap lower-level errors using `fmt.Errorf("action context: %w", err)`.
+- **Response Format**: Use helper functions in `internal/transport/http/helpers/` for consistent API envelopes:
+  - Success: `{"success": true, "data": { ... }, "message": "Thành công"}`
+  - Failure: `{"success": false, "error": {"code": "CODE", "message": "...", "details": { ... }}}`
+- **Timeouts**: All incoming HTTP requests are bounded by a 15-second timeout middleware.
 
-## Database
+---
 
-- Goose, one file per version: `db/migrations/NNNNNN_description.sql` with both `-- +goose Up` and `-- +goose Down`. Do **not** split into `.up.sql`/`.down.sql` (goose treats them as duplicate versions). `000001_init_schema.up.sql` is a historical exception; it still contains both sections.
-- Never edit an already-applied migration. Concurrent index changes use `-- +goose NO TRANSACTION`.
-- PKs: PostgreSQL 18 `uuidv7()`. Money: `BIGINT` / Go `int64` VND, no decimals.
-- Group-scoped writes take `database.LockActiveGroup` (or `Nowait`) **before** other row locks. Settlement/bill-void lock order: group → debts by UUID → payment.
-- sqlc `schema` is `./db/migrations` (goose Up sections).
+## Security & Authentication Details
 
-## HTTP
+- **Access Token**: Stateless JWT with a 15-minute TTL containing user ID and session ID (`sid`).
+- **Session Tracking**: Backed by PostgreSQL (`user_sessions`). Each user has one active session at a time.
+- **Refresh Token Rotation**: 7-day absolute TTL. Rotating tokens on every refresh with reuse detection. Any detected reuse immediately invalidates the entire session family.
+- **Passwords**: Hashed with `bcrypt` at cost 12.
+- **Background Cleanup**: Expired sessions and unverified OTPs are pruned periodically by background workers in `internal/modules/auth/jobs/`.
 
-- Prefix `/api/v1`. Success envelope: `{"success":true,"data":...,"message":"..."}` via `helpers.WriteJSON`. Errors: `helpers.WriteAPIError`. Health/metrics use `WriteRawJSON`.
-- `ReadJSON` rejects unknown fields; body cap is 64 KiB (multipart uploads are separate).
-- `middleware.Auth` = JWT + live session. `middleware.TokenAuth` = JWT only (sign-out). Use `middleware.UserID` / `UserRole`.
-- Global timeout 15s; paths ending in `/events` are exempt (route suffix only, not `Accept`). Invite preview/join uses a separate account+IP limiter (`HTTP_INVITE_ATTEMPTS_PER_MINUTE`), not the global IP limiter.
-- Rate limit keys use the TCP remote addr (`ClientIPFromRemoteAddr`), not forwarding headers.
-- 404/405 are JSON. Admin UI is embedded at `/admin-portal/` from `web/admin`.
+---
 
-## Tests
+## Background Jobs & Worker Queue
 
-- `*_integration_test.go` skip unless `TEST_DATABASE_URL` is set. `.env.example` points at `paysplit_test` on 5433 — compose only creates `paysplit`; create/migrate the test DB yourself.
-- `make test` exports `.env`, so a set `TEST_DATABASE_URL` **runs** those tests (they will fail if that DB is missing). `go test ./...` without the env var skips them.
-- LlamaExtract / Cloudinary live tests skip without real credentials; they `godotenv.Load` the repo `.env` themselves.
-- Receipt fixtures under `testdata/bills/` are gitignored (personal data). Keep `service-account*.json` out of git.
+- **Engine**: [River Queue](https://github.com/riverqueue/river) running transactional jobs on PostgreSQL (`pgx/v5`).
+- **Job Workers**: Module-specific job handlers reside under `internal/modules/<module>/jobs/` (e.g., notification pushes, debt settlements, media cleanup).
+- **Graceful Shutdown**: All workers listen to `context.Context` cancellation during application shutdown managed by `internal/bootstrap/app.go`.
 
-## Do not
+---
 
-- Log proof URLs, VietQR refs, bank account numbers, or transfer notes.
-- Hand-edit `sqlc/` output.
-- Wire implementations outside `internal/bootstrap/app.go`.
-- Trust `X-Forwarded-For` for rate limits.
-- Bypass request timeout with `Accept: text/event-stream`.
+## API Contracts & Specifications
+
+- **REST API Contract**: Fully specified in [`docs/openapi.yaml`](docs/openapi.yaml). Any change to routes, request payloads, or response DTOs must be reflected here.
+- **Design Decisions & Specs**: Detailed architectural specs live in `docs/specs/` (e.g., `docs/specs/0001-auth-account-v1/`).
+- **Feature Scope**: Tracked in `docs/scope/scope.md`.
+
+---
+
+## Commit & Pull Request Guidelines
+
+- **Commit Style**: Use Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
+- **Scope & Clarity**: Keep commit messages concise, imperative, and focused on a single logical change.
+- **Verification**: Ensure `make test`, `make fmt`, and `make sqlc` pass cleanly prior to opening PRs. Never commit unformatted code, `.env` files, or secrets.
