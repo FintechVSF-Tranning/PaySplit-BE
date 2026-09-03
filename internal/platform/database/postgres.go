@@ -22,6 +22,7 @@ func ParsePoolConfig(cfg config.DatabaseConfig) (*pgxpool.Config, error) {
 	poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
 	poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
 	poolConfig.HealthCheckPeriod = cfg.HealthCheckPeriod
+	poolConfig.ConnConfig.RuntimeParams["application_name"] = cfg.ApplicationName
 	return poolConfig, nil
 }
 

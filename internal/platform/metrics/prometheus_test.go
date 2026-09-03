@@ -42,6 +42,34 @@ func TestSetOCRQueueDepth_SetsAbsoluteValue(t *testing.T) {
 	}
 }
 
+func TestDBListenerMetricsUseBoundedLabels(t *testing.T) {
+	metrics.SetDBListenerConnected(true)
+	if got := testutil.ToFloat64(metrics.DBListenerConnected); got != 1 {
+		t.Fatalf("listener connected gauge = %v, want 1", got)
+	}
+	metrics.SetDBListenerConnected(false)
+
+	reconnectBefore := testutil.ToFloat64(metrics.DBListenerReconnectsTotal.WithLabelValues("wait"))
+	metrics.RecordDBListenerReconnect("wait")
+	metrics.RecordDBListenerReconnect("unbounded-error-text")
+	if got := testutil.ToFloat64(metrics.DBListenerReconnectsTotal.WithLabelValues("wait")); got != reconnectBefore+1 {
+		t.Fatalf("listener reconnect counter = %v, want %v", got, reconnectBefore+1)
+	}
+	if got := testutil.ToFloat64(metrics.DBListenerReconnectsTotal.WithLabelValues("unbounded-error-text")); got != 0 {
+		t.Fatalf("unexpected unbounded reconnect label count %v", got)
+	}
+
+	payloadBefore := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("bill_events"))
+	metrics.RecordDBListenerInvalidPayload("bill_events")
+	metrics.RecordDBListenerInvalidPayload("attacker-controlled-channel")
+	if got := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("bill_events")); got != payloadBefore+1 {
+		t.Fatalf("invalid payload counter = %v, want %v", got, payloadBefore+1)
+	}
+	if got := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("attacker-controlled-channel")); got != 0 {
+		t.Fatalf("unexpected unbounded channel label count %v", got)
+	}
+}
+
 func TestRecordOCRJob_IncrementsCounterWithStateAndErrorCodeLabels(t *testing.T) {
 	// covers: AC-14 (paysplit_ocr_jobs_total labeled by final application state and cleaned error code)
 	before := testutil.ToFloat64(metrics.OCRJobsTotal.WithLabelValues("succeeded_test_case_a", "none"))

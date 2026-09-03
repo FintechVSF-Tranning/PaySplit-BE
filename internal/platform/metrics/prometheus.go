@@ -83,6 +83,35 @@ var (
 		},
 	)
 
+	DBListenerConnected = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_connected",
+			Help:      "Whether the shared PostgreSQL notification listener is connected and subscribed to every channel.",
+		},
+	)
+
+	DBListenerReconnectsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_reconnects_total",
+			Help:      "Total shared PostgreSQL notification listener reconnects by bounded reason.",
+		},
+		[]string{"reason"},
+	)
+
+	DBListenerInvalidPayloadsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_invalid_payloads_total",
+			Help:      "Total invalid PostgreSQL notification payloads by bounded channel.",
+		},
+		[]string{"channel"},
+	)
+
 	// Domain Metrics Module 3: Bill & OCR v1 (Spec 3 index.md:187, AC-14)
 	OCRQueueDepth = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -216,6 +245,9 @@ func init() {
 	prometheus.MustRegister(dbPoolAcquiredConns)
 	prometheus.MustRegister(dbPoolIdleConns)
 	prometheus.MustRegister(dbPoolTotalConns)
+	prometheus.MustRegister(DBListenerConnected)
+	prometheus.MustRegister(DBListenerReconnectsTotal)
+	prometheus.MustRegister(DBListenerInvalidPayloadsTotal)
 
 	// Register Module 3 Domain Metrics
 	prometheus.MustRegister(OCRQueueDepth)
@@ -300,6 +332,28 @@ func SetOCRQueueDepth(depth float64) {
 // RegisterDBPool đăng ký pool database để đo lường metrics kết nối.
 func RegisterDBPool(pool *pgxpool.Pool) {
 	activePool = pool
+}
+
+func SetDBListenerConnected(connected bool) {
+	if connected {
+		DBListenerConnected.Set(1)
+		return
+	}
+	DBListenerConnected.Set(0)
+}
+
+func RecordDBListenerReconnect(reason string) {
+	switch reason {
+	case "acquire", "listen", "wait":
+		DBListenerReconnectsTotal.WithLabelValues(reason).Inc()
+	}
+}
+
+func RecordDBListenerInvalidPayload(channel string) {
+	switch channel {
+	case "bill_events", "group_events":
+		DBListenerInvalidPayloadsTotal.WithLabelValues(channel).Inc()
+	}
 }
 
 // HTTPMetricsMiddleware ghi nhận counter và latency cho mỗi request.

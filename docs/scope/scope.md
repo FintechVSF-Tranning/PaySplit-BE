@@ -18,6 +18,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 5   | Admin v1                             | Slice 5 | in-progress |
 | 6   | Notification and background queue v1 | Slice 6 | done        |
 | 7   | Group bill close v1                  | Slice 7 | in-progress |
+| 8   | Connection efficient events          | Slice 8 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -186,6 +187,27 @@ Provide a one way Captain lock that stops new bill submission for a group, an as
 - [ ] Document it: `/document group bill close v1`
 
 Spec [0008](../specs/0008-group-bill-close-v1/index.md) · code in `internal/modules/group/`, `internal/modules/bill/`, `internal/platform/metrics/`, and `internal/bootstrap/`
+
+## Slice 8: Connection efficient events
+
+### 8. Connection efficient events · in-progress
+
+Reduce long lived PostgreSQL sessions by sharing one listener between Bill and Group, and let River discover jobs through polling without a notifier listener session.
+
+**Done when:** all twelve acceptance criteria in spec 0010 pass, Bill and Group preserve their SSE contracts and recovery behavior, River poll only can be enabled per environment, and connection measurements distinguish `LISTEN` sessions, pinned pool slots, and total physical sessions.
+
+- [x] Design it (spec): `/architect connection efficient events`
+- [x] Build it: `/develop connection efficient events`
+  - [x] Shared listener lifecycle, readiness, safe cleanup, reconnect, and bounded shutdown (satisfies AC-1, AC-3, AC-9)
+  - [x] Bill and Group routing, validation, unchanged buffers, observability, and SSE recovery (satisfies AC-2, AC-4, AC-11, AC-12)
+  - [x] River poll only config, validation, rollback mode, and polling behavior (satisfies AC-5 through AC-8)
+  - [x] PostgreSQL integration coverage and connection measurement by application name (satisfies AC-1 through AC-12)
+- [x] Verify it: `/check verify connection efficient events`
+- [x] Test it: `/test connection efficient events`
+- [x] Review it (fresh model): `/check review connection efficient events`
+- [x] Document it: `/document connection efficient events`
+
+Spec [0010](../specs/0010-connection-efficient-events/index.md) · planned code in `internal/platform/database/`, `internal/platform/queue/river/`, `internal/modules/bill/delivery/http/`, `internal/modules/group/delivery/http/`, `internal/platform/metrics/`, `internal/config/`, and `internal/bootstrap/`
 
 ## Deferred
 

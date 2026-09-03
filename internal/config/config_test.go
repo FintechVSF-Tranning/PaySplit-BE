@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadAuthDefaults(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "DB_APPLICATION_NAME": "paysplit-api", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "RIVER_FETCH_COOLDOWN_MS": "100", "RIVER_FETCH_POLL_INTERVAL_MS": "1000", "RIVER_POLL_ONLY": "false"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -17,6 +17,12 @@ func TestLoadAuthDefaults(t *testing.T) {
 	}
 	if cfg.Auth.AccessTokenTTL != 15*time.Minute || cfg.Auth.RefreshTokenTTL != 7*24*time.Hour || cfg.Auth.EmailVerificationTTL != 10*time.Minute {
 		t.Fatalf("unexpected auth TTLs: %+v", cfg.Auth)
+	}
+	if cfg.Database.ApplicationName != "paysplit-api" {
+		t.Fatalf("DB application name = %q, want paysplit-api", cfg.Database.ApplicationName)
+	}
+	if cfg.River.PollOnly || cfg.River.FetchPollInterval != time.Second || cfg.River.FetchCooldown != 100*time.Millisecond {
+		t.Fatalf("unexpected River defaults: %+v", cfg.River)
 	}
 }
 
@@ -130,6 +136,46 @@ func TestValidateRejectsInvalidBillSSE(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidConnectionEfficientEventSettings(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*Config)
+		wantError string
+	}{
+		{
+			name:      "blank application name",
+			mutate:    func(cfg *Config) { cfg.Database.ApplicationName = " " },
+			wantError: "DB_APPLICATION_NAME",
+		},
+		{
+			name:      "non-positive fetch poll interval",
+			mutate:    func(cfg *Config) { cfg.River.FetchPollInterval = 0 },
+			wantError: "RIVER_FETCH_POLL_INTERVAL_MS",
+		},
+		{
+			name: "fetch poll interval below cooldown",
+			mutate: func(cfg *Config) {
+				cfg.River.FetchCooldown = time.Second
+				cfg.River.FetchPollInterval = 100 * time.Millisecond
+			},
+			wantError: "RIVER_FETCH_POLL_INTERVAL_MS",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("Validate() error = %v, want %s", err, tt.wantError)
+			}
+			if tt.name == "fetch poll interval below cooldown" && !strings.Contains(err.Error(), "RIVER_FETCH_COOLDOWN_MS") {
+				t.Fatalf("Validate() error = %v, want RIVER_FETCH_COOLDOWN_MS", err)
+			}
+		})
+	}
+}
+
 func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
 	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
 	for key, value := range values {
@@ -173,13 +219,13 @@ func TestValidateRejectsEmptySettlementBaseURLByVariableName(t *testing.T) {
 func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
-		Database:   DatabaseConfig{URL: "postgres://local/test", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
+		Database:   DatabaseConfig{URL: "postgres://local/test", ApplicationName: "paysplit-api", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
 		Auth:       AuthConfig{JWTSecret: "secret", JWTIssuer: "issuer", AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 7 * 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
 		SMTP:       SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second},
 		Cloudinary: CloudinaryConfig{CloudName: "test", APIKey: "test", APISecret: "test"},
 		Avatar:     AvatarConfig{UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, MaxConcurrentConversions: 2},
 		Cleanup:    CleanupConfig{Interval: 24 * time.Hour, Retention: 30 * 24 * time.Hour, MediaWorkerInterval: time.Minute, MediaMaxAttempts: 10},
-		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond},
+		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond, FetchPollInterval: time.Second},
 		Group:      GroupConfig{InviteBaseURL: "https://paysplit.app/join"},
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},

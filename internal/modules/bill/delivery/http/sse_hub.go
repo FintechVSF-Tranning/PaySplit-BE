@@ -3,12 +3,18 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	NotificationChannel = "bill_events"
+	subscriberBuffer    = 16
 )
 
 // Event đại diện cho một sự kiện realtime phát qua Server-Sent Events (SSE).
@@ -43,7 +49,7 @@ func NewHub(pool *pgxpool.Pool) *Hub {
 // Subscribe đăng ký lắng nghe sự kiện của một hóa đơn cụ thể.
 // Trả về channel nhận Event và hàm hủy đăng ký (cleanup).
 func (h *Hub) Subscribe(billID uuid.UUID) (chan Event, func()) {
-	ch := make(chan Event, 16)
+	ch := make(chan Event, subscriberBuffer)
 
 	h.mu.Lock()
 	if _, ok := h.subscribers[billID]; !ok {
@@ -56,12 +62,14 @@ func (h *Hub) Subscribe(billID uuid.UUID) (chan Event, func()) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if subs, ok := h.subscribers[billID]; ok {
-			delete(subs, ch)
-			if len(subs) == 0 {
-				delete(h.subscribers, billID)
+			if _, exists := subs[ch]; exists {
+				delete(subs, ch)
+				close(ch)
+				if len(subs) == 0 {
+					delete(h.subscribers, billID)
+				}
 			}
 		}
-		close(ch)
 	}
 
 	return ch, unsubscribe
@@ -104,7 +112,7 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 			if err != nil {
 				return
 			}
-			_, _ = h.pool.Exec(ctx, "SELECT pg_notify('bill_events', $1)", string(payloadBytes))
+			_, _ = h.pool.Exec(ctx, "SELECT pg_notify($1, $2)", NotificationChannel, string(payloadBytes))
 		}()
 	} else {
 		// Fallback cho môi trường không có PostgreSQL connection pool (ví dụ unit test)
@@ -112,56 +120,32 @@ func (h *Hub) Broadcast(billID uuid.UUID, eventType string, data any) {
 	}
 }
 
-// StartPostgresListener lắng nghe kênh pg_notify 'bill_events' từ các instance khác hoặc background worker.
-// Tự động thử kết nối lại khi gặp sự cố mạng hoặc database khởi động lại.
-func (h *Hub) StartPostgresListener(ctx context.Context) error {
-	if h.pool == nil {
-		return nil
+// HandlePostgresNotification giải mã và kiểm tra semantic envelope trước khi
+// phát tới subscriber cục bộ. Lỗi trả về không chứa raw payload.
+func (h *Hub) HandlePostgresNotification(_ context.Context, payload string) error {
+	var event Event
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return errors.New("invalid_json")
 	}
-
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		err := h.listenLoop(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			select {
-			case <-time.After(1 * time.Second):
-			case <-ctx.Done():
-				return nil
-			}
-		}
+	if event.BillID == uuid.Nil {
+		return errors.New("missing_bill_id")
 	}
+	if strings.TrimSpace(event.Type) == "" {
+		return errors.New("missing_type")
+	}
+	h.Publish(event)
+	return nil
 }
 
-func (h *Hub) listenLoop(ctx context.Context) error {
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire conn for pg_notify listener: %w", err)
-	}
-	defer conn.Release()
-
-	_, err = conn.Exec(ctx, "LISTEN bill_events")
-	if err != nil {
-		return fmt.Errorf("listen bill_events: %w", err)
-	}
-
-	for {
-		notification, err := conn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("wait for pg notification: %w", err)
+// CloseSubscribers đóng mọi stream cục bộ để client reconnect và lấy snapshot
+// sau khi PostgreSQL listener bị gián đoạn.
+func (h *Hub) CloseSubscribers() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for billID, subscribers := range h.subscribers {
+		for ch := range subscribers {
+			close(ch)
 		}
-
-		var event Event
-		if err := json.Unmarshal([]byte(notification.Payload), &event); err == nil {
-			h.Publish(event)
-		}
+		delete(h.subscribers, billID)
 	}
 }
