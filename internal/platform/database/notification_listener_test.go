@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"sort"
+
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -66,9 +68,14 @@ func (s *fakeNotificationSession) Destroy(context.Context) error {
 }
 
 func testListener(session notificationSession, handlers map[string]NotificationHandler) *PostgresNotificationListener {
+	channels := make([]string, 0, len(handlers))
+	for channel := range handlers {
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
 	listener := &PostgresNotificationListener{
 		handlers: handlers,
-		channels: []string{"bill_events", "group_events"},
+		channels: channels,
 		ready:    make(chan struct{}),
 	}
 	listener.acquire = func(context.Context) (notificationSession, error) { return session, nil }
@@ -142,6 +149,62 @@ func TestPostgresNotificationListener_PartialListenDestroysSession(t *testing.T)
 	defer session.mu.Unlock()
 	if session.released || !session.destroyed {
 		t.Fatalf("dirty session released=%t destroyed=%t", session.released, session.destroyed)
+	}
+}
+
+func TestPostgresNotificationListener_RoutesThreeChannels(t *testing.T) {
+	session := newFakeNotificationSession()
+	received := make(chan string, 3)
+	listener := testListener(session, map[string]NotificationHandler{
+		"bill_events":  func(_ context.Context, payload string) error { received <- "bill:" + payload; return nil },
+		"group_events": func(_ context.Context, payload string) error { received <- "group:" + payload; return nil },
+		"user_events":  func(_ context.Context, payload string) error { received <- "user:" + payload; return nil },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- listener.Run(ctx) }()
+	select {
+	case <-listener.Ready():
+	case <-time.After(time.Second):
+		t.Fatal("listener did not become ready")
+	}
+	if !listener.Connected() {
+		t.Fatal("listener should report connected after ready")
+	}
+
+	session.notifications <- &pgconn.Notification{Channel: "user_events", Payload: "three"}
+	select {
+	case got := <-received:
+		if got != "user:three" {
+			t.Fatalf("routed payload = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for user_events")
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if len(session.execCalls) != 4 || session.execCalls[3] != "UNLISTEN *" {
+		t.Fatalf("exec calls = %v, want three LISTEN calls then UNLISTEN *", session.execCalls)
+	}
+}
+
+func TestComposeHandlersRunsAllHandlers(t *testing.T) {
+	var ran []string
+	handler := ComposeHandlers(
+		func(context.Context, string) error { ran = append(ran, "a"); return errors.New("first") },
+		func(context.Context, string) error { ran = append(ran, "b"); return nil },
+	)
+	if err := handler(context.Background(), "p"); err == nil || err.Error() != "first" {
+		t.Fatalf("ComposeHandlers err = %v", err)
+	}
+	if len(ran) != 2 || ran[0] != "a" || ran[1] != "b" {
+		t.Fatalf("ran = %v", ran)
 	}
 }
 

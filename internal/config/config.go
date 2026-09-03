@@ -31,6 +31,12 @@ type Config struct {
 	GroupSync  GroupSyncConfig
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
+	Realtime   RealtimeConfig
+}
+
+type RealtimeConfig struct {
+	UserSSEEnabled          bool
+	MinUserStreamAppVersion string
 }
 
 // MetricsConfig chứa cấu hình Prometheus metrics scraper.
@@ -59,12 +65,25 @@ type AppConfig struct {
 // đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
 	URL               string
+	ListenerURL       string
 	ApplicationName   string
 	MaxConns          int32
 	MinConns          int32
 	MaxConnLifetime   time.Duration
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
+}
+
+func (c DatabaseConfig) ListenerDSN() string {
+	if strings.TrimSpace(c.ListenerURL) != "" {
+		return c.ListenerURL
+	}
+	return c.URL
+}
+
+func (c DatabaseConfig) UsesDedicatedListenerPool() bool {
+	listener := strings.TrimSpace(c.ListenerDSN())
+	return listener != "" && listener != strings.TrimSpace(c.URL)
 }
 
 // AuthConfig chứa các thiết lập cần thiết để phát hành access token.
@@ -402,6 +421,7 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			URL:               os.Getenv("DATABASE_URL"),
+			ListenerURL:       strings.TrimSpace(os.Getenv("DATABASE_LISTENER_URL")),
 			ApplicationName:   stringEnv("DB_APPLICATION_NAME", "paysplit-api"),
 			MaxConns:          maxConns,
 			MinConns:          minConns,
@@ -467,6 +487,10 @@ func Load() (*Config, error) {
 			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
 			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
 			StalledConfirmationAge: stalledConfirmationAge,
+		},
+		Realtime: RealtimeConfig{
+			UserSSEEnabled:          boolEnv("USER_SSE_ENABLED", false),
+			MinUserStreamAppVersion: strings.TrimSpace(os.Getenv("REALTIME_MIN_USER_STREAM_APP_VERSION")),
 		},
 	}
 
@@ -594,6 +618,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Settlement.StalledConfirmationAge <= 0 {
 		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
+	}
+	if strings.TrimSpace(c.Realtime.MinUserStreamAppVersion) != "" {
+		parts := strings.Split(c.Realtime.MinUserStreamAppVersion, "+")
+		core := strings.Split(parts[0], ".")
+		if len(parts) != 2 || len(core) != 3 {
+			return errors.New("REALTIME_MIN_USER_STREAM_APP_VERSION must use major.minor.patch+build")
+		}
 	}
 	return nil
 }

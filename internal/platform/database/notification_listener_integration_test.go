@@ -30,7 +30,7 @@ func TestPostgresNotificationListener_IntegrationListensOnBothChannels(t *testin
 	}
 	defer pool.Close()
 
-	received := make(chan string, 2)
+	received := make(chan string, 3)
 	listener, err := database.NewPostgresNotificationListener(pool, map[string]database.NotificationHandler{
 		"bill_events": func(_ context.Context, payload string) error {
 			received <- "bill:" + payload
@@ -38,6 +38,10 @@ func TestPostgresNotificationListener_IntegrationListensOnBothChannels(t *testin
 		},
 		"group_events": func(_ context.Context, payload string) error {
 			received <- "group:" + payload
+			return nil
+		},
+		"user_events": func(_ context.Context, payload string) error {
+			received <- "user:" + payload
 			return nil
 		},
 	}, nil)
@@ -79,11 +83,15 @@ func TestPostgresNotificationListener_IntegrationListensOnBothChannels(t *testin
 		_ = tx.Rollback(ctx)
 		t.Fatalf("notify group channel: %v", err)
 	}
+	if _, err = tx.Exec(ctx, "SELECT pg_notify($1, $2)", "user_events", "three"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("notify user channel: %v", err)
+	}
 	if err = tx.Commit(ctx); err != nil {
 		t.Fatalf("commit notifications: %v", err)
 	}
 
-	for _, want := range []string{"bill:one", "group:two"} {
+	for _, want := range []string{"bill:one", "group:two", "user:three"} {
 		select {
 		case got := <-received:
 			if got != want {

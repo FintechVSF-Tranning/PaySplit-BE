@@ -159,6 +159,54 @@ paths:
       responses:
         "204": {description: Password reset and all sessions revoked}
         "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/users/me/events:
+    get:
+      summary: Stream signed in user events via Server-Sent Events
+      description: |
+        One session scoped user stream. Successful responses are text/event-stream
+        and are not wrapped in SuccessEnvelope. Public frames are ready, roster,
+        invalidate, ocr.updated, heartbeat, and close. The first public frame is
+        always ready. Disabled servers return 404 (rollout off) or 501 (build
+        without the user stream) so older apps can fall back to legacy group and
+        bill streams. Clients treat both the same: fall back once, and only
+        before the first `ready`.
+      operationId: streamUserEvents
+      tags: [Users]
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: X-App-Version
+          in: header
+          required: false
+          schema: {type: string, example: "1.4.0+27"}
+      responses:
+        "200":
+          description: SSE event stream
+          headers:
+            Cache-Control: {schema: {type: string, example: no-cache}}
+            Connection: {schema: {type: string, example: keep-alive}}
+            X-Accel-Buffering: {schema: {type: string, example: "no"}}
+          content:
+            text/event-stream:
+              schema: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404":
+          description: |
+            User stream is disabled on this server. Clients fall back to the
+            legacy group and bill streams.
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500":
+          description: Streaming is not supported by this server
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "501":
+          description: |
+            This build does not implement the user stream. Handled exactly like
+            404 by clients.
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+        "503":
+          description: Realtime listener is unavailable
+          content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+
   /api/v1/users/me:
     get:
       operationId: getMyProfile
@@ -866,6 +914,10 @@ paths:
 
         Client phải mở lại kết nối với `since` bằng version cuối cùng đã áp;
         version nhảy cóc nghĩa là đã sót sự kiện và phải gọi `/sync`.
+        Deprecated: thay bằng `GET /api/v1/users/me/events`. Hành vi hiện tại
+        không đổi; sau khi cutover hoàn tất, endpoint này sẽ trả 410 với body
+        `STREAM_REPLACED` mô tả bên dưới.
+      deprecated: true
       operationId: streamGroupEvents
       tags: [Groups]
       security: [{bearerAuth: []}]
@@ -886,6 +938,7 @@ paths:
               schema: {type: string}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "410": {$ref: "#/components/responses/StreamReplaced"}
         "404": {$ref: "#/components/responses/NotFound"}
 
   /api/v1/notifications:
@@ -1323,6 +1376,11 @@ paths:
   /api/v1/bills/{id}/events:
     get:
       summary: Stream bill events via Server-Sent Events (SSE)
+      description: |
+        Deprecated: thay bằng `GET /api/v1/users/me/events`. Hành vi hiện tại
+        không đổi; sau khi cutover hoàn tất, endpoint này sẽ trả 410 với body
+        `STREAM_REPLACED` mô tả bên dưới.
+      deprecated: true
       operationId: streamBillEvents
       tags: [Bills]
       security: [{bearerAuth: []}]
@@ -1341,6 +1399,7 @@ paths:
             text/event-stream:
               schema: {type: string}
         "401": {$ref: "#/components/responses/Unauthorized"}
+        "410": {$ref: "#/components/responses/StreamReplaced"}
         "404": {$ref: "#/components/responses/NotFound"}
 
   /api/v1/bills/{id}/ocr-retry:
@@ -1963,6 +2022,31 @@ components:
       headers:
         Retry-After: {schema: {type: integer}, description: Seconds until retry}
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    StreamReplaced:
+      description: |
+        Endpoint stream legacy đã ngừng phục vụ sau khi cutover hoàn tất. Chưa
+        được trả về ở phiên bản hiện tại; ghi ở đây để client sinh tự động xử lý
+        được ngay từ bây giờ. `error.details.replacement` là đường dẫn thay thế.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - type: object
+                properties:
+                  error:
+                    type: object
+                    required: [code, message, details]
+                    properties:
+                      code: {type: string, enum: [STREAM_REPLACED]}
+                      message: {type: string}
+                      details:
+                        type: object
+                        required: [replacement]
+                        properties:
+                          replacement:
+                            type: string
+                            example: /api/v1/users/me/events
     EmailAccepted:
       description: Generic response that does not reveal account existence. The human-readable message is carried at the envelope's top-level "message", not inside "data".
       content:
@@ -2363,12 +2447,13 @@ components:
         next_cursor: {type: string, nullable: true}
     GroupDetailResponse:
       type: object
-      required: [group, members, balances, caller_role, caller_membership_id, version]
+      required: [group, members, balances, caller_role, caller_membership_id, version, pending_bill_count]
       properties:
         group: {$ref: "#/components/schemas/Group"}
         members: {type: array, items: {$ref: "#/components/schemas/Member"}}
         balances: {type: array, items: {$ref: "#/components/schemas/Balance"}}
         caller_role: {type: string, enum: [captain, member]}
+        pending_bill_count: {type: integer, minimum: 0, description: "Hóa đơn chưa chốt (status ngoài finalized và voided). Cùng định nghĩa với trường cùng tên trong danh sách nhóm, để client làm mới một thẻ nhóm tại chỗ mà không phải tải lại cả trang danh sách."}
         caller_membership_id: {type: string, format: uuid, description: "membership_id của chính người gọi, để client đánh dấu \"tôi\" trong members mà không phải suy từ vai trò"}
         version: {type: integer, format: int64, minimum: 0, description: "roster_version của nhóm tại thời điểm đọc. Client lưu lại làm điểm xuất phát cho /events và /sync; danh sách members trong cùng response là trạng thái tại đúng version này."}
         active_bill_finalize_batch_id: {type: string, format: uuid, description: "Captain only: ID of the queued or processing bulk finalize batch; omitted for ordinary members (spec 0008)"}

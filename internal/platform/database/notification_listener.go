@@ -112,6 +112,29 @@ func (l *PostgresNotificationListener) Ready() <-chan struct{} {
 	return l.ready
 }
 
+// Connected báo listener đang giữ session LISTEN healthy, dùng cho cửa vào SSE
+// trước khi ghi header. Không thay Ping của readiness probe.
+func (l *PostgresNotificationListener) Connected() bool {
+	return l != nil && l.connected.Load()
+}
+
+// ComposeHandlers chạy lần lượt mọi handler của một channel. Lỗi đầu tiên được
+// trả về sau khi tất cả handler đã chạy, để một notify nuôi cả hub cũ và hub mới.
+func ComposeHandlers(handlers ...NotificationHandler) NotificationHandler {
+	return func(ctx context.Context, payload string) error {
+		var first error
+		for _, handler := range handlers {
+			if handler == nil {
+				continue
+			}
+			if err := handler(ctx, payload); err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+}
+
 // Ping kiểm tra cả trạng thái listener và khả năng truy cập database để dùng
 // trực tiếp cho readiness probe.
 func (l *PostgresNotificationListener) Ping(ctx context.Context) error {

@@ -11,6 +11,8 @@ import (
 
 	"paysplit-backend/internal/modules/group/domain"
 	"paysplit-backend/internal/modules/group/usecase"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
+	"paysplit-backend/internal/platform/realtime"
 	"paysplit-backend/internal/transport/http/helpers"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
@@ -25,6 +27,11 @@ type SSEHandler struct {
 	hub               Broadcaster
 	heartbeatInterval time.Duration
 	maxConnectionAge  time.Duration
+	minAppVersion     string
+}
+
+func (h *SSEHandler) SetMinAppVersion(version string) {
+	h.minAppVersion = version
 }
 
 func NewSSEHandler(handler *Handler, hub Broadcaster, heartbeatInterval, maxConnectionAge time.Duration) *SSEHandler {
@@ -50,6 +57,7 @@ func NewSSEHandler(handler *Handler, hub Broadcaster, heartbeatInterval, maxConn
 
 // StreamGroupEvents mở stream sự kiện cho một nhóm.
 func (h *SSEHandler) StreamGroupEvents(w http.ResponseWriter, r *http.Request) {
+	platformmetrics.RecordLegacySSERequest("group", realtime.ParseAppVersion(r.Header.Get("X-App-Version")).Class(realtime.ParseAppVersion(h.minAppVersion)))
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		_ = helpers.WriteAPIError(w, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "streaming is not supported by server", nil)

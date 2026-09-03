@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 
 	"paysplit-backend/internal/modules/bill/repository"
+	platformmetrics "paysplit-backend/internal/platform/metrics"
+	"paysplit-backend/internal/platform/realtime"
 	"paysplit-backend/internal/transport/http/helpers"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
@@ -20,6 +22,11 @@ type SSEHandler struct {
 	repo              repository.Repository
 	heartbeatInterval time.Duration
 	maxConnectionAge  time.Duration
+	minAppVersion     string
+}
+
+func (h *SSEHandler) SetMinAppVersion(version string) {
+	h.minAppVersion = version
 }
 
 // NewSSEHandler khởi tạo SSEHandler.
@@ -45,6 +52,7 @@ func NewSSEHandler(
 
 // StreamBillEvents xử lý route GET /api/v1/bills/{id}/events.
 func (h *SSEHandler) StreamBillEvents(w http.ResponseWriter, r *http.Request) {
+	platformmetrics.RecordLegacySSERequest("bill", realtime.ParseAppVersion(r.Header.Get("X-App-Version")).Class(realtime.ParseAppVersion(h.minAppVersion)))
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		_ = helpers.WriteAPIError(w, http.StatusInternalServerError, "STREAMING_UNSUPPORTED", "streaming is not supported by server", nil)

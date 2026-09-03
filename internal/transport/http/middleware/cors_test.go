@@ -35,6 +35,30 @@ func TestCORS_PreflightAllowsIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestCORS_PreflightAllowsAppVersionAndLocalhostOrigin(t *testing.T) {
+	handler := CORS("http://localhost:5173")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/users/me/events", nil)
+	req.Header.Set("Origin", "http://localhost:49650")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", "authorization, x-app-version")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:49650" {
+		t.Fatalf("Allow-Origin = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	allowHeaders := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers"))
+	if !strings.Contains(allowHeaders, "x-app-version") {
+		t.Errorf("Allow-Headers = %q, missing X-App-Version", allowHeaders)
+	}
+}
+
 func TestCORS_ExposesRetryAfter(t *testing.T) {
 	handler := CORS("http://localhost:5173")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

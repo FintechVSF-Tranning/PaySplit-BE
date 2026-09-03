@@ -35,6 +35,19 @@ const (
 	ocrErrorProvider            = "provider_error"
 )
 
+// ocrErrorCode rút gọn một lỗi bất kỳ thành đúng một mã trong bộ mã đóng ở trên,
+// an toàn để ghi log.
+//
+// Lỗi thô của provider có thể mang theo thân phản hồi chứa chính nội dung hóa đơn
+// đã bóc tách. Ghi nó ra log sẽ tạo một bản sao dữ liệu nhạy cảm nằm ngoài đường
+// lưu trữ raw OCR có kiểm soát và có retention riêng.
+func ocrErrorCode(err error) string {
+	if errors.Is(err, domain.ErrOcrSchemaInvalid) {
+		return ocrErrorSchemaInvalid
+	}
+	return classifyProviderError(err)
+}
+
 // classifyProviderError rút gọn một lỗi provider/DB bất kỳ thành 1 mã trong bộ mã đóng ở trên.
 func classifyProviderError(err error) string {
 	switch {
@@ -159,14 +172,6 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		return fmt.Errorf("update ocr job to processing: %w", err)
 	}
 
-	if w.broadcaster != nil {
-		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
-			"job_id":  jobID,
-			"bill_id": billID,
-			"status":  "processing",
-		})
-	}
-
 	// 3. Lấy thông tin hóa đơn và danh sách ảnh từ DB
 	bill, err := w.repo.GetBillByID(ctx, billID, groupID)
 	if err != nil {
@@ -217,14 +222,14 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		platformmetrics.RecordOCRProviderDuration("llamaextract", "failure", extractDur)
 		// Nếu lỗi do schema AI không đọc được hoặc cấu trúc sai -> đánh dấu failed, không retry
 		if errors.Is(err, domain.ErrOcrSchemaInvalid) {
-			log.Printf("event=ocr_schema_invalid job_id=%s bill_id=%s err=%v", jobID, billID, err)
+			log.Printf("event=ocr_schema_invalid job_id=%s bill_id=%s err_code=%s", jobID, billID, ocrErrorCode(err))
 			_ = w.failJob(ctx, jobID, billID, ocrErrorSchemaInvalid)
 			return nil
 		}
 
 		// Nếu hết số lần retry tối đa của River Queue
 		if job.Attempt >= job.MaxAttempts {
-			log.Printf("event=ocr_provider_failed job_id=%s bill_id=%s attempt=%d err=%v", jobID, billID, job.Attempt, err)
+			log.Printf("event=ocr_provider_failed job_id=%s bill_id=%s attempt=%d err_code=%s", jobID, billID, job.Attempt, ocrErrorCode(err))
 			_ = w.failJob(ctx, jobID, billID, classifyProviderError(err))
 			return nil
 		}
@@ -244,30 +249,12 @@ func (w *OCRWorker) Work(ctx context.Context, job *river.Job[OCRJobArgs]) error 
 		return fmt.Errorf("update ocr job success: %w", err)
 	}
 
-	if w.broadcaster != nil {
-		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
-			"job_id":   jobID,
-			"bill_id":  billID,
-			"status":   "succeeded",
-			"warnings": candidate.Warnings,
-		})
-	}
-
 	return nil
 }
 
 func (w *OCRWorker) failJob(ctx context.Context, jobID, billID uuid.UUID, reason string) error {
 	platformmetrics.RecordOCRJob("failed", reason)
-	err := w.repo.UpdateOCRJobFailed(ctx, jobID, reason)
-	if w.broadcaster != nil {
-		w.broadcaster.Broadcast(billID, "ocr.updated", map[string]any{
-			"job_id":  jobID,
-			"bill_id": billID,
-			"status":  "failed",
-			"error":   reason,
-		})
-	}
-	return err
+	return w.repo.UpdateOCRJobFailed(ctx, jobID, reason)
 }
 
 // OCRRetentionJobArgs định nghĩa payload công việc dọn dẹp raw OCR cũ hơn 30 ngày (Spec 3 index.md:176, 0001:50).

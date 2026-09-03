@@ -49,6 +49,7 @@ import (
 	"paysplit-backend/internal/platform/notification/fcm"
 	"paysplit-backend/internal/platform/ocr/llamaextract"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
+	"paysplit-backend/internal/platform/realtime"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
 	"paysplit-backend/internal/platform/vietqr"
@@ -61,6 +62,7 @@ import (
 type App struct {
 	server         *http.Server
 	db             *pgxpool.Pool
+	listenerPool   *pgxpool.Pool
 	riverClient    *river.Client[pgx.Tx]
 	closeSSE       func()
 	cancelWorkers  context.CancelFunc
@@ -97,6 +99,8 @@ func New(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("create JWT issuer: %w", err)
 	}
 	authRepo := authpostgres.New(db)
+	userEvents := &realtime.Publisher{Enabled: cfg.Realtime.UserSSEEnabled}
+	authpostgres.SetRealtimePublisher(authRepo, userEvents)
 	bankDirectory, err := banks.Load()
 	if err != nil {
 		db.Close()
@@ -181,14 +185,17 @@ func New(ctx context.Context) (*App, error) {
 		bank, ok := bankDirectory.Get(code)
 		return settlementpostgres.BankInfo{Code: bank.Code, Name: bank.Name, BIN: bank.BIN, Supported: bank.Supported}, ok
 	}, qrGenerator)
+	settlementpostgres.SetRealtimePublisher(settlementRepo, userEvents)
 	settlementService := settlementusecase.NewService(settlementRepo)
 	settlementService.SetProofStorage(proofStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
 	settlementService.SetReminderMaxCount(cfg.Settlement.ReminderMaxCount)
 	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL, cfg.Settlement.ProofMaxBytes)
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
+	billpostgres.SetRealtimePublisher(billRepo, userEvents)
 	billHub := billhttp.NewHub(db)
 	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
+	billSSEHandler.SetMinAppVersion(cfg.Realtime.MinUserStreamAppVersion)
 	ocrWorker := billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout)
 	ocrWorker.SetRetryBaseDelay(cfg.OCR.RetryBaseDelay)
 	river.AddWorker(riverWorkers, ocrWorker)
@@ -241,25 +248,46 @@ func New(ctx context.Context) (*App, error) {
 	// nên nó chỉ cần lắng nghe — không có đường phát nào đi vòng qua nhật ký.
 	groupHub := grouphttp.NewHub()
 	groupSSEHandler := grouphttp.NewSSEHandler(groupHandler, groupHub, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
+	groupSSEHandler.SetMinAppVersion(cfg.Realtime.MinUserStreamAppVersion)
+	userHub := authhttp.NewHub(groupHandler.RenderEventPayload)
 	closeSSE := func() {
 		billHub.CloseSubscribers()
 		groupHub.CloseSubscribers()
+		userHub.CloseSubscribers()
+	}
+	listenerPool := db
+	if cfg.Database.UsesDedicatedListenerPool() {
+		dedicatedPool, err := database.NewListenerPool(ctx, cfg.Database)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create PostgreSQL listener pool: %w", err)
+		}
+		listenerPool = dedicatedPool
 	}
 	sharedListener, err := database.NewPostgresNotificationListener(
-		db,
+		listenerPool,
 		map[string]database.NotificationHandler{
-			billhttp.NotificationChannel:  billHub.HandlePostgresNotification,
-			grouphttp.NotificationChannel: groupHub.HandlePostgresNotification,
+			billhttp.NotificationChannel:  database.ComposeHandlers(billHub.HandlePostgresNotification, userHub.HandleBillNotification),
+			grouphttp.NotificationChannel: database.ComposeHandlers(groupHub.HandlePostgresNotification, userHub.HandleGroupNotification),
+			realtime.ChannelUserEvents:    userHub.HandleUserNotification,
 		},
 		closeSSE,
 	)
 	if err != nil {
+		if listenerPool != db {
+			listenerPool.Close()
+		}
 		db.Close()
 		return nil, fmt.Errorf("create shared PostgreSQL listener: %w", err)
+	}
+	var userSSEHandler *authhttp.SSEHandler
+	if cfg.Realtime.UserSSEEnabled {
+		userSSEHandler = authhttp.NewSSEHandler(userHub, userEvents, db, sharedListener, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
 	}
 	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.InviteAttemptsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
+	adminpostgres.SetRealtimePublisher(adminRepo, userEvents)
 	adminService := adminusecase.NewService(adminRepo)
 	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
 	bankHandler := banks.NewHandler(bankDirectory)
@@ -272,7 +300,7 @@ func New(ctx context.Context) (*App, error) {
 	tokenAuth := transportmw.TokenAuth(tokens)
 	appRouter.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
-		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
+		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth, userSSEHandler) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) {
 			groupHandler.RegisterGroupRoutes(r, groupSSEHandler, liveAuth, inviteAttemptLimiter)
@@ -299,6 +327,9 @@ func New(ctx context.Context) (*App, error) {
 		cancelListener()
 		<-listenerDone
 		cancelWorkers()
+		if listenerPool != db {
+			listenerPool.Close()
+		}
 		db.Close()
 		return nil, fmt.Errorf("start river client: %w", err)
 	}
@@ -309,6 +340,7 @@ func New(ctx context.Context) (*App, error) {
 
 	app := &App{
 		db:             db,
+		listenerPool:   listenerPool,
 		riverClient:    riverClient,
 		closeSSE:       closeSSE,
 		cancelWorkers:  cancelWorkers,
@@ -388,6 +420,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	poolDone := make(chan struct{})
 	go func() {
+		if a.listenerPool != nil && a.listenerPool != a.db {
+			a.listenerPool.Close()
+		}
 		if a.db != nil {
 			a.db.Close()
 		}

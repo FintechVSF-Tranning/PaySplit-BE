@@ -19,6 +19,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 6   | Notification and background queue v1 | Slice 6 | done        |
 | 7   | Group bill close v1                  | Slice 7 | in-progress |
 | 8   | Connection efficient events          | Slice 8 | in-progress |
+| 9   | User realtime stream v1              | Slice 9 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -209,6 +210,28 @@ Reduce long lived PostgreSQL sessions by sharing one listener between Bill and G
 
 Spec [0010](../specs/0010-connection-efficient-events/index.md) · planned code in `internal/platform/database/`, `internal/platform/queue/river/`, `internal/modules/bill/delivery/http/`, `internal/modules/group/delivery/http/`, `internal/platform/metrics/`, `internal/config/`, and `internal/bootstrap/`
 
+## Slice 9: User realtime stream
+
+### 9. User realtime stream v1 · in-progress
+
+Provide one authenticated SSE connection for each signed in Flutter session so Home, group, bill, OCR, lock, and settlement changes update in real time without adding PostgreSQL listener connections for each screen or resource.
+
+**Done when:** all twenty three acceptance criteria in spec 0009 pass across the backend and Flutter app, every API process uses one shared PostgreSQL listener for all three channels, transaction sourced audiences prevent cross user delivery, roster gaps recover through `/sync`, other surfaces recover through bounded REST refetch, session replacement closes older streams, and the legacy cutover never opens both realtime modes together.
+
+- [x] Design it (spec): `/architect user realtime stream v1`
+- [x] Build it: `/develop user realtime stream v1`
+  - [x] Shared listener extension, exact envelopes, user hub, authenticated endpoint, stream replacement, session revocation, and capacity metrics (satisfies AC-9, AC-13 through AC-16, AC-19)
+  - [x] Flutter session owner, local interest registry, bounded recovery, lifecycle handling, app version reporting, and exclusive legacy fallback (satisfies AC-16 through AC-18, AC-23)
+  - [x] Roster fanout through the user stream with durable delta and `/sync` recovery preserved (satisfies AC-1 through AC-12, AC-19)
+  - [x] Transactional bill and OCR events with exact provider dispatch and current state recovery (satisfies AC-20, AC-21)
+  - [x] Transactional lock and settlement invalidations, rollout gates, legacy retirement, and end to end failure coverage (satisfies AC-22, AC-23)
+- [ ] Verify it: `/check verify user realtime stream v1`
+- [x] Test it: `/test user realtime stream v1`
+- [x] Review it (fresh model): `/check review user realtime stream v1`
+- [ ] Document it: `/document user realtime stream v1`
+
+Spec [0009](../specs/0009-group-realtime-sync-v1/index.md) · code in `internal/platform/database/`, `internal/platform/realtime/`, `internal/modules/auth/`, `internal/modules/group/`, `internal/modules/bill/`, `internal/modules/settlement/`, `internal/platform/metrics/`, `internal/config/`, and `internal/bootstrap/`, with companion Flutter work in the PaySplit-FE repository under `lib/core/realtime/`, `lib/features/home/`, `lib/features/groups/`, and `lib/features/bills/`
+
 ## Deferred
 
 The remaining PaySplit capabilities stay in the PRD until a later scope pass enrolls them.
@@ -220,6 +243,10 @@ Define group archive or deletion behavior so the sole Captain can close or leave
 ### Active group quota policy · deferred · from spec 0002
 
 Choose a concrete per user active group limit before adding quota enforcement.
+
+### Durable bill event log · deferred · from spec 0009
+
+Consider a replayable bill event log only if production measurements show that invalidation refetch traffic is material.
 
 - **Phone verification and phone sign in**: versioned follow up from spec 0001, needs a decision
 - **Production PII encryption and transactional email**: production hardening follow up from spec 0001, needs a decision

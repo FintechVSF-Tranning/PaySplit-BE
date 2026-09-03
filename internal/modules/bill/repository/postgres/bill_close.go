@@ -107,6 +107,9 @@ func (r *postgresRepository) LockSubmissions(ctx context.Context, groupID, calle
 		}); err != nil {
 			return nil, fmt.Errorf("insert bill_submission_locked activity: %w", err)
 		}
+		if err := r.notifyGroupInvalidate(ctx, tx, groupID, "group.bill_submission_locked"); err != nil {
+			return nil, err
+		}
 	}
 
 	if err = tx.Commit(ctx); err != nil {

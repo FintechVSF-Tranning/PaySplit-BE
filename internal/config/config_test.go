@@ -216,6 +216,31 @@ func TestValidateRejectsEmptySettlementBaseURLByVariableName(t *testing.T) {
 	}
 }
 
+func TestListenerDSNFallsBackAndDetectsDedicatedPool(t *testing.T) {
+	// covers: AC-13
+	cfg := DatabaseConfig{URL: "postgres://local/app"}
+	if cfg.ListenerDSN() != "postgres://local/app" || cfg.UsesDedicatedListenerPool() {
+		t.Fatalf("empty listener URL should reuse DATABASE_URL, got %+v", cfg)
+	}
+	cfg.ListenerURL = "postgres://local/listen"
+	if cfg.ListenerDSN() != "postgres://local/listen" || !cfg.UsesDedicatedListenerPool() {
+		t.Fatalf("dedicated listener URL was ignored: %+v", cfg)
+	}
+}
+
+func TestValidateRejectsBadRealtimeMinAppVersion(t *testing.T) {
+	// covers: AC-23
+	cfg := validConfig()
+	cfg.Realtime.MinUserStreamAppVersion = "1.4.0"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected REALTIME_MIN_USER_STREAM_APP_VERSION to require build")
+	}
+	cfg.Realtime.MinUserStreamAppVersion = "1.4.0+27"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid min app version: %v", err)
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},

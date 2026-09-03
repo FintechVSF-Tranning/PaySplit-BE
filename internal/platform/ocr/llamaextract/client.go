@@ -19,6 +19,22 @@ import (
 
 var _ usecase.OCRProvider = (*Client)(nil)
 
+// maxProviderMessage giới hạn phần văn bản của provider được đưa vào error.
+const maxProviderMessage = 120
+
+// truncateProviderMessage cắt ngắn thông điệp lỗi của provider.
+//
+// Lỗi của adapter này đi tiếp vào log của worker, nên không được mang theo thân
+// phản hồi: nó có thể chứa chính nội dung hóa đơn đã bóc tách, và log không nằm
+// trong đường lưu trữ raw OCR có kiểm soát.
+func truncateProviderMessage(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if len(msg) <= maxProviderMessage {
+		return msg
+	}
+	return msg[:maxProviderMessage] + "…"
+}
+
 // Client là HTTP client adapter kết nối tới LlamaExtract / LlamaCloud (Spec 3 AC-3).
 type Client struct {
 	apiKey     string
@@ -158,7 +174,7 @@ func (c *Client) uploadFile(ctx context.Context, imageBytes []byte, mimeType str
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("upload failed with status %d", resp.StatusCode)
 	}
 
 	var uploadResp struct {
@@ -174,7 +190,7 @@ func (c *Client) uploadFile(ctx context.Context, imageBytes []byte, mimeType str
 		fileID = uploadResp.FileID
 	}
 	if fileID == "" {
-		return "", fmt.Errorf("empty file id in upload response: %s", string(respBytes))
+		return "", errors.New("empty file id in upload response")
 	}
 
 	return fileID, nil
@@ -216,7 +232,7 @@ func (c *Client) createExtractionJob(ctx context.Context, fileID string) (string
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("create extract job failed with status %d: %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("create extract job failed with status %d", resp.StatusCode)
 	}
 
 	var jobResp struct {
@@ -232,7 +248,7 @@ func (c *Client) createExtractionJob(ctx context.Context, fileID string) (string
 		jobID = jobResp.JobID
 	}
 	if jobID == "" {
-		return "", fmt.Errorf("empty job id in extract job response: %s", string(respBytes))
+		return "", errors.New("empty job id in extract job response")
 	}
 
 	return jobID, nil
@@ -267,7 +283,7 @@ func (c *Client) pollExtractionResult(ctx context.Context, jobID string) ([]byte
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				return nil, fmt.Errorf("poll failed with status %d: %s", resp.StatusCode, string(respBytes))
+				return nil, fmt.Errorf("poll failed with status %d", resp.StatusCode)
 			}
 
 			var statusResp struct {
@@ -278,7 +294,7 @@ func (c *Client) pollExtractionResult(ctx context.Context, jobID string) ([]byte
 				Error         string          `json:"error"`
 			}
 			if err := json.Unmarshal(respBytes, &statusResp); err != nil {
-				return nil, fmt.Errorf("%w: parse poll response: %v", domain.ErrOcrSchemaInvalid, err)
+				return nil, fmt.Errorf("%w: parse poll response", domain.ErrOcrSchemaInvalid)
 			}
 
 			status := strings.ToUpper(statusResp.Status)
@@ -300,7 +316,7 @@ func (c *Client) pollExtractionResult(ctx context.Context, jobID string) ([]byte
 				if errMsg == "" {
 					errMsg = "unknown extraction error"
 				}
-				return nil, fmt.Errorf("%w: %s", domain.ErrOcrProviderUnavailable, errMsg)
+				return nil, fmt.Errorf("%w: %s", domain.ErrOcrProviderUnavailable, truncateProviderMessage(errMsg))
 			case "PENDING", "PROCESSING", "RUNNING", "QUEUED":
 				// Tiếp tục chờ lần ticker tiếp theo
 				continue
