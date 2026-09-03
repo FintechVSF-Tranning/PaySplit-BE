@@ -228,7 +228,7 @@ Provide one authenticated SSE connection for each signed in Flutter session so H
 - [ ] Verify it: `/check verify user realtime stream v1`
 - [x] Test it: `/test user realtime stream v1`
 - [x] Review it (fresh model): `/check review user realtime stream v1`
-- [ ] Document it: `/document user realtime stream v1`
+- [x] Document it: `/document user realtime stream v1`
 
 Spec [0009](../specs/0009-group-realtime-sync-v1/index.md) · code in `internal/platform/database/`, `internal/platform/realtime/`, `internal/modules/auth/`, `internal/modules/group/`, `internal/modules/bill/`, `internal/modules/settlement/`, `internal/platform/metrics/`, `internal/config/`, and `internal/bootstrap/`, with companion Flutter work in the PaySplit-FE repository under `lib/core/realtime/`, `lib/features/home/`, `lib/features/groups/`, and `lib/features/bills/`
 
