@@ -59,6 +59,7 @@ type AppConfig struct {
 // đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
 	URL               string
+	ApplicationName   string
 	MaxConns          int32
 	MinConns          int32
 	MaxConnLifetime   time.Duration
@@ -110,8 +111,10 @@ type FirebaseConfig struct {
 
 // RiverConfig chứa cấu hình cho background job queue (River trên PostgreSQL).
 type RiverConfig struct {
-	WorkerCount   int
-	FetchCooldown time.Duration
+	WorkerCount       int
+	FetchCooldown     time.Duration
+	PollOnly          bool
+	FetchPollInterval time.Duration
 }
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
@@ -278,6 +281,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	riverFetchPollInterval, err := durationEnv("RIVER_FETCH_POLL_INTERVAL_MS", 1000, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
 	ocrProviderTimeout, err := durationEnv("BILL_OCR_PROVIDER_TIMEOUT_SECONDS", 8, time.Second)
 	if err != nil {
 		return nil, err
@@ -395,6 +402,7 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			URL:               os.Getenv("DATABASE_URL"),
+			ApplicationName:   stringEnv("DB_APPLICATION_NAME", "paysplit-api"),
 			MaxConns:          maxConns,
 			MinConns:          minConns,
 			MaxConnLifetime:   maxConnLifetime,
@@ -416,8 +424,13 @@ func Load() (*Config, error) {
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
-		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
-		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		River: RiverConfig{
+			WorkerCount:       riverWorkerCount,
+			FetchCooldown:     riverFetchCooldown,
+			PollOnly:          boolEnv("RIVER_POLL_ONLY", false),
+			FetchPollInterval: riverFetchPollInterval,
+		},
+		Group: GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
 		OCR: OCRConfig{
 			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
 			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
@@ -487,6 +500,9 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Database.URL) == "" {
 		return errors.New("DATABASE_URL must not be empty")
 	}
+	if strings.TrimSpace(c.Database.ApplicationName) == "" {
+		return errors.New("DB_APPLICATION_NAME must not be empty")
+	}
 	if c.Database.MinConns < 0 || c.Database.MaxConns <= 0 || c.Database.MinConns > c.Database.MaxConns {
 		return errors.New("DB_MIN_CONNS must be non-negative and no greater than DB_MAX_CONNS")
 	}
@@ -520,8 +536,17 @@ func (c *Config) Validate() error {
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
 	}
-	if c.River.WorkerCount <= 0 || c.River.FetchCooldown <= 0 {
-		return errors.New("river settings must be positive")
+	if c.River.WorkerCount <= 0 {
+		return errors.New("RIVER_WORKER_COUNT must be positive")
+	}
+	if c.River.FetchCooldown <= 0 {
+		return errors.New("RIVER_FETCH_COOLDOWN_MS must be positive")
+	}
+	if c.River.FetchPollInterval <= 0 {
+		return errors.New("RIVER_FETCH_POLL_INTERVAL_MS must be positive")
+	}
+	if c.River.FetchPollInterval < c.River.FetchCooldown {
+		return errors.New("RIVER_FETCH_POLL_INTERVAL_MS must be greater than or equal to RIVER_FETCH_COOLDOWN_MS")
 	}
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
