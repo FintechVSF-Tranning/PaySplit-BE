@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PaySplit — Cổng Quản Trị Hệ Thống (Admin Portal)</title>
+  <!-- Google Fonts: Newsreader (Headings), Roboto Slab (Body/Labels), JetBrains Mono (Numbers) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Roboto+Slab:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Top App Navigation -->
+  <header class="app-header" id="app-header">
+    <div class="header-left">
+      <div class="brand-logo">
+        <div class="logo-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7L12 12L22 7L12 2Z"/>
+            <path d="M2 17L12 22L22 17"/>
+            <path d="M2 12L12 17L22 12"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">PaySplit</span>
+          <span class="brand-badge">ADMIN PORTAL</span>
+        </div>
+      </div>
+      <div class="system-status-indicator" id="system-status-indicator" title="Trạng thái kết nối Server">
+        <span class="status-dot"></span>
+        <span class="status-text" id="status-text">Đang kiểm tra...</span>
+      </div>
+    </div>
+
+    <div class="header-right" id="header-user-section" style="display: none;">
+      <div class="admin-profile-pill" id="admin-profile-pill">
+        <div class="admin-avatar" id="admin-avatar-icon">A</div>
+        <div class="admin-info">
+          <span class="admin-name" id="admin-name">Admin</span>
+          <span class="admin-role-badge">Super Admin</span>
+        </div>
+      </div>
+      <button class="btn-icon" id="btn-api-config" title="Cấu hình API Base URL">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button class="btn-logout" id="btn-logout" title="Đăng xuất">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        <span>Đăng xuất</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Login Modal View (When not logged in) -->
+  <div class="auth-overlay" id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="auth-icon-wrap">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <h2 class="auth-title">Đăng Nhập Quản Trị</h2>
+        <p class="auth-subtitle">Vui lòng đăng nhập với tài khoản có quyền Quản trị viên (Role: Admin)</p>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <div class="form-group">
+          <label for="login-email">Email Admin</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+            <input type="email" id="login-email" placeholder="admin@paysplit.app" required autocomplete="email">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="login-password">Mật khẩu</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="login-api-url">API Server URL</label>
+          <div class="input-wrapper">
+            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+            <input type="text" id="login-api-url" placeholder="http://localhost:8080" value="">
+          </div>
+        </div>
+
+        <div class="quick-admin-box">
+          <div class="quick-admin-title">Hướng dẫn đăng nhập:</div>
+          <div class="quick-admin-creds">
+            <div>Sử dụng tài khoản Quản trị viên (đã cấu hình qua <code>cmd/seedadmin</code> hoặc database).</div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary btn-block" id="btn-submit-login">
+          <span class="btn-text">Đăng Nhập Vào Cổng Admin</span>
+          <div class="spinner" style="display:none;"></div>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main Dashboard Container -->
+  <div class="app-layout" id="app-layout" style="display: none;">
+    <!-- Sidebar Navigation -->
+    <aside class="app-sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="tab-overview" id="nav-overview">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          <span>Tổng Quan Hệ Thống</span>
+        </button>
+        <button class="nav-item" data-tab="tab-accounts" id="nav-accounts">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Quản Lý Người Dùng</span>
+        </button>
+        <button class="nav-item" data-tab="tab-monitoring" id="nav-monitoring">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+          <span>Hạ Tầng & Vận Hành</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="system-pulse-box">
+          <div class="pulse-header">
+            <span>PaySplit Engine</span>
+            <span class="version-tag">v1.0 Go</span>
+          </div>
+          <div class="pulse-sub" id="sidebar-uptime">Uptime: 00:00:00</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="app-main-content">
+      <!-- TAB 1: SYSTEM OVERVIEW -->
+      <section class="tab-pane active" id="tab-overview">
+        <div class="pane-header">
+          <div>
+            <h1 class="pane-title">Tổng Quan Nền Tảng (System Overview)</h1>
+            <p class="pane-subtitle">Thống kê toàn diện người dùng, nhóm, hóa đơn, công nợ và tiến trình hệ thống</p>
+          </div>
+          <div class="pane-actions">
+            <label class="auto-refresh-toggle">
+              <input type="checkbox" id="toggle-auto-refresh" checked>
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">Tự làm mới (15s)</span>
+            </label>
+            <button class="btn-secondary" id="btn-refresh-overview">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              <span>Làm mới</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Metric Cards Grid -->
+        <div class="overview-grid">
+          <!-- User Stats Card -->
+          <div class="metric-card card-gradient-users">
+            <div class="card-top">
+              <div class="card-icon-box users-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+              </div>
+              <span class="card-badge">Tài khoản</span>
+            </div>
+            <div class="card-main-stat" id="stat-total-users">0</div>
+            <div class="card-stat-label">Tổng số người dùng</div>
+            <div class="card-breakdown">
+              <div class="breakdown-item"><span class="badge-dot dot-active"></span> Hoạt động: <strong id="stat-users-active">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-pending"></span> Chờ xác thực: <strong id="stat-users-pending">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-suspended"></span> Đình chỉ: <strong id="stat-users-suspended">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-locked"></span> Đã khóa: <strong id="stat-users-locked">0</strong></div>
+            </div>
+          </div>
+
+          <!-- Groups & Bills Card -->
+          <div class="metric-card card-gradient-bills">
+            <div class="card-top">
+              <div class="card-icon-box bills-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+              </div>
+              <span class="card-badge">Nhóm & Hóa đơn</span>
+            </div>
+            <div class="card-main-stat" id="stat-total-groups">0</div>
+            <div class="card-stat-label">Tổng số nhóm chia tiền</div>
+            <div class="card-breakdown">
+              <div class="breakdown-item"><span class="badge-dot dot-active"></span> Hóa đơn đã chốt: <strong id="stat-bills-finalized">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-pending"></span> Hóa đơn nháp: <strong id="stat-bills-draft">0</strong></div>
+            </div>
+          </div>
+
+          <!-- Debts & Settlement Card -->
+          <div class="metric-card card-gradient-debts">
+            <div class="card-top">
+              <div class="card-icon-box debts-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              </div>
+              <span class="card-badge">Quyết toán nợ</span>
+            </div>
+            <div class="card-main-stat" id="stat-debts-awaiting">0</div>
+            <div class="card-stat-label">Khoản nợ chờ trả (Awaiting)</div>
+            <div class="card-breakdown">
+              <div class="breakdown-item"><span class="badge-dot dot-pending"></span> Chờ xác nhận: <strong id="stat-debts-pending">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-warning"></span> Bị treo (Stalled): <strong id="stat-debts-stalled">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-danger"></span> Bị từ chối: <strong id="stat-debts-rejected">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-active"></span> Đã tất toán: <strong id="stat-debts-settled">0</strong></div>
+            </div>
+          </div>
+
+          <!-- Background Jobs & OCR Card -->
+          <div class="metric-card card-gradient-jobs">
+            <div class="card-top">
+              <div class="card-icon-box jobs-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+              </div>
+              <span class="card-badge">River Queue Jobs</span>
+            </div>
+            <div class="card-main-stat" id="stat-ocr-total">0</div>
+            <div class="card-stat-label">Tổng tác vụ OCR hóa đơn</div>
+            <div class="card-breakdown">
+              <div class="breakdown-item"><span class="badge-dot dot-pending"></span> Đang chờ (Queued): <strong id="stat-ocr-queued">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-processing"></span> Đang xử lý: <strong id="stat-ocr-processing">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-active"></span> Thành công: <strong id="stat-ocr-succeeded">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-danger"></span> Thất bại: <strong id="stat-ocr-failed">0</strong></div>
+              <div class="breakdown-item"><span class="badge-dot dot-warning"></span> Dọn dẹp ảnh media chờ: <strong id="stat-media-cleanup">0</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Visual Analytics & Charts Grid -->
+        <div class="analytics-charts-grid">
+          <!-- Chart 1: Real-time Runtime Performance -->
+          <div class="glass-panel chart-panel chart-panel-wide">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                <span>Biểu Đồ Giám Sát Go Runtime & Bộ Nhớ (Live RAM / Goroutines)</span>
+              </div>
+              <div class="chart-legend-wrap">
+                <span class="legend-badge"><span class="legend-dot" style="background:#0F766E;"></span> RAM (MB)</span>
+                <span class="legend-badge"><span class="legend-dot" style="background:#D97706;"></span> Goroutines</span>
+              </div>
+            </div>
+            <div class="chart-canvas-container">
+              <canvas id="chart-runtime-canvas"></canvas>
+            </div>
+            <div class="chart-footer-stats">
+              <div class="chart-stat-chip">Đỉnh RAM: <strong id="chip-peak-ram">0 MB</strong></div>
+              <div class="chart-stat-chip">Goroutines trung bình: <strong id="chip-avg-goroutines">0</strong></div>
+              <div class="chart-stat-chip">Thời gian máy chủ (Uptime): <strong id="chip-uptime-val">0s</strong></div>
+            </div>
+          </div>
+
+          <!-- Chart 2: Debts Settlement Distribution -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <span>Cơ Cấu Quyết Toán Công Nợ</span>
+              </div>
+            </div>
+            <div class="donut-chart-container">
+              <div class="donut-svg-box">
+                <svg id="donut-debts-svg" viewBox="0 0 160 160" width="140" height="140"></svg>
+                <div class="donut-center-stat">
+                  <span class="donut-center-val" id="donut-debts-total">0</span>
+                  <span class="donut-center-label">Khoản nợ</span>
+                </div>
+              </div>
+              <div class="donut-legend-list" id="debts-legend-list"></div>
+            </div>
+          </div>
+
+          <!-- Chart 3: OCR Jobs & River Queue -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                <span>Tác Vụ River Queue & OCR</span>
+              </div>
+              <span class="badge badge-active" id="ocr-success-rate-badge">100% Thành công</span>
+            </div>
+            <div class="ocr-queue-analytics">
+              <div class="stacked-bar-label-row">
+                <span>Tỷ lệ hoàn thành tác vụ:</span>
+                <strong id="ocr-completion-ratio">0/0</strong>
+              </div>
+              <div class="stacked-progress-bar" id="ocr-stacked-bar"></div>
+              <div class="ocr-metrics-grid" id="ocr-metrics-grid"></div>
+            </div>
+          </div>
+
+          <!-- Chart 4: User Accounts & Bills Distribution -->
+          <div class="glass-panel chart-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+                <span>Phân Bổ Người Dùng & Hóa Đơn</span>
+              </div>
+            </div>
+            <div class="users-bills-analytics" id="users-bills-analytics"></div>
+          </div>
+        </div>
+
+        <!-- Runtime Stats Panel -->
+        <div class="glass-panel runtime-panel">
+          <div class="panel-header">
+            <div class="panel-header-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+              <span>Go Runtime & Server Health (AC-7)</span>
+            </div>
+            <span class="badge badge-success">Live Engine</span>
+          </div>
+          <div class="runtime-stats-grid">
+            <div class="runtime-stat-item">
+              <span class="runtime-stat-label">Goroutines hoạt động</span>
+              <span class="runtime-stat-val" id="stat-runtime-goroutines">0</span>
+            </div>
+            <div class="runtime-stat-item">
+              <span class="runtime-stat-label">Bộ nhớ RAM cấp phát</span>
+              <span class="runtime-stat-val" id="stat-runtime-memory">0 MB</span>
+            </div>
+            <div class="runtime-stat-item">
+              <span class="runtime-stat-label">Thời gian máy chủ chạy (Uptime)</span>
+              <span class="runtime-stat-val" id="stat-runtime-uptime">0s</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: USER ACCOUNTS MANAGEMENT -->
+      <section class="tab-pane" id="tab-accounts">
+        <div class="pane-header">
+          <div>
+            <h1 class="pane-title">Quản Lý Người Dùng & Tài Khoản (AC-1, AC-2, AC-3)</h1>
+            <p class="pane-subtitle">Tìm kiếm, kiểm tra hồ sơ chi tiết, giám sát công nợ và điều chỉnh trạng thái</p>
+          </div>
+          <div class="pane-actions">
+            <button class="btn-primary" id="btn-refresh-accounts">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              <span>Tải lại</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Summary Stats Pills -->
+        <div class="accounts-summary-row" id="accounts-summary-pills">
+          <div class="summary-pill"><span class="pill-dot dot-active"></span> Hoạt động: <strong id="acc-pill-active">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-pending"></span> Chờ xác thực: <strong id="acc-pill-pending">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-suspended"></span> Đình chỉ: <strong id="acc-pill-suspended">0</strong></div>
+          <div class="summary-pill"><span class="pill-dot dot-locked"></span> Đã khóa: <strong id="acc-pill-locked">0</strong></div>
+        </div>
+
+        <!-- Filter and Search Bar -->
+        <div class="glass-panel filter-panel">
+          <div class="filter-row">
+            <div class="search-input-box">
+              <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" id="filter-search" placeholder="Tìm theo Email, Tên hiển thị, Số điện thoại...">
+              <button class="btn-clear-search" id="btn-clear-search" style="display:none;">&times;</button>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-status">Trạng thái:</label>
+              <select id="filter-status">
+                <option value="">Tất cả</option>
+                <option value="active">Hoạt động (Active)</option>
+                <option value="pending_verification">Chờ xác thực (Pending)</option>
+                <option value="suspended">Đình chỉ (Suspended)</option>
+                <option value="locked">Đã khóa (Locked)</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-role">Vai trò:</label>
+              <select id="filter-role">
+                <option value="">Tất cả</option>
+                <option value="user">Người dùng (User)</option>
+                <option value="admin">Quản trị viên (Admin)</option>
+              </select>
+            </div>
+
+            <div class="filter-group">
+              <label for="filter-sort-by">Sắp xếp:</label>
+              <select id="filter-sort-by">
+                <option value="created_at">Ngày tạo</option>
+                <option value="display_name">Tên hiển thị</option>
+                <option value="email">Email</option>
+              </select>
+              <select id="filter-sort-order">
+                <option value="desc">Giảm dần (Mới nhất)</option>
+                <option value="asc">Tăng dần (Cũ nhất)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Accounts Table Container -->
+        <div class="glass-panel table-panel">
+          <div class="table-responsive">
+            <table class="data-table" id="accounts-table">
+              <thead>
+                <tr>
+                  <th>Người dùng</th>
+                  <th>Số điện thoại</th>
+                  <th>Vai trò</th>
+                  <th>Trạng thái</th>
+                  <th>Xác thực</th>
+                  <th>Ngày tạo</th>
+                  <th class="text-right">Hành động</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-table-body">
+                <tr>
+                  <td colspan="7" class="text-center loading-cell">
+                    <div class="inline-spinner"></div>
+                    <span>Đang tải danh sách người dùng...</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination Footer -->
+          <div class="pagination-bar" id="pagination-bar">
+            <div class="pagination-info">
+              Hiển thị <span id="pag-start">0</span> - <span id="pag-end">0</span> trên tổng số <strong id="pag-total">0</strong> tài khoản
+            </div>
+            <div class="pagination-controls">
+              <div class="limit-selector">
+                <span>Số dòng:</span>
+                <select id="pag-limit">
+                  <option value="10">10</option>
+                  <option value="20" selected>20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <button class="btn-pag" id="btn-pag-prev" disabled>&lsaquo; Trước</button>
+              <span class="pag-current-page" id="pag-current">Trang 1 / 1</span>
+              <button class="btn-pag" id="btn-pag-next" disabled>Sau &rsaquo;</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: MONITORING & INFRA -->
+      <section class="tab-pane" id="tab-monitoring">
+        <div class="pane-header">
+          <div>
+            <h1 class="pane-title">Giám Sát Hạ Tầng & API Probes (AC-6, AC-8)</h1>
+            <p class="pane-subtitle">Kiểm tra trực tiếp các cổng Probe và Endpoint Prometheus</p>
+          </div>
+        </div>
+
+        <!-- System Core Services Health Matrix -->
+        <div class="service-health-grid">
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg></div>
+              <span class="badge badge-active">Active</span>
+            </div>
+            <div class="service-title">PostgreSQL 18 Pool</div>
+            <div class="service-sub">Max: 6 conns · Min: 1 conn</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg></div>
+              <span class="badge badge-active">Running</span>
+            </div>
+            <div class="service-title">River Queue Engine</div>
+            <div class="service-sub">5 Background Workers</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg></div>
+              <span class="badge badge-active">Ready</span>
+            </div>
+            <div class="service-title">Firebase Cloud Messaging</div>
+            <div class="service-sub">Push Notification Hub</div>
+          </div>
+          <div class="service-health-card">
+            <div class="service-card-top">
+              <div class="service-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg></div>
+              <span class="badge badge-active">Connected</span>
+            </div>
+            <div class="service-title">Gmail SMTP Mailer</div>
+            <div class="service-sub">Port 587 (TLS Mail Delivery)</div>
+          </div>
+        </div>
+
+        <div class="monitoring-grid" style="margin-top:1.5rem;">
+          <div class="glass-panel">
+            <div class="panel-header">
+              <div class="panel-header-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                <span>Hạ tầng Probes (Health Checks)</span>
+              </div>
+            </div>
+            <div class="probe-list">
+              <div class="probe-item">
+                <div class="probe-meta">
+                  <span class="method-tag get">GET</span>
+                  <span class="probe-path">/health</span>
+                  <span class="probe-desc">Liveness probe cơ bản của HTTP Server</span>
+                </div>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-health"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health', 'badge-probe-health')">Test</button>
+                </div>
+              </div>
+
+              <div class="probe-item">
+                <div class="probe-meta">
+                  <span class="method-tag get">GET</span>
+                  <span class="probe-path">/health/live</span>
+                  <span class="probe-desc">Process liveness check</span>
+                </div>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-live"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health/live', 'badge-probe-live')">Test</button>
+                </div>
+              </div>
+
+              <div class="probe-item">
+                <div class="probe-meta">
+                  <span class="method-tag get">GET</span>
+                  <span class="probe-path">/health/ready</span>
+                  <span class="probe-desc">Readiness probe kiểm tra kết nối PostgreSQL 18</span>
+                </div>
+                <div class="probe-action-box">
+                  <span class="probe-result-badge" id="badge-probe-ready"></span>
+                  <button class="btn-sm btn-secondary" onclick="testProbe('/health/ready', 'badge-probe-ready')">Test</button>
+                </div>
+              </div>
+
+              <div class="probe-item">
+                <div class="probe-meta">
+                  <span class="method-tag get">GET</span>
+                  <span class="probe-path">/metrics</span>
+                  <span class="probe-desc">Prometheus Metrics text exposition</span>
+                </div>
+                <div class="probe-action-box">
+                  <button class="btn-sm btn-secondary" onclick="openMetrics()">Mở /metrics</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Probe Result Box -->
+            <div class="probe-output-box" id="probe-output-box" style="display:none;">
+              <div class="probe-output-header">
+                <span id="probe-output-title">Kết quả phản hồi:</span>
+                <button class="btn-close-probe" onclick="document.getElementById('probe-output-box').style.display='none'">&times;</button>
+              </div>
+              <pre class="probe-output-content" id="probe-output-content"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- MODAL: ACCOUNT DETAIL (AC-2) -->
+  <div class="modal-overlay" id="modal-account-detail" style="display:none;">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div class="modal-icon-badge">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+          </div>
+          <div>
+            <h2 class="modal-title" id="detail-display-name">Chi Tiết Hồ Sơ Người Dùng</h2>
+            <span class="modal-subtitle" id="detail-email">user@example.com</span>
+          </div>
+        </div>
+        <button class="modal-btn-close" id="btn-close-detail">&times;</button>
+      </div>
+
+      <div class="modal-body" id="detail-modal-body">
+        <div class="inline-spinner-wrap text-center"><div class="inline-spinner"></div></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-close-detail-footer">Đóng</button>
+        <button class="btn-primary" id="btn-open-status-from-detail">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          <span>Đổi Trạng Thái</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: UPDATE ACCOUNT STATUS (AC-3, AC-4) -->
+  <div class="modal-overlay" id="modal-update-status" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <div class="modal-icon-badge badge-warning-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          </div>
+          <div>
+            <h2 class="modal-title">Cập Nhật Trạng Thái Tài Khoản</h2>
+            <span class="modal-subtitle" id="status-target-user-name">Đang tải...</span>
+          </div>
+        </div>
+        <button class="modal-btn-close" id="btn-close-status">&times;</button>
+      </div>
+
+      <form id="form-update-status">
+        <div class="modal-body">
+          <input type="hidden" id="status-target-user-id">
+
+          <!-- Notice banner -->
+          <div class="alert alert-info">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+            <div>
+              <strong>Quy tắc bảo mật (AC-4):</strong> Khi chuyển sang <code>suspended</code> hoặc <code>locked</code>, toàn bộ phiên đăng nhập (sessions) và refresh token của tài khoản sẽ bị <strong>thu hồi ngay lập tức</strong>.
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="select-new-status">Trạng thái mới: <span class="required">*</span></label>
+            <select id="select-new-status" required>
+              <option value="active">Hoạt động (Active - Kích hoạt lại)</option>
+              <option value="suspended">Đình chỉ (Suspended - Tạm dừng dịch vụ)</option>
+              <option value="locked">Khóa vĩnh viễn (Locked - Vi phạm bảo mật)</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="reason-form-group">
+            <label for="input-status-reason">Lý do điều chỉnh: <span class="required" id="reason-required-star">*</span></label>
+            <textarea id="input-status-reason" rows="3" placeholder="Nhập lý do chi tiết để lưu vào nhật ký kiểm toán (admin_audit_logs)..." required></textarea>
+            <span class="form-hint">Bắt buộc khi đình chỉ hoặc khóa tài khoản để phục vụ kiểm toán hệ thống.</span>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="btn-close-status-footer">Hủy bỏ</button>
+          <button type="submit" class="btn-primary" id="btn-submit-status">
+            <span class="btn-text">Xác Nhận Cập Nhật</span>
+            <div class="spinner" style="display:none;"></div>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- API URL Config Modal -->
+  <div class="modal-overlay" id="modal-api-config" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 class="modal-title">Cấu Hình Kết Nối API</h2>
+        <button class="modal-btn-close" id="btn-close-api-config">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cfg-api-url">API Base URL:</label>
+          <input type="text" id="cfg-api-url" placeholder="http://localhost:8080" class="input-text">
+          <span class="form-hint">Mặc định sẽ dùng cùng domain máy chủ hoặc <code>http://localhost:8080</code></span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btn-close-api-config-footer">Hủy</button>
+        <button class="btn-primary" id="btn-save-api-config">Lưu Cấu Hình</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- App Script -->
+  <script src="app.js"></script>
+</body>
+</html>

@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"io/fs"
 	"log"
 	"net/http"
 	"time"
@@ -13,6 +14,7 @@ import (
 	platformmetrics "paysplit-backend/internal/platform/metrics"
 	helpers "paysplit-backend/internal/transport/http/helpers"
 	middleware "paysplit-backend/internal/transport/http/middleware"
+	"paysplit-backend/web"
 )
 
 // DBPingChecker kiểm tra kết nối DB cho readiness probe.
@@ -45,6 +47,15 @@ func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbCheck
 	router.Get("/health/ready", healthReady(dbChecker))
 
 	router.Method(http.MethodGet, "/metrics", platformmetrics.MetricsHandler(metricsConfig.Enabled, metricsConfig.BearerToken))
+
+	// Phục vụ giao diện web Admin Portal từ embedded assets
+	if adminSubFS, err := fs.Sub(web.AdminFS, "admin"); err == nil {
+		fileServer := http.FileServer(http.FS(adminSubFS))
+		router.Get("/admin-portal", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin-portal/", http.StatusPermanentRedirect)
+		})
+		router.Handle("/admin-portal/*", http.StripPrefix("/admin-portal", fileServer))
+	}
 
 	router.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		if err := helpers.WriteAPIError(w, http.StatusNotFound, "ROUTE_NOT_FOUND", "route not found", nil); err != nil {
