@@ -61,7 +61,14 @@ func TestNotificationJobArgs_Kind(t *testing.T) {
 
 func TestNotificationWorker_Work_Success(t *testing.T) {
 	msg := fcm.NewPaymentReminderMessage("Lâm", 50000, "g-1", "b-1")
-	notif := domain.Notification{ID: "notif-1", UserID: "user-123", Title: msg.Title, Body: msg.Body}
+	notif := domain.Notification{
+		ID:      "notif-1",
+		UserID:  "user-123",
+		Type:    domain.TypePaymentReminder,
+		Title:   msg.Title,
+		Body:    msg.Body,
+		Payload: []byte(`{"group_id":"g-1","bill_id":"b-1"}`),
+	}
 	repo := &mockWorkerRepo{activeToken: "device-tok-1", notif: notif}
 	notifier := &mockWorkerNotifier{}
 	worker := NewNotificationWorker(repo, notifier)
@@ -78,6 +85,9 @@ func TestNotificationWorker_Work_Success(t *testing.T) {
 	}
 	if notifier.sentMsg.Title != msg.Title {
 		t.Errorf("expected title %s, got %s", msg.Title, notifier.sentMsg.Title)
+	}
+	if notifier.sentMsg.Data["type"] != domain.TypePaymentReminder {
+		t.Errorf("expected notification type in FCM data, got %+v", notifier.sentMsg.Data)
 	}
 }
 

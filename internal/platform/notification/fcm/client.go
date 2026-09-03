@@ -2,8 +2,10 @@ package fcm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	firebase "firebase.google.com/go/v4"
@@ -37,12 +39,28 @@ type Notifier struct {
 }
 
 func New(ctx context.Context, credentialsFile, credentialsJSON string, timeout time.Duration) (*Notifier, error) {
+	credentialsFile = strings.TrimSpace(credentialsFile)
+	credentialsJSON = strings.TrimSpace(credentialsJSON)
+	if strings.HasPrefix(credentialsJSON, "'") && strings.HasSuffix(credentialsJSON, "'") {
+		credentialsJSON = strings.Trim(credentialsJSON, "'")
+	}
+	if strings.HasPrefix(credentialsJSON, "\"") && strings.HasSuffix(credentialsJSON, "\"") {
+		credentialsJSON = strings.Trim(credentialsJSON, "\"")
+	}
+
 	if credentialsFile == "" && credentialsJSON == "" {
 		return nil, nil // Disabled if no credentials configured
 	}
 
+	var fbConfig *firebase.Config
 	var opt option.ClientOption
 	if credentialsJSON != "" {
+		var parsed struct {
+			ProjectID string `json:"project_id"`
+		}
+		if err := json.Unmarshal([]byte(credentialsJSON), &parsed); err == nil && parsed.ProjectID != "" {
+			fbConfig = &firebase.Config{ProjectID: parsed.ProjectID}
+		}
 		opt = option.WithCredentialsJSON([]byte(credentialsJSON))
 	} else {
 		opt = option.WithCredentialsFile(credentialsFile)
@@ -51,7 +69,7 @@ func New(ctx context.Context, credentialsFile, credentialsJSON string, timeout t
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	app, err := firebase.NewApp(initCtx, nil, opt)
+	app, err := firebase.NewApp(initCtx, fbConfig, opt)
 	if err != nil {
 		return nil, fmt.Errorf("create firebase app: %w", err)
 	}
