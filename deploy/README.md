@@ -1,7 +1,7 @@
 # Hướng dẫn deploy PaySplit Backend lên VM (Oracle Cloud / VPS)
 
 Runbook đầy đủ từ máy trắng đến API chạy HTTPS. Mỗi bước có lệnh copy-paste được và
-giải thích *tại sao* cần bước đó.
+giải thích _tại sao_ cần bước đó.
 
 **Môi trường tham chiếu**: Oracle Cloud Ampere A1 (ARM64), Ubuntu 26.04 LTS, user `ubuntu`.
 Thay `161.118.233.21` bằng IP thật của bạn ở mọi chỗ.
@@ -12,32 +12,32 @@ Thay `161.118.233.21` bằng IP thật của bạn ở mọi chỗ.
 
 Kiến trúc hiện tại của PaySplit **bắt buộc phải có tiến trình sống lâu**:
 
-| Thành phần | Yêu cầu |
-|---|---|
-| River Queue | worker engine chạy liên tục |
-| PostgreSQL `LISTEN/NOTIFY` | một session giữ mở vĩnh viễn |
-| SSE (`/bills/{id}/events`, `/groups/{id}/events`) | kết nối HTTP mở tới 15 phút |
-| Background workers (cleanup, retention, metrics) | ticker định kỳ |
+| Thành phần                                        | Yêu cầu                      |
+| ------------------------------------------------- | ---------------------------- |
+| River Queue                                       | worker engine chạy liên tục  |
+| PostgreSQL `LISTEN/NOTIFY`                        | một session giữ mở vĩnh viễn |
+| SSE (`/bills/{id}/events`, `/groups/{id}/events`) | kết nối HTTP mở tới 15 phút  |
+| Background workers (cleanup, retention, metrics)  | ticker định kỳ               |
 
 Chạy trên serverless (Vercel) thì:
 
 1. **Connection bị nhân theo số instance**, không có trần. Mỗi instance tạo một pool riêng
    → `DB_MAX_CONNS=10` × 10 instance = 100 connection. Đây là nguyên nhân lỗi
    `FATAL: remaining connection slots are reserved` (SQLSTATE 53300).
-2. **Instance bị *freeze*, không *shutdown*.** `App.Shutdown()` không bao giờ chạy →
+2. **Instance bị _freeze_, không _shutdown_.** `App.Shutdown()` không bao giờ chạy →
    socket treo lại → backend Postgres nằm `idle` cho tới khi TCP keepalive dọn.
 3. Đổi nhà cung cấp DB (Supabase → Aiven) **không bao giờ thắng được** — serverless
    luôn có thể scale vượt qua số slot của bất kỳ plan nào.
 
 Đặt BE và PostgreSQL **trên cùng một VM** giải quyết 5 vấn đề cùng lúc:
 
-| Vấn đề | Sau khi chuyển |
-|---|---|
-| Cạn connection | 1 tiến trình, pool cố định. `max_connections` do bạn quyết định |
-| RTT ~100ms tới DB cloud | Cùng máy → ~0.1ms |
-| River / LISTEN / SSE / workers | Chạy đúng như thiết kế |
-| Connection ma do không graceful shutdown | SIGTERM thật, `stop_grace_period: 30s` |
-| Cold start | Không còn |
+| Vấn đề                                   | Sau khi chuyển                                                  |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| Cạn connection                           | 1 tiến trình, pool cố định. `max_connections` do bạn quyết định |
+| RTT ~100ms tới DB cloud                  | Cùng máy → ~0.1ms                                               |
+| River / LISTEN / SSE / workers           | Chạy đúng như thiết kế                                          |
+| Connection ma do không graceful shutdown | SIGTERM thật, `stop_grace_period: 30s`                          |
+| Cold start                               | Không còn                                                       |
 
 ---
 
@@ -88,22 +88,22 @@ git push origin dev
 
 **Bước 5.** Điền rule thứ nhất (HTTP):
 
-| Trường | Giá trị |
-|---|---|
-| Stateless | ❌ **không tick** (để stateful) |
-| Source Type | `CIDR` |
-| Source CIDR | `0.0.0.0/0` |
-| IP Protocol | `TCP` |
-| Source Port Range | **để trống** (nghĩa là All) |
-| Destination Port Range | `80` |
-| Description | `HTTP - Caddy + Let's Encrypt ACME` |
+| Trường                 | Giá trị                             |
+| ---------------------- | ----------------------------------- |
+| Stateless              | ❌ **không tick** (để stateful)     |
+| Source Type            | `CIDR`                              |
+| Source CIDR            | `0.0.0.0/0`                         |
+| IP Protocol            | `TCP`                               |
+| Source Port Range      | **để trống** (nghĩa là All)         |
+| Destination Port Range | `80`                                |
+| Description            | `HTTP - Caddy + Let's Encrypt ACME` |
 
 **Bước 6.** Bấm **+ Another Ingress Rule**, điền rule thứ hai y hệt nhưng đổi:
 
-| Trường | Giá trị |
-|---|---|
-| Destination Port Range | `443` |
-| Description | `HTTPS - PaySplit API` |
+| Trường                 | Giá trị                |
+| ---------------------- | ---------------------- |
+| Destination Port Range | `443`                  |
+| Description            | `HTTPS - PaySplit API` |
 
 **Bước 7.** Bấm **Add Ingress Rules** ở cuối form.
 
@@ -128,10 +128,10 @@ Chạy **từ máy local**:
 nc -zv 161.118.233.21 80
 ```
 
-| Kết quả | Ý nghĩa |
-|---|---|
-| `Connection refused` | ✅ **Đúng** — firewall đã thông, chỉ là chưa có gì lắng nghe port 80 (Caddy chưa chạy) |
-| `Connection timed out` | ❌ Vẫn bị chặn — xem lại Security List, và cả NSG nếu có |
+| Kết quả                | Ý nghĩa                                                                                |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `Connection refused`   | ✅ **Đúng** — firewall đã thông, chỉ là chưa có gì lắng nghe port 80 (Caddy chưa chạy) |
+| `Connection timed out` | ❌ Vẫn bị chặn — xem lại Security List, và cả NSG nếu có                               |
 
 Phân biệt `refused` với `timed out` là mẹo quan trọng nhất khi debug firewall:
 `refused` nghĩa là gói tin **đã tới được máy**; `timed out` nghĩa là nó bị nuốt giữa đường.
@@ -243,6 +243,7 @@ git branch --show-current      # xác nhận đang ở dev
 > đúng thứ cả nhóm đang làm việc trên đó.
 >
 > Đổi nhánh sau này:
+>
 > ```bash
 > cd ~/PaySplit-BE && git fetch origin && git checkout main && git pull origin main
 > docker compose -f deploy/docker-compose.prod.yaml up -d --build api
@@ -252,7 +253,8 @@ git branch --show-current      # xác nhận đang ở dev
 **từ máy local**, không phải trên VM:
 
 ```bash
-scp -i ssh-key-2026-09-04.key .env.production \
+cd ~/Documents/namplh/code/PaySplit-BE
+scp -i ~/Downloads/vps/ssh-key-2026-09-04.key .env.production \
     ubuntu@161.118.233.21:~/PaySplit-BE/.env.production
 ```
 
@@ -268,7 +270,7 @@ Compose tự đọc `.env` nằm cùng thư mục với compose file.
 ```bash
 cd ~/PaySplit-BE/deploy
 cp .env.example .env
-openssl rand -base64 32        # copy kết quả
+openssl rand -hex 32           # copy kết quả
 nano .env
 ```
 
@@ -277,7 +279,37 @@ POSTGRES_PASSWORD=<chuỗi vừa sinh ra>
 SITE_ADDRESS=161.118.233.21.nip.io
 ```
 
-**Về `SITE_ADDRESS`**: Caddy cần một *hostname* (không phải IP trần) để xin chứng chỉ
+> ### ⚠️ Phải dùng `-hex`, đừng dùng `-base64`
+>
+> `openssl rand -base64 32` sinh alphabet Base64 có chứa `/`, `+`, `=`. Dấu `/` **kết thúc
+> phần authority của URI**, làm vỡ chuỗi kết nối mà compose dựng ra:
+>
+> ```yaml
+> DATABASE_URL: postgres://paysplit:${POSTGRES_PASSWORD}@postgres:5432/paysplit?sslmode=disable
+> ```
+>
+> Triệu chứng điển hình:
+> ```
+> pg_restore: error: invalid integer value "Uq6V9ss..." for connection option "port"
+> ```
+> Parser đọc `paysplit` thành host và phần trước dấu `/` thành port. App cũng chết đúng
+> kiểu đó, không riêng gì `pg_restore`.
+>
+> `openssl rand -hex 32` chỉ cho ra `0-9a-f` — an toàn tuyệt đối trong URL, và 256 bit
+> entropy vẫn thừa sức.
+>
+> **Nếu lỡ tạo mật khẩu có `/` rồi**: sửa file `.env` thôi là *không đủ*, vì
+> `POSTGRES_PASSWORD` chỉ có tác dụng lúc initdb lần đầu. Volume đã tồn tại nên phải
+> đổi trực tiếp trong database:
+>
+> ```bash
+> docker compose -f deploy/docker-compose.prod.yaml exec postgres \
+>   psql -U paysplit -d paysplit -c "ALTER USER paysplit PASSWORD '<mật khẩu mới>';"
+> nano deploy/.env      # cập nhật POSTGRES_PASSWORD cho khớp
+> docker compose -f deploy/docker-compose.prod.yaml up -d
+> ```
+
+**Về `SITE_ADDRESS`**: Caddy cần một _hostname_ (không phải IP trần) để xin chứng chỉ
 Let's Encrypt. `nip.io` là dịch vụ DNS wildcard: `161.118.233.21.nip.io` phân giải về
 đúng IP đó, và Let's Encrypt cấp cert bình thường cho nó.
 
@@ -331,9 +363,9 @@ docker run --rm -v "$PWD:/out" postgres:18-alpine \
   pg_dump "<DATABASE_URL_AIVEN_ĐẦY_ĐỦ>" --no-owner --no-acl -Fc -f /out/aiven.dump
 
 # Restore vào Postgres nội bộ
-docker run --rm -v "$PWD:/in" --network paysplit_default postgres:18-alpine \
-  pg_restore --no-owner --no-acl \
-  -d "postgres://paysplit:<POSTGRES_PASSWORD>@postgres:5432/paysplit" /in/aiven.dump
+docker run --rm -v "$PWD:/in" --network paysplit_default \
+  -e PGPASSWORD='<POSTGRES_PASSWORD>' postgres:18-alpine \
+  pg_restore --no-owner --no-acl -h postgres -U paysplit -d paysplit /in/aiven.dump
 
 rm aiven.dump      # xoá ngay, file này chứa toàn bộ dữ liệu người dùng
 ```
@@ -437,7 +469,7 @@ tiếp tục ăn connection của Aiven.
 
 2. **Truy lùng deployment mồ côi.** Kiểm tra tài khoản Render / Railway của cả nhóm.
    Branch `lampt/testRender` có 2 commit đặc trưng của Render
-   (*"default HTTP_HOST to 0.0.0.0"*, *"prioritize PORT environment variable"*) — nếu còn
+   (_"default HTTP_HOST to 0.0.0.0"_, _"prioritize PORT environment variable"_) — nếu còn
    service nào sống từ branch đó, nó đang giữ 10 connection Aiven vĩnh viễn.
 
 3. Xác nhận không còn ai cắm vào Aiven, rồi mới xoá instance Aiven.
@@ -504,12 +536,12 @@ ports:
 
 Tiền tố `127.0.0.1` là phần quan trọng nhất của dòng này:
 
-| Cách viết | Hậu quả |
-|---|---|
-| `"127.0.0.1:5432:5432"` | ✅ Chỉ bind loopback của VM. Từ internet **không** với tới. Muốn vào phải qua SSH tunnel. |
-| `"5432:5432"` | ❌ Bind `0.0.0.0`. Docker DNAT đi vòng qua iptables INPUT → **PostgreSQL lộ thẳng ra internet dù firewall đang chặn.** |
+| Cách viết               | Hậu quả                                                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `"127.0.0.1:5432:5432"` | ✅ Chỉ bind loopback của VM. Từ internet **không** với tới. Muốn vào phải qua SSH tunnel.                              |
+| `"5432:5432"`           | ❌ Bind `0.0.0.0`. Docker DNAT đi vòng qua iptables INPUT → **PostgreSQL lộ thẳng ra internet dù firewall đang chặn.** |
 
-Nói cách khác: cổng 5432 chỉ tồn tại *bên trong* VM. SSH tunnel là con đường duy nhất
+Nói cách khác: cổng 5432 chỉ tồn tại _bên trong_ VM. SSH tunnel là con đường duy nhất
 đi vào, và nó dùng lại đúng khoá SSH bạn đã có — không cần mở thêm port nào trên OCI.
 
 #### Lấy mật khẩu DB
@@ -533,25 +565,25 @@ DataGrip tự dựng và tự đóng tunnel theo vòng đời connection, không
 
 **Tab `General`:**
 
-| Trường | Giá trị |
-|---|---|
-| Host | `localhost` |
-| Port | `5432` |
-| Authentication | `User & Password` |
-| User | `paysplit` |
-| Password | giá trị `POSTGRES_PASSWORD` lấy ở trên |
-| Database | `paysplit` |
+| Trường         | Giá trị                                |
+| -------------- | -------------------------------------- |
+| Host           | `localhost`                            |
+| Port           | `5432`                                 |
+| Authentication | `User & Password`                      |
+| User           | `paysplit`                             |
+| Password       | giá trị `POSTGRES_PASSWORD` lấy ở trên |
+| Database       | `paysplit`                             |
 
 **Tab `SSH/SSL`** → tick **`Use SSH tunnel`** → `...` để tạo SSH configuration:
 
-| Trường | Giá trị |
-|---|---|
-| Host | `161.118.233.21` |
-| Port | `22` |
-| User name | `ubuntu` |
-| Authentication type | `Key pair` |
-| Private key file | đường dẫn tới `ssh-key-2026-09-04.key` |
-| Passphrase | để trống (khoá Oracle sinh ra không có passphrase) |
+| Trường              | Giá trị                                            |
+| ------------------- | -------------------------------------------------- |
+| Host                | `161.118.233.21`                                   |
+| Port                | `22`                                               |
+| User name           | `ubuntu`                                           |
+| Authentication type | `Key pair`                                         |
+| Private key file    | đường dẫn tới `ssh-key-2026-09-04.key`             |
+| Passphrase          | để trống (khoá Oracle sinh ra không có passphrase) |
 
 Bấm **Test Connection**. Lần đầu DataGrip sẽ hỏi tải PostgreSQL driver — chọn
 **Download**.
@@ -559,7 +591,7 @@ Bấm **Test Connection**. Lần đầu DataGrip sẽ hỏi tải PostgreSQL dri
 > ### ⚠️ Điểm gây nhầm lẫn số một
 >
 > `Host = localhost` ở tab General **không phải máy của bạn** — nó là "localhost nhìn từ
-> phía VM". DataGrip mở SSH tới `161.118.233.21` trước, rồi *từ trong VM* mới kết nối tới
+> phía VM". DataGrip mở SSH tới `161.118.233.21` trước, rồi _từ trong VM_ mới kết nối tới
 > `localhost:5432`. Điền IP của VM vào ô Host ở tab General là sai và sẽ không kết nối được.
 
 #### Cách 2 — Tunnel thủ công (dễ debug hơn khi cách 1 lỗi)
@@ -576,10 +608,10 @@ ssh -i ssh-key-2026-09-04.key -N -L 55432:127.0.0.1:5432 ubuntu@161.118.233.21
 
 Rồi trong DataGrip chỉ cần tab `General`, **không** cần tab SSH/SSL:
 
-| Trường | Giá trị |
-|---|---|
-| Host | `localhost` |
-| Port | `55432` |
+| Trường                     | Giá trị                                |
+| -------------------------- | -------------------------------------- |
+| Host                       | `localhost`                            |
+| Port                       | `55432`                                |
 | User / Password / Database | `paysplit` / `<mật khẩu>` / `paysplit` |
 
 Kiểm tra tunnel sống chưa, trước khi mở DataGrip:
@@ -629,16 +661,16 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 ## 12. Xử lý sự cố
 
-| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
-|---|---|---|
-| `curl: connection timed out` | Firewall lớp 1 hoặc lớp 2 chưa mở | Làm lại **cả hai** phần ở mục 2 |
-| `permission denied ... docker.sock` | Chưa đăng nhập lại sau `usermod` | `exit` rồi SSH vào lại |
-| Caddy không xin được cert | Port 80 chưa mở, hoặc `SITE_ADDRESS` không phân giải về IP VM | `dig +short 161.118.233.21.nip.io` phải ra đúng IP |
-| `api` restart liên tục | Config validate fail (thiếu biến bắt buộc) | `$C logs api` — thông báo lỗi nói rõ biến nào |
-| SSE kết nối được nhưng không có event | Thiếu `flush_interval -1` trong Caddyfile | Kiểm tra `deploy/Caddyfile`, `$C restart caddy` |
-| Build bị kill giữa chừng | Hết RAM | Thêm swap (mục 11) |
-| `FATAL: role "avnadmin" does not exist` khi restore | Quên `--no-owner --no-acl` | Chạy lại `pg_restore` với đủ hai cờ |
-| App chạy nhưng DB trống | Chưa chạy migration | `--profile tools run --rm migrate up` |
+| Triệu chứng                                         | Nguyên nhân thường gặp                                        | Cách xử lý                                         |
+| --------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------- |
+| `curl: connection timed out`                        | Firewall lớp 1 hoặc lớp 2 chưa mở                             | Làm lại **cả hai** phần ở mục 2                    |
+| `permission denied ... docker.sock`                 | Chưa đăng nhập lại sau `usermod`                              | `exit` rồi SSH vào lại                             |
+| Caddy không xin được cert                           | Port 80 chưa mở, hoặc `SITE_ADDRESS` không phân giải về IP VM | `dig +short 161.118.233.21.nip.io` phải ra đúng IP |
+| `api` restart liên tục                              | Config validate fail (thiếu biến bắt buộc)                    | `$C logs api` — thông báo lỗi nói rõ biến nào      |
+| SSE kết nối được nhưng không có event               | Thiếu `flush_interval -1` trong Caddyfile                     | Kiểm tra `deploy/Caddyfile`, `$C restart caddy`    |
+| Build bị kill giữa chừng                            | Hết RAM                                                       | Thêm swap (mục 11)                                 |
+| `FATAL: role "avnadmin" does not exist` khi restore | Quên `--no-owner --no-acl`                                    | Chạy lại `pg_restore` với đủ hai cờ                |
+| App chạy nhưng DB trống                             | Chưa chạy migration                                           | `--profile tools run --rm migrate up`              |
 
 ---
 
