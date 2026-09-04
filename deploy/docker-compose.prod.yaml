@@ -28,7 +28,13 @@ services:
       # PostgreSQL 18 doi PGDATA sang /var/lib/postgresql/<ver>/docker,
       # nen mount ca thu muc cha (giong docker-compose.yaml san co cua repo).
       - paysplit_pgdata:/var/lib/postgresql
-    # KHONG mo port ra host: chi container trong network noi bo moi truy cap duoc.
+    ports:
+      # CHU Y KY: tien to 127.0.0.1 la BAT BUOC, khong duoc bo.
+      #   "127.0.0.1:5432:5432"  -> chi bind loopback cua VM. Tu internet KHONG voi toi.
+      #                             Muon ket noi phai di qua SSH tunnel (xem muc 11).
+      #   "5432:5432"            -> bind 0.0.0.0. Docker DNAT di vong qua iptables INPUT,
+      #                             nen PostgreSQL se LO THANG RA INTERNET du firewall dang chan.
+      - "127.0.0.1:5432:5432"
 
   api:
     build:

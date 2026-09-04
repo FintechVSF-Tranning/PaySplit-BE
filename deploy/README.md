@@ -56,7 +56,7 @@ Cần có sẵn trong tay:
 cd ~/Documents/namplh/code/PaySplit-BE
 git add deploy/
 git commit -m "chore: add production deployment stack for single-VM hosting"
-git push
+git push origin dev
 ```
 
 > Nếu chưa muốn push, có thể `scp -r deploy/ ubuntu@161.118.233.21:~/PaySplit-BE/` sau khi clone.
@@ -70,29 +70,113 @@ git push
 
 ### Lớp 1 — OCI Console (bắt buộc)
 
-`Networking` → `Virtual Cloud Networks` → chọn VCN → `Subnets` → chọn subnet →
-`Security Lists` → `Add Ingress Rules`:
+**Bước 1.** Menu ☰ → `Networking` → `Virtual cloud networks` → chọn VCN của bạn.
 
-| Source CIDR | IP Protocol | Destination Port Range |
-|---|---|---|
-| `0.0.0.0/0` | TCP | `80` |
-| `0.0.0.0/0` | TCP | `443` |
+**Bước 2.** Tab `Subnets` → click vào subnet có cột **Subnet Access** ghi **`Public (Regional)`**.
+
+> Phải là **public** subnet, không phải private. VM có IP public thì chắc chắn nằm ở
+> public subnet. Nếu click nhầm private subnet thì rule thêm vào sẽ không có tác dụng gì.
+
+**Bước 3.** Trong trang chi tiết subnet, kéo xuống mục **Security** → bảng
+**Security Lists** → click vào security list (thường tên là
+`Default Security List for <tên-vcn>`).
+
+**Bước 4.** Tab **Security Rules** → nút **Add Ingress Rules**.
+
+> 💡 Bạn sẽ thấy sẵn một rule cho port `22` trong danh sách — đó là dấu hiệu vào đúng chỗ,
+> vì chính rule đó đang cho phép bạn SSH vào máy.
+
+**Bước 5.** Điền rule thứ nhất (HTTP):
+
+| Trường | Giá trị |
+|---|---|
+| Stateless | ❌ **không tick** (để stateful) |
+| Source Type | `CIDR` |
+| Source CIDR | `0.0.0.0/0` |
+| IP Protocol | `TCP` |
+| Source Port Range | **để trống** (nghĩa là All) |
+| Destination Port Range | `80` |
+| Description | `HTTP - Caddy + Let's Encrypt ACME` |
+
+**Bước 6.** Bấm **+ Another Ingress Rule**, điền rule thứ hai y hệt nhưng đổi:
+
+| Trường | Giá trị |
+|---|---|
+| Destination Port Range | `443` |
+| Description | `HTTPS - PaySplit API` |
+
+**Bước 7.** Bấm **Add Ingress Rules** ở cuối form.
+
+> ### Port 80 là bắt buộc, đừng bỏ qua
+>
+> Nhiều người chỉ mở `443` vì nghĩ "chỉ cần HTTPS". Nhưng Let's Encrypt dùng
+> **HTTP-01 challenge qua port 80** để xác minh quyền sở hữu domain — thiếu nó Caddy
+> không xin được chứng chỉ và bạn không bao giờ có HTTPS.
+
+**Không cần đụng tới Internet Gateway hay Route Table.** Việc SSH vào được đã chứng minh
+IGW và route `0.0.0.0/0` đang hoạt động đúng.
+
+**Kiểm tra xem instance có gắn NSG không.** Nếu có Network Security Group, phải mở port
+ở đó nữa: `Compute` → `Instances` → chọn instance → `Attached VNICs` → cột `NSGs`.
+Trống thì bỏ qua, Security List là đủ.
+
+#### Kiểm chứng ngay sau bước này
+
+Chạy **từ máy local**:
+
+```bash
+nc -zv 161.118.233.21 80
+```
+
+| Kết quả | Ý nghĩa |
+|---|---|
+| `Connection refused` | ✅ **Đúng** — firewall đã thông, chỉ là chưa có gì lắng nghe port 80 (Caddy chưa chạy) |
+| `Connection timed out` | ❌ Vẫn bị chặn — xem lại Security List, và cả NSG nếu có |
+
+Phân biệt `refused` với `timed out` là mẹo quan trọng nhất khi debug firewall:
+`refused` nghĩa là gói tin **đã tới được máy**; `timed out` nghĩa là nó bị nuốt giữa đường.
 
 ### Lớp 2 — iptables bên trong VM
 
 Image Ubuntu của Oracle ship sẵn bộ rule chỉ cho phép SSH.
 
 ```bash
-# Xem rule hiện tại, tìm dòng REJECT ... icmp-host-prohibited
+# Xem rule hiện tại, tìm SỐ DÒNG của rule REJECT ... icmp-host-prohibited
 sudo iptables -L INPUT --line-numbers -n | head -20
 ```
 
-Giả sử dòng `REJECT` nằm ở số 6 — chèn rule mới **ngay trước** nó:
+Output điển hình trên image Oracle Ubuntu — chú ý cột `num` của dòng `REJECT`:
+
+```
+num  target     prot opt source               destination
+1    ACCEPT     all  --  0.0.0.0/0            0.0.0.0/0   state RELATED,ESTABLISHED
+2    ACCEPT     icmp --  0.0.0.0/0            0.0.0.0/0
+3    ACCEPT     all  --  0.0.0.0/0            0.0.0.0/0
+4    ACCEPT     tcp  --  0.0.0.0/0            0.0.0.0/0   state NEW tcp dpt:22
+5    REJECT     all  --  0.0.0.0/0            0.0.0.0/0   reject-with icmp-host-prohibited
+```
+
+Chèn rule mới **ngay trước** dòng REJECT. Thay `N` bằng số dòng REJECT bạn thấy
+(ở ví dụ trên là `5`):
 
 ```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+sudo iptables -I INPUT 5 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+sudo iptables -I INPUT 5 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+sudo iptables -L INPUT --line-numbers -n | head -20   # xác nhận cả 2 rule đứng TRƯỚC REJECT
+```
+
+Lưu lại để rule sống sót qua reboot:
+
+```bash
 sudo netfilter-persistent save
+```
+
+Nếu báo `command not found` (image minimized thường thiếu gói này):
+
+```bash
+sudo apt install -y iptables-persistent    # hỏi lưu rule hiện tại → chọn Yes
+# hoặc lưu thủ công:
+sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
 ```
 
 > ### ⚠️ Cảnh báo bảo mật quan trọng
@@ -101,9 +185,19 @@ sudo netfilter-persistent save
 > Nghĩa là bất kỳ port nào bạn khai trong `ports:` sẽ **lộ thẳng ra internet, kể cả khi
 > iptables INPUT đang chặn nó**.
 >
-> Đó là lý do trong `docker-compose.prod.yaml` service `postgres` **không** có mục `ports:` —
-> nó chỉ tồn tại trong network nội bộ Docker. **Đừng thêm `ports: ["5432:5432"]` vào,
-> kể cả để debug tạm.** Muốn truy cập DB từ ngoài thì dùng SSH tunnel (xem mục 11).
+> Đó là lý do trong `docker-compose.prod.yaml`, PostgreSQL được bind là
+> **`"127.0.0.1:5432:5432"`** chứ không phải `"5432:5432"`. Tiền tố `127.0.0.1` giới hạn
+> cổng đó vào loopback của VM — từ internet không với tới, và cách duy nhất để vào là
+> SSH tunnel (xem mục 11).
+>
+> **Đừng bao giờ bỏ tiền tố `127.0.0.1` đi.** `"5432:5432"` sẽ khiến PostgreSQL lộ thẳng
+> ra internet dù iptables đang chặn.
+>
+> Hệ quả ngược lại cũng đúng: vì Docker đi vòng qua `INPUT`, **Caddy trong container vẫn
+> nhận được traffic 80/443 kể cả khi bạn chưa thêm rule iptables ở trên**. Lớp quyết định
+> thực sự với container là **Security List trên OCI Console**. Vẫn nên thêm rule iptables
+> cho nhất quán và để phòng khi sau này bạn chạy service trực tiếp trên host — nhưng khi
+> debug "port bị chặn", hãy nghi ngờ Security List trước, không phải iptables.
 
 ---
 
@@ -139,9 +233,20 @@ uname -m         # aarch64 = ARM64, mọi image dùng ở đây đều có bản
 
 ```bash
 cd ~
-git clone -b main https://github.com/FintechVSF-Tranning/PaySplit-BE.git
+git clone -b dev https://github.com/FintechVSF-Tranning/PaySplit-BE.git
 cd PaySplit-BE
+git branch --show-current      # xác nhận đang ở dev
 ```
+
+> **Vì sao `dev`**: đây là nhánh tích hợp, nơi mọi feature branch được merge vào trước.
+> `main` chỉ nhận code qua PR từ `dev` nên luôn chậm hơn. Deploy `dev` nghĩa là bạn chạy
+> đúng thứ cả nhóm đang làm việc trên đó.
+>
+> Đổi nhánh sau này:
+> ```bash
+> cd ~/PaySplit-BE && git fetch origin && git checkout main && git pull origin main
+> docker compose -f deploy/docker-compose.prod.yaml up -d --build api
+> ```
 
 `.env.production` chứa secret nên bị `.gitignore` — phải copy tay. Chạy lệnh này
 **từ máy local**, không phải trên VM:
@@ -362,7 +467,7 @@ trường hợp mất cả VM.
 
 ```bash
 cd ~/PaySplit-BE
-git pull
+git pull origin dev
 docker compose -f deploy/docker-compose.prod.yaml up -d --build api
 ```
 
@@ -386,21 +491,128 @@ $C down                      # dừng toàn bộ (KHÔNG mất dữ liệu, volu
 $C exec postgres psql -U paysplit -d paysplit   # vào psql
 ```
 
-### Truy cập DB từ máy local (an toàn, không mở port)
+### Kết nối DataGrip (hoặc DBeaver / pgAdmin) tới DB production
 
-```bash
-# Trên máy LOCAL
-ssh -i ssh-key-2026-09-04.key -L 5433:localhost:5432 ubuntu@161.118.233.21
+#### Nguyên tắc: PostgreSQL **không** mở ra internet
+
+Trong `docker-compose.prod.yaml`, Postgres được bind như sau:
+
+```yaml
+ports:
+  - "127.0.0.1:5432:5432"
 ```
 
-Sau đó cần Postgres lắng nghe trên host — mặc định compose **không** publish port.
-Cách đúng là tunnel qua chính container:
+Tiền tố `127.0.0.1` là phần quan trọng nhất của dòng này:
+
+| Cách viết | Hậu quả |
+|---|---|
+| `"127.0.0.1:5432:5432"` | ✅ Chỉ bind loopback của VM. Từ internet **không** với tới. Muốn vào phải qua SSH tunnel. |
+| `"5432:5432"` | ❌ Bind `0.0.0.0`. Docker DNAT đi vòng qua iptables INPUT → **PostgreSQL lộ thẳng ra internet dù firewall đang chặn.** |
+
+Nói cách khác: cổng 5432 chỉ tồn tại *bên trong* VM. SSH tunnel là con đường duy nhất
+đi vào, và nó dùng lại đúng khoá SSH bạn đã có — không cần mở thêm port nào trên OCI.
+
+#### Lấy mật khẩu DB
+
+```bash
+ssh -i ssh-key-2026-09-04.key ubuntu@161.118.233.21 \
+  'grep POSTGRES_PASSWORD ~/PaySplit-BE/deploy/.env'
+```
+
+Trên máy local, đảm bảo quyền file khoá đủ chặt (nếu không SSH sẽ từ chối dùng):
+
+```bash
+chmod 600 ssh-key-2026-09-04.key
+```
+
+#### Cách 1 — Dùng SSH tunnel tích hợp của DataGrip (khuyến nghị)
+
+DataGrip tự dựng và tự đóng tunnel theo vòng đời connection, không phải giữ terminal riêng.
+
+`+` → `Data Source` → `PostgreSQL`, rồi điền **hai** tab:
+
+**Tab `General`:**
+
+| Trường | Giá trị |
+|---|---|
+| Host | `localhost` |
+| Port | `5432` |
+| Authentication | `User & Password` |
+| User | `paysplit` |
+| Password | giá trị `POSTGRES_PASSWORD` lấy ở trên |
+| Database | `paysplit` |
+
+**Tab `SSH/SSL`** → tick **`Use SSH tunnel`** → `...` để tạo SSH configuration:
+
+| Trường | Giá trị |
+|---|---|
+| Host | `161.118.233.21` |
+| Port | `22` |
+| User name | `ubuntu` |
+| Authentication type | `Key pair` |
+| Private key file | đường dẫn tới `ssh-key-2026-09-04.key` |
+| Passphrase | để trống (khoá Oracle sinh ra không có passphrase) |
+
+Bấm **Test Connection**. Lần đầu DataGrip sẽ hỏi tải PostgreSQL driver — chọn
+**Download**.
+
+> ### ⚠️ Điểm gây nhầm lẫn số một
+>
+> `Host = localhost` ở tab General **không phải máy của bạn** — nó là "localhost nhìn từ
+> phía VM". DataGrip mở SSH tới `161.118.233.21` trước, rồi *từ trong VM* mới kết nối tới
+> `localhost:5432`. Điền IP của VM vào ô Host ở tab General là sai và sẽ không kết nối được.
+
+#### Cách 2 — Tunnel thủ công (dễ debug hơn khi cách 1 lỗi)
+
+Mở một terminal riêng và **giữ nó chạy**:
+
+```bash
+ssh -i ssh-key-2026-09-04.key -N -L 55432:127.0.0.1:5432 ubuntu@161.118.233.21
+```
+
+- `-N` — không mở shell, chỉ dựng tunnel
+- `-L 55432:127.0.0.1:5432` — cổng `55432` trên máy bạn ↔ cổng `5432` trên VM
+- Dùng `55432` thay vì `5432` để tránh đụng PostgreSQL local (repo đang dùng `5433` cho dev)
+
+Rồi trong DataGrip chỉ cần tab `General`, **không** cần tab SSH/SSL:
+
+| Trường | Giá trị |
+|---|---|
+| Host | `localhost` |
+| Port | `55432` |
+| User / Password / Database | `paysplit` / `<mật khẩu>` / `paysplit` |
+
+Kiểm tra tunnel sống chưa, trước khi mở DataGrip:
+
+```bash
+psql "postgres://paysplit:<mật khẩu>@localhost:55432/paysplit" -c "select now();"
+# hoặc nếu máy không có psql:
+nc -zv localhost 55432
+```
+
+#### Lưu ý khi làm việc với DB production
+
+- Đây là **dữ liệu thật của người dùng**. Trong DataGrip nên đặt connection này ở chế độ
+  `Read-only` (tab `Options` → tick `Read-only`) và gán màu cảnh báo cho data source
+  (chuột phải → `Tools` → `Set Color`) để không nhầm với DB local.
+- Mỗi connection DataGrip mở chiếm vài slot trong `max_connections=100`. Không nhiều,
+  nhưng nhớ `Disconnect` khi xong thay vì để mở cả ngày.
+- **Đừng bao giờ** sửa `"127.0.0.1:5432:5432"` thành `"5432:5432"` để "cho tiện" — xem lại
+  bảng so sánh ở đầu mục này.
+
+#### Lấy bản sao DB về máy để nghịch (không cần tunnel)
 
 ```bash
 ssh -i ssh-key-2026-09-04.key ubuntu@161.118.233.21 \
   'docker compose -f ~/PaySplit-BE/deploy/docker-compose.prod.yaml exec -T postgres \
    pg_dump -U paysplit -d paysplit --no-owner -Fc' > local-copy.dump
+
+# Nạp vào Postgres local (đang chạy ở cổng 5433 theo docker-compose.yaml của repo)
+pg_restore --no-owner --no-acl -d "postgres://postgres:postgres@localhost:5433/paysplit" \
+  local-copy.dump
 ```
+
+Cách này an toàn nhất: bạn nghịch trên bản sao, không đụng gì tới production.
 
 ### Thêm swap nếu VM ít RAM
 
@@ -455,11 +667,11 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 
 ## Checklist
 
-- [ ] Commit + push thư mục `deploy/`
+- [ ] Commit + push thư mục `deploy/` lên nhánh `dev`
 - [ ] Mở ingress 80/443 trên OCI Console
 - [ ] Mở iptables 80/443 trong VM + `netfilter-persistent save`
 - [ ] Cài Docker, đăng nhập lại SSH
-- [ ] Clone repo, `scp` file `.env.production`
+- [ ] Clone repo (`-b dev`), `scp` file `.env.production`
 - [ ] Tạo `deploy/.env` (`POSTGRES_PASSWORD`, `SITE_ADDRESS`)
 - [ ] Chỉnh phần DB trong `.env.production`
 - [ ] Khởi động Postgres, restore dump **hoặc** chạy migration
@@ -471,3 +683,4 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 - [ ] **Disconnect Vercel**
 - [ ] **Tắt deployment mồ côi trên Render/Railway**
 - [ ] Cài cron backup + chạy thử một lần
+- [ ] (tuỳ chọn) Cấu hình DataGrip qua SSH tunnel — mục 11

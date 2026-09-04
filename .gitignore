@@ -25,8 +25,12 @@ go.work
 go.work.sum
 
 # env file
+# Chan MOI bien the .env (.env.production, .env.local, .env.bak-*, ...) va chi chua
+# .env.example. Truoc day chi liet ke tung ten cu the nen mot file nhu
+# .env.production.bak-20260905 van lot luoi va co the bi commit kem secret.
 .env
-.env.production
+.env.*
+!.env.example
 
 # Credentials and secrets
 service-account*.json
