@@ -1,0 +1,20 @@
+# TLS tu dong qua Let's Encrypt. SITE_ADDRESS lay tu deploy/.env
+{$SITE_ADDRESS} {
+	# Nen response API, nhung LOAI TRU text/event-stream:
+	# gzip se buffer va lam chet SSE (bill/group/user streams).
+	encode {
+		gzip
+		match {
+			header Content-Type application/json*
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type application/javascript*
+		}
+	}
+
+	reverse_proxy api:8080 {
+		# BAT BUOC cho SSE: -1 tat buffering, day tung byte ve client ngay.
+		# Thieu dong nay thi /bills/{id}/events va /groups/{id}/events treo im lang.
+		flush_interval -1
+	}
+}

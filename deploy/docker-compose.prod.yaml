@@ -1,0 +1,90 @@
+# PaySplit production stack — chạy trên 1 VM (Oracle Cloud ARM / bất kỳ VPS nào).
+# BE và PostgreSQL nằm cùng máy: RTT ~0.1ms, connection limit do bạn tự quyết định.
+#
+#   docker compose -f deploy/docker-compose.prod.yaml up -d --build
+#
+name: paysplit
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paysplit
+      POSTGRES_USER: paysplit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD chua duoc set trong deploy/.env}
+    command:
+      - postgres
+      - -c
+      - max_connections=100        # tu quyet dinh, khong con bi tran 20 slot nhu Aiven free
+      - -c
+      - shared_buffers=256MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paysplit -d paysplit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      # PostgreSQL 18 doi PGDATA sang /var/lib/postgresql/<ver>/docker,
+      # nen mount ca thu muc cha (giong docker-compose.yaml san co cua repo).
+      - paysplit_pgdata:/var/lib/postgresql
+    # KHONG mo port ra host: chi container trong network noi bo moi truy cap duoc.
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      # Ghi de len .env.production — Compose uu tien `environment` hon `env_file`.
+      HTTP_HOST: 0.0.0.0
+      PORT: "8080"
+      DATABASE_URL: postgres://paysplit:${POSTGRES_PASSWORD}@postgres:5432/paysplit?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    # Cho graceful shutdown (App.Shutdown dung ctx 10s) chay xong truoc khi bi SIGKILL.
+    # Day chinh la thu Vercel khong bao gio chay, gay ro ri connection.
+    stop_grace_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS chua duoc set trong deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - paysplit_caddy_data:/data
+      - paysplit_caddy_config:/config
+    depends_on:
+      - api
+
+  # One-shot: chay goose migration. Khong khoi dong cung stack (profiles).
+  #   docker compose -f deploy/docker-compose.prod.yaml --profile tools run --rm migrate up
+  #   docker compose -f deploy/docker-compose.prod.yaml --profile tools run --rm migrate status
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://paysplit:${POSTGRES_PASSWORD}@postgres:5432/paysplit?sslmode=disable
+      GOOSE_MIGRATION_DIR: /migrations
+    volumes:
+      - ../db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  paysplit_pgdata:
+  paysplit_caddy_data:
+  paysplit_caddy_config:
