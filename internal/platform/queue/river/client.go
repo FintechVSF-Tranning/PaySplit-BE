@@ -13,9 +13,11 @@ import (
 )
 
 type Config struct {
-	MaxWorkers    int
-	FetchCooldown time.Duration
-	PeriodicJobs  []*river.PeriodicJob
+	MaxWorkers        int
+	FetchCooldown     time.Duration
+	PollOnly          bool
+	FetchPollInterval time.Duration
+	PeriodicJobs      []*river.PeriodicJob
 }
 
 // AutoMigrate tự động chạy migration để tạo/cập nhật các bảng nội bộ của River trong PostgreSQL
@@ -45,6 +47,15 @@ func NewClient(dbPool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river
 		return nil, fmt.Errorf("workers registry must not be nil")
 	}
 
+	riverClient, err := river.NewClient(riverpgxv5.New(dbPool), clientConfig(workers, cfg))
+	if err != nil {
+		return nil, fmt.Errorf("create river client: %w", err)
+	}
+
+	return riverClient, nil
+}
+
+func clientConfig(workers *river.Workers, cfg Config) *river.Config {
 	maxWorkers := cfg.MaxWorkers
 	if maxWorkers <= 0 {
 		maxWorkers = 5
@@ -53,18 +64,19 @@ func NewClient(dbPool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river
 	if fetchCooldown <= 0 {
 		fetchCooldown = 100 * time.Millisecond
 	}
+	fetchPollInterval := cfg.FetchPollInterval
+	if fetchPollInterval <= 0 {
+		fetchPollInterval = time.Second
+	}
 
-	riverClient, err := river.NewClient(riverpgxv5.New(dbPool), &river.Config{
+	return &river.Config{
 		Queues: map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: maxWorkers},
 		},
-		Workers:       workers,
-		FetchCooldown: fetchCooldown,
-		PeriodicJobs:  cfg.PeriodicJobs,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create river client: %w", err)
+		Workers:           workers,
+		FetchCooldown:     fetchCooldown,
+		FetchPollInterval: fetchPollInterval,
+		PollOnly:          cfg.PollOnly,
+		PeriodicJobs:      cfg.PeriodicJobs,
 	}
-
-	return riverClient, nil
 }

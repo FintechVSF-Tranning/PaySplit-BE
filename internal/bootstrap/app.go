@@ -49,6 +49,7 @@ import (
 	"paysplit-backend/internal/platform/notification/fcm"
 	"paysplit-backend/internal/platform/ocr/llamaextract"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
+	"paysplit-backend/internal/platform/realtime"
 	"paysplit-backend/internal/platform/security/password"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
 	"paysplit-backend/internal/platform/vietqr"
@@ -59,11 +60,15 @@ import (
 // App đại diện cho ứng dụng API đã được khởi tạo và sở hữu HTTP server cùng
 // database pool và job queue; các tài nguyên này phải được giải phóng khi ứng dụng dừng.
 type App struct {
-	server        *http.Server
-	db            *pgxpool.Pool
-	riverClient   *river.Client[pgx.Tx]
-	cancelWorkers context.CancelFunc
-	workers       sync.WaitGroup
+	server         *http.Server
+	db             *pgxpool.Pool
+	listenerPool   *pgxpool.Pool
+	riverClient    *river.Client[pgx.Tx]
+	closeSSE       func()
+	cancelWorkers  context.CancelFunc
+	cancelListener context.CancelFunc
+	listenerDone   <-chan struct{}
+	workers        sync.WaitGroup
 }
 
 // New khởi tạo ứng dụng API bằng cách:
@@ -94,6 +99,8 @@ func New(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("create JWT issuer: %w", err)
 	}
 	authRepo := authpostgres.New(db)
+	userEvents := &realtime.Publisher{Enabled: cfg.Realtime.UserSSEEnabled}
+	authpostgres.SetRealtimePublisher(authRepo, userEvents)
 	bankDirectory, err := banks.Load()
 	if err != nil {
 		db.Close()
@@ -178,14 +185,17 @@ func New(ctx context.Context) (*App, error) {
 		bank, ok := bankDirectory.Get(code)
 		return settlementpostgres.BankInfo{Code: bank.Code, Name: bank.Name, BIN: bank.BIN, Supported: bank.Supported}, ok
 	}, qrGenerator)
+	settlementpostgres.SetRealtimePublisher(settlementRepo, userEvents)
 	settlementService := settlementusecase.NewService(settlementRepo)
 	settlementService.SetProofStorage(proofStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
 	settlementService.SetReminderMaxCount(cfg.Settlement.ReminderMaxCount)
 	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL, cfg.Settlement.ProofMaxBytes)
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
+	billpostgres.SetRealtimePublisher(billRepo, userEvents)
 	billHub := billhttp.NewHub(db)
 	billSSEHandler := billhttp.NewSSEHandler(billHub, billRepo, cfg.BillSSE.HeartbeatInterval, cfg.BillSSE.MaxConnectionAge)
+	billSSEHandler.SetMinAppVersion(cfg.Realtime.MinUserStreamAppVersion)
 	ocrWorker := billjobs.NewOCRWorker(billRepo, billStorage, ocrClient, billHub, cfg.OCR.ProviderTimeout)
 	ocrWorker.SetRetryBaseDelay(cfg.OCR.RetryBaseDelay)
 	river.AddWorker(riverWorkers, ocrWorker)
@@ -203,9 +213,11 @@ func New(ctx context.Context) (*App, error) {
 	periodicJobs := append(billPeriodicJobs, settlementPeriodicJobs...)
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{
-		MaxWorkers:    cfg.River.WorkerCount,
-		FetchCooldown: cfg.River.FetchCooldown,
-		PeriodicJobs:  periodicJobs,
+		MaxWorkers:        cfg.River.WorkerCount,
+		FetchCooldown:     cfg.River.FetchCooldown,
+		PollOnly:          cfg.River.PollOnly,
+		FetchPollInterval: cfg.River.FetchPollInterval,
+		PeriodicJobs:      periodicJobs,
 	})
 	if err != nil {
 		db.Close()
@@ -228,17 +240,54 @@ func New(ctx context.Context) (*App, error) {
 	// Gắn service cho worker item batch chốt toàn bộ trước khi client start (Spec 0008).
 	bulkFinalizeWorker.SetService(billService)
 
-	// 8. Khởi tạo Module Group
-	groupRepo := grouppostgres.New(db)
+	// 8. Khởi tạo Module Group (với dung lượng thành viên cấu hình từ GROUP_MAX_ACTIVE_MEMBERS)
+	groupRepo := grouppostgres.NewWithCapacity(db, cfg.Group.MaxActiveMembers)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
 	// Hub nhóm nhận sự kiện qua pg_notify do chính transaction của mutation phát,
 	// nên nó chỉ cần lắng nghe — không có đường phát nào đi vòng qua nhật ký.
-	groupHub := grouphttp.NewHub(db)
+	groupHub := grouphttp.NewHub()
 	groupSSEHandler := grouphttp.NewSSEHandler(groupHandler, groupHub, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
+	groupSSEHandler.SetMinAppVersion(cfg.Realtime.MinUserStreamAppVersion)
+	userHub := authhttp.NewHub(groupHandler.RenderEventPayload)
+	closeSSE := func() {
+		billHub.CloseSubscribers()
+		groupHub.CloseSubscribers()
+		userHub.CloseSubscribers()
+	}
+	listenerPool := db
+	if cfg.Database.UsesDedicatedListenerPool() {
+		dedicatedPool, err := database.NewListenerPool(ctx, cfg.Database)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create PostgreSQL listener pool: %w", err)
+		}
+		listenerPool = dedicatedPool
+	}
+	sharedListener, err := database.NewPostgresNotificationListener(
+		listenerPool,
+		map[string]database.NotificationHandler{
+			billhttp.NotificationChannel:  database.ComposeHandlers(billHub.HandlePostgresNotification, userHub.HandleBillNotification),
+			grouphttp.NotificationChannel: database.ComposeHandlers(groupHub.HandlePostgresNotification, userHub.HandleGroupNotification),
+			realtime.ChannelUserEvents:    userHub.HandleUserNotification,
+		},
+		closeSSE,
+	)
+	if err != nil {
+		if listenerPool != db {
+			listenerPool.Close()
+		}
+		db.Close()
+		return nil, fmt.Errorf("create shared PostgreSQL listener: %w", err)
+	}
+	var userSSEHandler *authhttp.SSEHandler
+	if cfg.Realtime.UserSSEEnabled {
+		userSSEHandler = authhttp.NewSSEHandler(userHub, userEvents, db, sharedListener, cfg.GroupSync.HeartbeatInterval, cfg.GroupSync.MaxConnectionAge)
+	}
 	inviteAttemptLimiter := transportmw.RateLimitByAccountAndIP(cfg.App.InviteAttemptsPerMinute, time.Minute)
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
+	adminpostgres.SetRealtimePublisher(adminRepo, userEvents)
 	adminService := adminusecase.NewService(adminRepo)
 	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
 	bankHandler := banks.NewHandler(bankDirectory)
@@ -246,12 +295,12 @@ func New(ctx context.Context) (*App, error) {
 	platformmetrics.RegisterDBPool(db)
 
 	// 10. Xây dựng Router và đăng ký tất cả các Endpoint API
-	appRouter := router.New(cfg.App, cfg.Metrics, db)
+	appRouter := router.New(cfg.App, cfg.Metrics, sharedListener)
 	liveAuth := transportmw.Auth(tokens, authRepo)
 	tokenAuth := transportmw.TokenAuth(tokens)
 	appRouter.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
-		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth) })
+		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth, userSSEHandler) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) {
 			groupHandler.RegisterGroupRoutes(r, groupSSEHandler, liveAuth, inviteAttemptLimiter)
@@ -265,21 +314,38 @@ func New(ctx context.Context) (*App, error) {
 	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, bills, admin, banks)")
 
 	// 11. Khởi chạy River Queue Worker Engine
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	listenerCtx, cancelListener := context.WithCancel(context.Background())
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		if err := sharedListener.Run(listenerCtx); err != nil {
+			log.Printf("event=postgres_listener_stopped reason=%q", err.Error())
+		}
+	}()
 	if err := riverClient.Start(workerCtx); err != nil {
+		cancelListener()
+		<-listenerDone
 		cancelWorkers()
+		if listenerPool != db {
+			listenerPool.Close()
+		}
 		db.Close()
 		return nil, fmt.Errorf("start river client: %w", err)
 	}
-	log.Printf("[Queue] River queue worker engine started (%d workers)", cfg.River.WorkerCount)
+	log.Printf("[Queue] River queue worker engine started (workers=%d poll_only=%t fetch_poll_interval=%s)", cfg.River.WorkerCount, cfg.River.PollOnly, cfg.River.FetchPollInterval)
 
 	// 12. Khởi chạy tác vụ dọn dẹp định kỳ (Media Cleanup & Auth Cleanup)
 	cleanupWorkers := authjobs.New(authRepo, avatarStore, cfg.Cleanup.Interval, cfg.Cleanup.Retention, cfg.Cleanup.MediaWorkerInterval)
 
 	app := &App{
-		db:            db,
-		riverClient:   riverClient,
-		cancelWorkers: cancelWorkers,
+		db:             db,
+		listenerPool:   listenerPool,
+		riverClient:    riverClient,
+		closeSSE:       closeSSE,
+		cancelWorkers:  cancelWorkers,
+		cancelListener: cancelListener,
+		listenerDone:   listenerDone,
 		server: &http.Server{
 			Addr:    cfg.App.Address,
 			Handler: appRouter,
@@ -288,12 +354,6 @@ func New(ctx context.Context) (*App, error) {
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); cleanupWorkers.Run(workerCtx) }()
 	log.Printf("[Workers] Periodic cleanup workers started (interval: %v, media_interval: %v)", cfg.Cleanup.Interval, cfg.Cleanup.MediaWorkerInterval)
-
-	app.workers.Add(1)
-	go func() { defer app.workers.Done(); _ = billHub.StartPostgresListener(workerCtx) }()
-
-	app.workers.Add(1)
-	go func() { defer app.workers.Done(); _ = groupHub.StartPostgresListener(workerCtx) }()
 
 	app.workers.Add(1)
 	go func() {
@@ -325,16 +385,67 @@ func (a *App) Start() error {
 // Việc dừng River/workers/pool luôn chạy, kể cả khi HTTP server drain quá thời hạn ctx, để
 // không rò rỉ tài nguyên đúng vào lúc quá trình tắt orderly quan trọng nhất.
 func (a *App) Shutdown(ctx context.Context) error {
+	if a.closeSSE != nil {
+		a.closeSSE()
+	}
 	httpErr := a.server.Shutdown(ctx)
+	var riverErr error
 	if a.riverClient != nil {
-		_ = a.riverClient.Stop(ctx)
+		riverErr = a.riverClient.Stop(ctx)
 	}
-	a.cancelWorkers()
-	a.workers.Wait()
-	// Giữ pool hoạt động cho đến khi các handler đang xử lý request hoàn tất.
-	a.db.Close()
-	if httpErr != nil {
-		return fmt.Errorf("shutdown HTTP server: %w", httpErr)
+	if a.cancelListener != nil {
+		a.cancelListener()
 	}
-	return nil
+	var listenerErr error
+	if a.listenerDone != nil {
+		select {
+		case <-a.listenerDone:
+		case <-ctx.Done():
+			listenerErr = ctx.Err()
+		}
+	}
+	if a.cancelWorkers != nil {
+		a.cancelWorkers()
+	}
+	workersDone := make(chan struct{})
+	go func() {
+		a.workers.Wait()
+		close(workersDone)
+	}()
+	var workersErr error
+	select {
+	case <-workersDone:
+	case <-ctx.Done():
+		workersErr = ctx.Err()
+	}
+	poolDone := make(chan struct{})
+	go func() {
+		if a.listenerPool != nil && a.listenerPool != a.db {
+			a.listenerPool.Close()
+		}
+		if a.db != nil {
+			a.db.Close()
+		}
+		close(poolDone)
+	}()
+	var poolErr error
+	select {
+	case <-poolDone:
+	case <-ctx.Done():
+		poolErr = ctx.Err()
+	}
+	return errors.Join(
+		wrapShutdownError("HTTP server", httpErr),
+		wrapShutdownError("River client", riverErr),
+		wrapShutdownError("PostgreSQL listener", listenerErr),
+		wrapShutdownError("workers", workersErr),
+		wrapShutdownError("database pool", poolErr),
+	)
+}
+
+func wrapShutdownError(component string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("shutdown %s: %w", component, err)
 }

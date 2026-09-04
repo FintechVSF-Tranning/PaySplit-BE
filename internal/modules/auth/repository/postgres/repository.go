@@ -18,10 +18,12 @@ import (
 	"paysplit-backend/internal/modules/auth/domain"
 	"paysplit-backend/internal/modules/auth/repository"
 	dbgen "paysplit-backend/internal/modules/auth/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/realtime"
 )
 
 type postgresRepository struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events *realtime.Publisher
 }
 
 func New(pool *pgxpool.Pool) repository.Repository {
@@ -247,7 +249,8 @@ func (r *postgresRepository) CreateSession(ctx context.Context, p repository.Cre
 	if user.LoginBlockedUntil != nil && p.Now.Before(*user.LoginBlockedUntil) {
 		return nil, nil, &domain.RateLimitError{RetryAfter: user.LoginBlockedUntil.Sub(p.Now)}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=$2,revoked_reason='replaced_by_sign_in' WHERE user_id=$1 AND revoked_at IS NULL`, p.UserID, p.Now); err != nil {
+	replacedIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$2,revoked_reason='replaced_by_sign_in' WHERE user_id=$1 AND revoked_at IS NULL RETURNING id`, p.UserID, p.Now)
+	if err != nil {
 		return nil, nil, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1 AND revoked_at=$2)`, p.UserID, p.Now); err != nil {
@@ -262,6 +265,9 @@ func (r *postgresRepository) CreateSession(ctx context.Context, p repository.Cre
 		return nil, nil, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE users SET failed_login_count=0,failed_login_window_started_at=NULL,login_blocked_until=NULL WHERE id=$1`, p.UserID); err != nil {
+		return nil, nil, err
+	}
+	if err = r.notifySessionEnded(ctx, tx, replacedIDs); err != nil {
 		return nil, nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -305,8 +311,14 @@ func (r *postgresRepository) RotateRefresh(ctx context.Context, oldHash, newHash
 		return nil, err
 	}
 	if usedAt != nil {
-		_, _ = tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$2),revoked_reason=COALESCE(revoked_reason,'refresh_reuse') WHERE id=$1`, sessionID, now)
+		reusedIDs, reuseErr := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$2,revoked_reason='refresh_reuse' WHERE id=$1 AND revoked_at IS NULL RETURNING id`, sessionID, now)
+		if reuseErr != nil {
+			return nil, reuseErr
+		}
 		_, _ = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id=$1`, sessionID, now)
+		if err = r.notifySessionEnded(ctx, tx, reusedIDs); err != nil {
+			return nil, err
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return nil, err
 		}
@@ -365,12 +377,15 @@ func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionI
 		}
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$3),revoked_reason=COALESCE(revoked_reason,$4) WHERE id=$1 AND user_id=$2`, sessionID, userID, now, reason)
+	revokedIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$3,revoked_reason=$4 WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL RETURNING id`, sessionID, userID, now, reason)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id=$1`, sessionID, now)
 	if err != nil {
+		return err
+	}
+	if err = r.notifySessionEnded(ctx, tx, revokedIDs); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -430,10 +445,14 @@ func (r *postgresRepository) ResetPassword(ctx context.Context, email string, ot
 	if _, err = tx.Exec(ctx, `UPDATE user_tokens SET used_at=$2 WHERE id=$1`, tokenID, now); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$2),revoked_reason=COALESCE(revoked_reason,'password_reset') WHERE user_id=$1`, userID, now); err != nil {
+	resetIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$2,revoked_reason='password_reset' WHERE user_id=$1 AND revoked_at IS NULL RETURNING id`, userID, now)
+	if err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1)`, userID, now); err != nil {
+		return err
+	}
+	if err = r.notifySessionEnded(ctx, tx, resetIDs); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -455,10 +474,14 @@ func (r *postgresRepository) ChangePassword(ctx context.Context, userID, session
 	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, newHash); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE sessions SET revoked_at=COALESCE(revoked_at,$3),revoked_reason=COALESCE(revoked_reason,'password_changed') WHERE user_id=$1 AND id<>$2`, userID, sessionID, now); err != nil {
+	changedIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$3,revoked_reason='password_changed' WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL RETURNING id`, userID, sessionID, now)
+	if err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$3) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1 AND id<>$2)`, userID, sessionID, now); err != nil {
+		return err
+	}
+	if err = r.notifySessionEnded(ctx, tx, changedIDs); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

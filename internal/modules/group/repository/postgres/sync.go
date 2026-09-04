@@ -13,6 +13,7 @@ import (
 
 	"paysplit-backend/internal/modules/group/domain"
 	dbgen "paysplit-backend/internal/modules/group/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/realtime"
 )
 
 // notifyChannel là kênh pg_notify mà mọi instance API lắng nghe để nhận sự kiện
@@ -22,8 +23,6 @@ const notifyChannel = "group_events"
 // maxNotifyPayload là ngưỡng an toàn dưới giới hạn 8000 byte của pg_notify.
 // Vượt ngưỡng thì phát bản "gầy" (bỏ data): client thấy version nhảy cóc và tự
 // gọi /sync để lấy nội dung đầy đủ — nhánh vốn đã phải đúng sẵn.
-const maxNotifyPayload = 7000
-
 // maxSyncEvents chặn trên số sự kiện trả về trong một lần catch-up. Client cần
 // nhiều hơn thế thì nhận snapshot rẻ hơn là phát lại từng bước.
 const maxSyncEvents = 200
@@ -38,7 +37,19 @@ const maxSyncEvents = 200
 //     outbox): không bao giờ có sự kiện mồ côi hay thay đổi không có sự kiện.
 //   - pg_notify trong transaction chỉ được PostgreSQL phát khi COMMIT thành
 //     công, nên client không bao giờ nhận sự kiện của một transaction rollback.
-func emitGroupEvent(ctx context.Context, tx pgx.Tx, gid uuid.UUID, eventType string, payload map[string]any) error {
+func listActiveUserIDs(ctx context.Context, q *dbgen.Queries, gid uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.ListActiveMembers(ctx, pgUUID(gid))
+	if err != nil {
+		return nil, fmt.Errorf("list active members for audience: %w", err)
+	}
+	ids := make([]uuid.UUID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, uuid.UUID(row.UserID.Bytes))
+	}
+	return realtime.NormalizeAudience(ids), nil
+}
+
+func emitGroupEvent(ctx context.Context, tx pgx.Tx, gid uuid.UUID, eventType string, payload map[string]any, audience []uuid.UUID) error {
 	q := dbgen.New(tx)
 
 	version, err := q.BumpRosterVersion(ctx, pgUUID(gid))
@@ -62,23 +73,17 @@ func emitGroupEvent(ctx context.Context, tx pgx.Tx, gid uuid.UUID, eventType str
 		return fmt.Errorf("insert %s event: %w", eventType, err)
 	}
 
-	envelope := map[string]any{
-		"group_id": gid.String(),
-		"version":  version,
-		"type":     eventType,
-		"data":     json.RawMessage(body),
-	}
-	notify, err := json.Marshal(envelope)
+	encoded, _, err := realtime.EncodeGroupEnvelope(realtime.GroupEnvelope{
+		GroupID:         gid,
+		Version:         version,
+		Type:            eventType,
+		Data:            body,
+		AudienceUserIDs: audience,
+	})
 	if err != nil {
 		return fmt.Errorf("encode %s notify envelope: %w", eventType, err)
 	}
-	if len(notify) > maxNotifyPayload {
-		delete(envelope, "data")
-		if notify, err = json.Marshal(envelope); err != nil {
-			return fmt.Errorf("encode thin %s notify envelope: %w", eventType, err)
-		}
-	}
-	if _, err = tx.Exec(ctx, `SELECT pg_notify($1, $2)`, notifyChannel, string(notify)); err != nil {
+	if err = realtime.Notify(ctx, tx, notifyChannel, encoded); err != nil {
 		return fmt.Errorf("notify %s event: %w", eventType, err)
 	}
 	return nil

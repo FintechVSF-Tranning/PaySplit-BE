@@ -108,6 +108,7 @@ cp .env.example .env
 | `PORT` | rỗng | Port do nền tảng deploy cấp, được ưu tiên hơn `HTTP_PORT` |
 | `HTTP_ADDRESS` | `localhost:8080` | Tùy chọn gộp `host:port` (ghi đè nếu có) |
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5433/paysplit?sslmode=disable` | Chuỗi kết nối PostgreSQL (port 5433 khi dùng docker compose) |
+| `DB_APPLICATION_NAME` | `paysplit-api` | Tên connection trong `pg_stat_activity`, nên đặt riêng cho từng instance khi đo connection |
 | `DB_MAX_CONNS` / `DB_MIN_CONNS` | `10` / `2` | Giới hạn số kết nối của pgx pool |
 | `DB_MAX_CONN_LIFETIME_MINUTES` | `60` | Thời gian sống tối đa của một kết nối trong pool |
 | `DB_MAX_CONN_IDLE_MINUTES` | `15` | Thời gian nhàn rỗi tối đa trước khi đóng kết nối |
@@ -123,6 +124,10 @@ cp .env.example .env
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | — | Cloudinary lưu avatar WebP |
 | `FIREBASE_CREDENTIALS_FILE` / `FIREBASE_CREDENTIALS_JSON` | — | Google Firebase Service Account credentials cho push notification FCM |
 | `FCM_TIMEOUT_SECONDS` | `5` | Thời gian timeout khi gửi tin FCM |
+| `RIVER_WORKER_COUNT` | `5` | Số worker River tối đa trên instance, phải nhỏ hơn `DB_MAX_CONNS` |
+| `RIVER_FETCH_COOLDOWN_MS` | `100` | Khoảng nghỉ tối thiểu giữa các lần River fetch job |
+| `RIVER_POLL_ONLY` | `false` | Bật polling và bỏ River notifier listener session sau khi restart |
+| `RIVER_FETCH_POLL_INTERVAL_MS` | `1000` | Chu kỳ tìm job khi River chạy poll only, phải không nhỏ hơn fetch cooldown |
 
 **2. Khởi động PostgreSQL**
 

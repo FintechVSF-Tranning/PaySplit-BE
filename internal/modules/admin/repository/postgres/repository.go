@@ -16,6 +16,7 @@ import (
 	"paysplit-backend/internal/modules/admin/domain"
 	"paysplit-backend/internal/modules/admin/repository"
 	dbgen "paysplit-backend/internal/modules/admin/repository/postgres/sqlc"
+	"paysplit-backend/internal/platform/realtime"
 )
 
 var processStartTime = time.Now()
@@ -34,7 +35,8 @@ func auditActionForStatus(status string) string {
 }
 
 type postgresRepository struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events *realtime.Publisher
 }
 
 // New khởi tạo adapter PostgreSQL cho module Admin.
@@ -43,6 +45,12 @@ func New(pool *pgxpool.Pool) repository.Repository {
 		panic("admin repository pool must not be nil")
 	}
 	return &postgresRepository{pool: pool}
+}
+
+func SetRealtimePublisher(repo repository.Repository, events *realtime.Publisher) {
+	if r, ok := repo.(*postgresRepository); ok {
+		r.events = events
+	}
 }
 
 func (r *postgresRepository) ListAccounts(ctx context.Context, filter repository.ListAccountsFilter) ([]domain.AccountSummary, int64, error) {
@@ -283,16 +291,29 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 
 	// Nếu chuyển sang suspended hoặc locked thì thu hồi toàn bộ session và refresh token
 	if input.NewStatus == "suspended" || input.NewStatus == "locked" {
-		revokedReason := pgtype.Text{String: "admin_" + input.NewStatus, Valid: true}
-		if err := q.RevokeSessionsByUserID(ctx, dbgen.RevokeSessionsByUserIDParams{
-			UserID:        toPgUUID(targetUID),
-			RevokedReason: revokedReason,
-		}); err != nil {
+		rows, err := tx.Query(ctx, `UPDATE sessions SET revoked_at=now(), revoked_reason=$2 WHERE user_id=$1 AND revoked_at IS NULL RETURNING id`, targetUID, "admin_"+input.NewStatus)
+		if err != nil {
 			return nil, nil, fmt.Errorf("revoke sessions: %w", err)
 		}
-
+		var revokedIDs []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, nil, fmt.Errorf("scan revoked session: %w", err)
+			}
+			revokedIDs = append(revokedIDs, id)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		rows.Close()
 		if err := q.RevokeRefreshTokensByUserID(ctx, toPgUUID(targetUID)); err != nil {
 			return nil, nil, fmt.Errorf("revoke refresh tokens: %w", err)
+		}
+		if err = r.events.NotifySessionEnded(ctx, tx, revokedIDs); err != nil {
+			return nil, nil, err
 		}
 	}
 

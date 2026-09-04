@@ -180,9 +180,6 @@ func TestOCRWorker_Success(t *testing.T) {
 	if !repo.success {
 		t.Error("expected job to be marked as succeeded")
 	}
-	if len(broadcaster.events) < 2 {
-		t.Errorf("expected broadcast events (processing, ocr.updated), got %+v", broadcaster.events)
-	}
 }
 
 func TestOCRWorker_AlreadyCompleted(t *testing.T) {

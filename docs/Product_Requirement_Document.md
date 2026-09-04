@@ -6,157 +6,115 @@
 
 | PaySplit Team     |                                                                                                                                                          |
 | ----------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Group members** | Phạm Lê Hoàng Nam Phạm Thanh Lam Nguyễn Trọng Tín                                                                                                        |
+| **Group members** | Phạm Lê Hoàng Nam, Phạm Thanh Lam, Nguyễn Trọng Tín                                                                                                        |
 | **Mentor**        | Trần Quang Hiển (VSF-FINTECH-VDTDVTC)                                                                                                                    |
-| **Ext Mentor**    | Bành Quốc Danh (VSF-FINTECH\&TT-PTPM) Phan Công Huân (VSF-FINTECH-VDTDVTC) Nguyễn Mạnh Tể (VSF-FINTECH\&TT-PTPM) Nguyễn Nam Trường (VSF-FINTECH-VDTDVTC) |
+| **Ext Mentor**    | Bành Quốc Danh (VSF-FINTECH\&TT-PTPM), Phan Công Huân (VSF-FINTECH-VDTDVTC), Nguyễn Mạnh Tể (VSF-FINTECH\&TT-PTPM), Nguyễn Nam Trường (VSF-FINTECH-VDTDVTC) |
 
-– HaNoi, Aug 2026 –
+– HaNoi, Sep 2026 –
 
 **Table of Contents**
 
-[**I. Record of Changes 4**](#i.-record-of-changes)
+[**I. Record of Changes**](#i.-record-of-changes)
 
-[**II. Product Requirement Document 5**](#ii.-product-requirement-document)
+[**II. Product Requirement Document**](#ii.-product-requirement-document)
 
-[1\. Product Introduction 5](#1.-product-introduction)
+[1\. Product Introduction](#1.-product-introduction)
+  - [1.1. Executive Summary](#1.1.-executive-summary)
+  - [1.2. Background & Problem Statement](#1.2.-background-&-problem-statement)
+    - [1.2.1 Group Expense Context](#1.2.1-group-expense-context)
+    - [1.2.2 PaySplit Payment Coordination Context](#1.2.2-paysplit-payment-coordination-context)
+    - [1.2.3 Technical Challenges](#1.2.3-technical-challenges)
+    - [1.2.4 Prototype Value](#1.2.4-prototype-value)
+    - [1.2.5 Scope & Objectives](#1.2.5-scope-&-objectives)
 
-[1.1. Executive Summary 5](#1.1.-executive-summary)
+[2\. Product Overview](#2.-product-overview)
 
-[1.2. Background & Problem Statement 5](#1.2.-background-&-problem-statement)
+[3\. User Requirements](#3.-user-requirements)
+  - [3.1 Actors](#3.1-actors)
+  - [3.2 Use Cases](#3.2-use-cases)
+    - [3.2.1 Diagram(s)](#3.2.1-diagram(s))
+    - [3.2.2 Use Case Descriptions](#3.2.2-use-case-descriptions)
 
-[1.2.1 Group Expense Context 5](#1.2.1-group-expense-context)
+[4\. Functional Requirements](#4.-functional-requirements)
+  - [4.1 Core System Features](#4.1-core-system-features)
+    - [4.1.1 \- Sign In](#4.1.1---sign-in)
+    - [4.1.2 \- Sign Up](#4.1.2---sign-up)
+    - [4.1.3 \- Verify Email](#4.1.3---verify-email)
+    - [4.1.4 \- Resend Verification OTP](#4.1.4---resend-verification-otp)
+    - [4.1.5 \- Token Refresh & Session Rotation](#4.1.5---token-refresh-&-session-rotation)
+    - [4.1.6 \- Forgot Password & Reset Password](#4.1.6---forgot-password-&-reset-password)
+    - [4.1.7 \- Sign Out](#4.1.7---sign-out)
+    - [4.1.8 \- Change Password](#4.1.8---change-password)
+    - [4.1.9 \- Update Profile & Bank Information](#4.1.9---update-profile-&-bank-information)
+    - [4.1.10 \- Create New Group](#4.1.10---create-new-group)
+    - [4.1.11 \- Generate Group Invite](#4.1.11---generate-group-invite)
+    - [4.1.12 \- Preview & Join Group](#4.1.12---preview-&-join-group)
+    - [4.1.13 \- Remove Member & Leave Group](#4.1.13---remove-member-&-leave-group)
+    - [4.1.14 \- Transfer Captain Role](#4.1.14---transfer-captain-role)
+    - [4.1.15 \- Disband (Archive) Group](#4.1.15---disband-(archive)-group)
+    - [4.1.16 \- Lock and Unlock Bill Submissions](#4.1.16---lock-and-unlock-bill-submissions)
+    - [4.1.17 \- Upload Bill Image & Async OCR Extraction](#4.1.17---upload-bill-image-&-async-ocr-extraction)
+    - [4.1.18 \- Update Draft Bill & Item Assignments](#4.1.18---update-draft-bill-&-item-assignments)
+    - [4.1.19 \- Review Bill](#4.1.19---review-bill)
+    - [4.1.20 \- Finalize Bill](#4.1.20---finalize-bill)
+    - [4.1.21 \- Batch Finalize-All Bills](#4.1.21---batch-finalize-all-bills)
+    - [4.1.22 \- Void Finalized Bill](#4.1.22---void-finalized-bill)
+    - [4.1.23 \- View Allocated Expense & Group Breakdown](#4.1.23---view-allocated-expense-&-group-breakdown)
+    - [4.1.24 \- Generate Payment QR](#4.1.24---generate-payment-qr)
+    - [4.1.25 \- Submit Payment Proof](#4.1.25---submit-payment-proof)
+    - [4.1.26 \- Confirm or Reject Received Payment](#4.1.26---confirm-or-reject-received-payment)
+    - [4.1.27 \- Debt Reminders & Automated Scanner](#4.1.27---debt-reminders-&-automated-scanner)
+    - [4.1.28 \- In-App & Push Notifications](#4.1.28---in-app-&-push-notifications)
+    - [4.1.29 \- Admin Management & Web Portal](#4.1.29---admin-management-&-web-portal)
+    - [4.1.30 \- Unified Realtime Event Architecture](#4.1.30---unified-realtime-event-architecture)
+  - [4.2 Automated System Functions](#4.2-automated-system-functions)
+    - [4.2.1 \- Automated Background Jobs & Queue Workers](#4.2.1---automated-background-jobs-&-queue-workers)
 
-[1.2.2 PaySplit Payment Coordination Context 6](#1.2.2-paysplit-payment-coordination-context)
+[5\. Non-Functional Requirements](#5.-non-functional-requirements)
+  - [5.1. External Interfaces](#5.1.-external-interfaces)
+    - [5.1.1 User Interface](#5.1.1-user-interface)
+    - [5.1.2 Software Interface](#5.1.2-software-interface)
+    - [5.1.3 Hardware Interface](#5.1.3-hardware-interface)
+  - [5.2. Quality Attributes](#5.2.-quality-attributes)
+    - [5.2.1 Performance & Scalability](#5.2.1-performance-&-scalability)
+    - [5.2.2 Reliability & Robustness](#5.2.2-reliability-&-robustness)
+    - [5.2.3 Security & Privacy](#5.2.3-security-&-privacy)
+    - [5.2.4 Explainability](#5.2.4-explainability)
+    - [5.2.5 Maintainability & Reproducibility](#5.2.5-maintainability-&-reproducibility)
 
-[1.2.3 Technical Challenges 6](#1.2.3-technical-challenges)
+[6\. Architecture Overview (High-Level)](#6.-architecture-overview-(high-level))
+  - [6.1 Components](#6.1-components)
+  - [6.2 Tech Stack](#6.2-tech-stack)
 
-[1.2.4 Prototype Value 6](#1.2.4-prototype-value)
+[7\. Milestones & Timeline](#7.-milestones-&-timeline)
 
-[1.2.5 Scope & Objectives 7](#1.2.5-scope-&-objectives)
-
-[2\. Product Overview 7](#2.-product-overview)
-
-[3\. User Requirements 9](#3.-user-requirements)
-
-[3.1 Actors 9](#3.1-actors)
-
-[3.2 Use Cases 10](#3.2-use-cases)
-
-[3.2.1 Diagram(s) 10](<#3.2.1-diagram(s)>)
-
-[3.2.2 Use Case Descriptions 11](#3.2.2-use-case-descriptions)
-
-[4\. Functional Requirements 14](#4.-functional-requirements)
-
-[4.1 Core System Features 14](#4.1-core-system-features)
-
-[4.1.1 \- Sign In 14](#4.1.1---sign-in)
-
-[4.1.2 \- Sign Up 14](#4.1.2---sign-up)
-
-[4.1.3 \- Forgot Password 15](#4.1.3---forgot-password)
-
-[4.1.4 \- Sign Out 15](#4.1.4---sign-out)
-
-[4.1.5 \- Change Password 16](#4.1.5---change-password)
-
-[4.1.6 \- Update Profile Information 16](#4.1.6---update-profile-information)
-
-[4.1.7 \- Create New Group 17](#4.1.7---create-new-group)
-
-[4.1.8 \- Generate Group Invite 17](#4.1.8---generate-group-invite)
-
-[4.1.9 \- Join Group 17](#4.1.9---join-group)
-
-[4.1.10 \- Remove Member 18](#4.1.10---remove-member)
-
-[4.1.11 \- Upload Bill Image 18](#4.1.11---upload-bill-image)
-
-[4.1.12 \- Extract Data from Bill Image 19](#4.1.12---extract-data-from-bill-image)
-
-[4.1.13 \- Assign Items to Members 20](#4.1.13---assign-items-to-members)
-
-[4.1.14 \- Update Bill Information 20](#4.1.14---update-bill-information)
-
-[4.1.15 \- Finalize Bill 21](#4.1.15---finalize-bill)
-
-[4.1.16 \- View Allocated Expense 22](#4.1.16---view-allocated-expense)
-
-[4.1.17 \- Generate Payment QR 22](#4.1.17---generate-payment-qr)
-
-[4.1.18 \- Submit Payment Proof 23](#4.1.18---submit-payment-proof)
-
-[4.1.19 \- Confirm or Reject Received Payment 24](#4.1.19---confirm-or-reject-received-payment)
-
-[4.1.20 \- View List Account 25](#4.1.20---view-list-account)
-
-[4.1.21 \- View Account Details 25](#4.1.21---view-account-details)
-
-[4.1.22 \- Update Account Status 25](#4.1.22---update-account-status)
-
-[4.1.23 \- System Monitoring 26](#4.1.23---system-monitoring)
-
-[4.2 Automated System Functions 27](#4.2-automated-system-functions)
-
-[4.2.1 \- Automated Debt Reminders & Stalled Confirmation 27](#4.2.1---automated-debt-reminders-&-stalled-confirmation)
-
-[5\. Non-Functional Requirements 27](#5.-non-functional-requirements)
-
-[5.1. External Interfaces 27](#5.1.-external-interfaces)
-
-[5.1.1 User Interface 27](#5.1.1-user-interface)
-
-[5.1.2 Software Interface 27](#5.1.2-software-interface)
-
-[5.1.3 Hardware Interface 27](#5.1.3-hardware-interface)
-
-[5.2. Quality Attributes 28](#5.2.-quality-attributes)
-
-[5.2.1 Performance & Scalability 28](#5.2.1-performance-&-scalability)
-
-[5.2.2 Reliability & Robustness 28](#5.2.2-reliability-&-robustness)
-
-[5.2.3 Security & Privacy 28](#5.2.3-security-&-privacy)
-
-[5.2.4 Explainability 28](#5.2.4-explainability)
-
-[5.2.5 Maintainability & Reproducibility 28](#5.2.5-maintainability-&-reproducibility)
-
-[6\. Architecture Overview (High-Level) 28](<#6.-architecture-overview-(high-level)>)
-
-[6.1 Components 29](#6.1-components)
-
-[6.2 Tech Stack 29](#6.2-tech-stack)
-
-[7\. Milestones & Timeline 30](#7.-milestones-&-timeline)
-
-[8\. Risks & Mitigations 30](#8.-risks-&-mitigations)
+[8\. Risks & Mitigations](#8.-risks-&-mitigations)
 
 **List of Tables**
 
-[Table 1\. Record of Change 4](#table-1.-record-of-change)
+[Table 1\. Record of Change](#table-1.-record-of-change)
 
-[Table 2\. All Actors in the System 9](#table-2.-all-actors-in-the-system)
+[Table 2\. All Actors in the System](#table-2.-all-actors-in-the-system)
 
-[Table 3\. Use Case Description 13](#table-3.-use-case-description)
+[Table 3\. Use Case Description](#table-3.-use-case-description)
 
-[Table 4\. Tech Stack 28](#table-4.-tech-stack)
+[Table 4\. Tech Stack](#table-4.-tech-stack)
 
-[Table 5\. Milestones & Timeline 29](#table-5.-milestones-&-timeline)
+[Table 5\. Milestones & Timeline](#table-5.-milestones-&-timeline)
 
-[Table 6\. Risks & Mitigations 29](#table-6.-risks-&-mitigations)
+[Table 6\. Risks & Mitigations](#table-6.-risks-&-mitigations)
 
 **List of Figures**
 
-[Figure 1\. Money Laundering Cycle 5](#figure-1.-traditional-expense-splitting-cycle)
+[Figure 1\. Traditional Expense Splitting Cycle](#figure-1.-traditional-expense-splitting-cycle)
 
-[Figure 2\. Core values and benefits of the PaySplit prototype. 7](#figure-2.-core-values-and-benefits-of-the-paysplit-prototype.)
+[Figure 2\. Core values and benefits of the PaySplit prototype.](#figure-2.-core-values-and-benefits-of-the-paysplit-prototype.)
 
-[Figure 3\. Context Diagram 8](#figure-3.-context-diagram)
+[Figure 3\. Context Diagram](#figure-3.-context-diagram)
 
-[Figure 4\. PaySplit Use Case Diagram 10](#figure-4.-paysplit-use-case-diagram)
+[Figure 4\. PaySplit Use Case Diagram](#figure-4.-paysplit-use-case-diagram)
 
-[Figure 5\. PaySplit Authentication Use Case Diagram 10](#figure-5.-paysplit-authentication-use-case-diagram)
+[Figure 5\. PaySplit Authentication Use Case Diagram](#figure-5.-paysplit-authentication-use-case-diagram)
 
 #
 
@@ -166,22 +124,12 @@
 
 \*A \- Added M \- Modified D \- Deleted
 
-| Date       | A\*M, D | In charge   | Change Description                           |
-| ---------- | ------- | ----------- | -------------------------------------------- |
-| 10/08/2026 | A       | NamPLH      | Init base document                           |
-| 10/08/2026 | A       | All members | Add Product Overview, Personas, Use case,... |
-| 11/08/2026 | M       | All members | Complete document                            |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
-|            |         |             |                                              |
+| Date       | A\* M, D | In charge   | Change Description                                                                                                                                                                                                                                                                                                                                             |
+| ---------- | :------: | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10/08/2026 |    A     | NamPLH      | Init base document                                                                                                                                                                                                                                                                                                                                             |
+| 10/08/2026 |    A     | All members | Add Product Overview, Personas, Use cases                                                                                                                                                                                                                                                                                                                      |
+| 11/08/2026 |    M     | All members | Complete initial document                                                                                                                                                                                                                                                                                                                                      |
+| 04/09/2026 |    M     | All members | Comprehensive update matching current production codebase across Go backend and Flutter frontend: single-session authentication, River queue background jobs, LlamaExtract OCR async pipeline (HTTP 202), big.Rat Hamilton bill split algorithm, non-locking VietQR payment flow, 2-phase proof upload, FCM push & in-app notifications, embedded Web Admin portal, and unified connection-efficient realtime architecture. |
 
 ##### **Table 1\. Record of Change** {#table-1.-record-of-change}
 
@@ -191,93 +139,89 @@
 
 ## **1.1. Executive Summary** {#1.1.-executive-summary}
 
-This document defines the product requirements for **PaySplit**, a group expense-splitting feature designed for integration into a digital wallet.  
-**PaySplit** enables users to create groups, enter bills, assign expenses, calculate each member’s share, and generate payment QR codes with pre-filled transaction details. Payments are transferred directly to creditors through external banking or wallet applications. PaySplit does not hold funds or automatically verify transactions; creditors manually confirm receipt.  
- The final prototype will demonstrate the complete flow from group creation to payment confirmation, supported by a mobile application, backend APIs, technical documentation, and a test report.
+This document defines the comprehensive product requirements for **PaySplit**, an intelligent group expense-splitting and settlement platform designed for direct peer-to-peer digital payments.  
+**PaySplit** enables users to create collaborative expense groups, capture paper receipts using OCR (Vision LLM extraction), assign items with flexible weighted or equal splits, compute exact participant shares via strict integer arithmetic and largest-remainder (Hamilton) rounding, and generate individual dynamic **VietQR** codes with pre-filled banking transaction details.
+
+Payments are transferred directly between peer bank accounts via external banking or digital wallet applications (NAPAS 247). **PaySplit operates strictly as a payment coordination service and does not hold user funds, act as a financial intermediary, or perform automatic custody transfers**, fully complying with Decree 52/2024/NĐ-CP. Creditors manually confirm or reject incoming transactions after reviewing attached payment proofs.
+
+The production-ready prototype encompasses:
+- A high-performance **Go RESTful API** and **River queue worker** system backed by PostgreSQL 18.
+- A cross-platform **Flutter mobile application** (iOS & Android) built with Clean Architecture, Feature-First modularity, Riverpod, and GoRouter.
+- An embedded **Web Admin Portal** for real-time monitoring and account moderation.
+- A **Unified Realtime Event Engine** utilizing connection-efficient Server-Sent Events (SSE) backed by a single shared PostgreSQL `LISTEN/NOTIFY` session per instance.
 
 ## **1.2. Background & Problem Statement** {#1.2.-background-&-problem-statement}
 
 #### **_1.2.1 Group Expense Context_** {#1.2.1-group-expense-context}
 
-Group expenses in activities like dining, travelling, or shared accommodation often require **one or more people** to pay upfront and calculate reimbursements. Currently, this relies on chats, spreadsheets, or handwritten notes, forcing the organizer to manually:
-
-- Record each bill and identify the person who paid it.
-- Determine which members participated in each expense.
-- Separate shared items from individually consumed items.
-- Inform every member of the exact amount they need to pay.
-- Provide bank account or wallet information for payment.
-- Check incoming transactions and confirm who has paid.
-- Repeatedly remind members with unconfirmed payments.
+Group activities such as dining, travelling, shared housing, or social events typically involve multiple upfront payments by different participants. Currently, organizing and settling these shared expenses relies on fragmented chat messages, spreadsheets, or manual notes, forcing group captains and creditors to:
+- Manually record each receipt and track who paid upfront.
+- Determine which members consumed specific items versus shared general costs.
+- Apportion service charges, VAT taxes, and discounts accurately without rounding drift.
+- Calculate exact dues and communicate individual bank details and payment amounts.
+- Track incoming bank notifications and reconcile payments against specific bills.
+- Manually send repetitive payment reminders to overdue members.
 
 ###### **![][image2]**
 
 ###### **Figure 1\. Traditional Expense Splitting Cycle** {#figure-1.-traditional-expense-splitting-cycle}
 
-Managing this manually through chats, spreadsheets, or calculators is time-consuming and prone to calculation errors, unclear payment details, and delayed confirmations—especially when groups have many members or bills.  
-**PaySplit** simplifies this process through a shared workflow for bill entry, expense allocation, payment QR generation, and creditor confirmation.
+Managing shared expenses manually is error-prone, friction-heavy, causes awkward financial confrontations, and leads to delayed settlements. **PaySplit** replaces this fragmented process with an automated, transparent, and auditable end-to-end workflow.
 
 #### **_1.2.2 PaySplit Payment Coordination Context_** {#1.2.2-paysplit-payment-coordination-context}
 
-**PaySplit** acts as a **payment coordination service**, not a financial intermediary. It does not hold funds or automatically transfer money between users. Instead, when a payment is due, it generates a QR code containing:
+**PaySplit** functions strictly as an **expense coordinator and settlement facilitator**. It does not hold user funds, provide wallet balances, or execute direct automated debits. Instead, when an expense is finalized, PaySplit:
+- Computes exact individual shares down to 1 VND.
+- Generates a standard VietQR code encoding the creditor's bank code, bank account number, exact VND amount, and a unique reference code (`PAY` + 8 Base32 characters).
+- Facilitates payment proof submission (transfer screenshot and note) by the debtor.
+- Enables the creditor to manually confirm or reject the transaction after verifying their bank statement.
 
-- The creditor’s bank or wallet details.
-- The exact payment amount.
-- A unique reference code and group identifier.
-
-The payer scans this QR code using an external banking app, and the creditor manually confirms the receipt within **PaySplit**.  
-This approach simplifies the prototype by avoiding fund custody and automated money transfers. However, any future production deployment will still require appropriate legal, security, and payment-compliance reviews.
+This direct peer-to-peer model eliminates custodial liability, avoids payment intermediary licensing overhead under Vietnamese law (Decree 52/2024/NĐ-CP), and ensures financial transparency.
 
 #### **_1.2.3 Technical Challenges_** {#1.2.3-technical-challenges}
 
-Developing a reliable expense-splitting system introduces several key technical hurdles:
-
-- **Bill information extraction:** Processing diverse bill layouts and handling OCR inaccuracies that require _user verification_.
-- **Multiple creditors:** Accurately calculating peer-to-peer debts when various members pay for different bills, _without_ using a centralized fund.
-- **Manual payment confirmation:** Enforcing a secure workflow where payers can mark transactions as sent, but _only_ the creditor can confirm receipt.
-- **Concurrent group updates:** Managing simultaneous actions (e.g., uploading bills, editing splits) to prevent data conflicts and calculation errors.
-- **User participation:** Providing seamless onboarding via invitation links or QR codes for users who do not yet have the app.
-- **Data privacy and security:** Securing sensitive personal and financial data through robust authentication, authorization, and access controls.
+Building a robust, real-time bill-splitting platform requires overcoming several complex engineering challenges:
+- **Receipt OCR Normalization:** Handling diverse Vietnamese receipt formats, poor lighting, crumpled paper, mixed tax/discount lines, and provider timeouts via asynchronous background queues and review gates.
+- **Strict Mathematical Invariants:** Guaranteeing that the sum of all participant shares and debts strictly equals the total bill amount ($\sum \text{shares} = \text{bill\_total}$) with zero fractional VND loss or creation, using exact rational numbers (`big.Rat`) and deterministic Hamilton largest-remainder rounding without creditor bias.
+- **Concurrent Group Mutations & Race Conditions:** Preventing split calculation anomalies, double-settlements, and over-capacity joins through row-level locking (`LockActiveGroup`), optimistic version CAS locking (`version`), and deterministic idempotency keys (`Idempotency-Key`).
+- **Single-Session Security & Session Rotation:** Enforcing a single active session per user with reuse detection on refresh tokens, immediate multi-session revocation on password resets, and brute-force IP/account rate-limiting.
+- **Connection-Efficient Realtime Streaming:** Eliminating per-screen SSE connections by multiplexing all live updates across a single persistent SSE stream per session (`GET /api/v1/users/me/events`) driven by a shared PostgreSQL listener.
 
 #### **_1.2.4 Prototype Value_** {#1.2.4-prototype-value}
 
-The **PaySplit** prototype validates an end-to-end expense coordination workflow _without_ holding or transferring user funds. Its core value includes:
+The **PaySplit** system delivers substantial value across the entire group financial workflow:
+- **Efficiency:** Vision LLM OCR extracts receipt items and surcharges within seconds; automatic calculations eliminate manual math.
+- **Absolute Fairness & Transparency:** Line-item assignment, proportional surcharge/discount distribution, and transparent rounding breakdown ensure every member pays exactly their fair share.
+- **Frictionless Payment:** Instant dynamic VietQR generation with copyable bank details and structured reference codes eliminates manual typing errors in banking apps.
+- **Auditability & Control:** Creditor-controlled confirmation, immutable finalized bill ledgers, append-only group activity logs, and automated reminders prevent disputes and forgotten debts.
 
-- **Efficiency:** OCR-assisted bill entry and automatic calculations minimize manual effort for group leaders.
-- **Transparency:** Item-level assignments and a shared group view clarify who owes what, and track overall payment statuses.
-- **Seamless Payments:** Individual QR codes with unique descriptions streamline direct, peer-to-peer transfers (avoiding common funds).
-- **Reliability:** _Creditor-controlled_ manual confirmations ensure accurate payment tracking without the system making false assumptions.
-
-Ultimately, this prototype serves as a foundation to evaluate usability, OCR accuracy, QR reliability, and the manual confirmation workflow prior to production deployment or deeper banking integration.  
 ![][image3]
 
 ###### **Figure 2\. Core values and benefits of the PaySplit prototype.** {#figure-2.-core-values-and-benefits-of-the-paysplit-prototype.}
 
 #### **_1.2.5 Scope & Objectives_** {#1.2.5-scope-&-objectives}
 
-**In-scope (Project Objectives):**
+**In-Scope (System Capabilities):**
+- **Authentication & Security:** Single active session per user, JWT access token (15m TTL) validated against database session state (`liveAuth`), refresh token rotation (7d TTL) with reuse detection, mandatory phone number registration with 6-digit SHA-256 OTP verification (10m TTL, 5-attempt supersede rule), rate-limited brute-force protection (5 failures in 15m -> 15m block), profile & bank management with VietQR validation and Cloudinary avatar processing.
+- **Group Management:** Temporary/standing groups up to 50 active members, Base62 8-character case-sensitive invite codes with anti-enumeration protection, camera/gallery QR code scanning (`mobile_scanner` / `zxing2`), atomic Captain transfer with `NOWAIT` row locks, soft member deactivation/reactivation preserving ledger integrity, bill submission locking/unlocking, and group archival validation.
+- **Bill Processing & OCR:** Multipart upload of 1–5 receipt images (JPEG/PNG/HEIC up to 10MB), asynchronous OCR processing via River Queue and LlamaExtract returning HTTP 202 Accepted, manual draft entry, item-level assignment with custom/equal weights (`big.Rat`), optimistic `version` locking, allocation dry-run validation (`BILL_NOT_READY` blockers), immutable finalization computing exact shares via the Hamilton largest-remainder algorithm, bill voiding with payment state gating, and batch finalize-all processing.
+- **Settlement & VietQR:** Non-locking VietQR generation (TLV/compact standard, unique reference code `PAY` + 8 Base32 chars, deterministic UUIDv5 idempotency), 2-phase payment proof submission with Cloudinary storage and creditor bank snapshotting, creditor manual confirmation (settling debts) and rejection (with mandatory reason, resetting debts), manual debt reminders (max 3 times, ≥24h cooldown), and hourly automated scanner jobs (`settlement_scan`) for 72h stale debt reminders and 48h stalled confirmation alerts.
+- **Notifications:** Transaction-atomic in-app notifications and River `send_notification` jobs, Firebase Cloud Messaging (FCM) push notifications routed to the user's latest active session, in-app notification center with optimistic mark-as-read, and type-first deep linking route resolver.
+- **Admin Management & Web Portal:** Embedded static Web Admin Portal (`//go:embed` at `/admin-portal/`), user accounts directory with masked bank details, account status transitions (`active`, `suspended`, `locked`) with instant session revocation and SSE notification, financial debt warnings, real-time system metric overview dashboard, and health probes (`/health`, `/health/live`, `/health/ready`).
+- **Realtime Infrastructure:** Single SSE stream per session (`GET /api/v1/users/me/events`), single shared PostgreSQL listener across `bill_events`, `group_events`, `user_events`, replacement arbitration via PostgreSQL commit ordering, lightweight invalidation events with 250ms debouncing, in-place list patching, and automatic reconnection with full resynchronization upon `ready`.
 
-- **Group Management:** Create and join temporary groups via link/QR (including redirects for app downloads).
-- **Bill Processing:** Upload bills via OCR (extracting merchant, items, taxes, totals) with manual entry/correction options.
-- **Expense Allocation:** Support equal and item-based (weighted) splitting. Percentage-based and fully custom amounts are out of scope for the prototype.
-- **Debt Calculation & QR:** Track multiple bills and creditors, calculate exact individual dues, and generate unique payment QR codes.
-- **Payment Workflow:** Track statuses where payers mark transfers as sent, but _only_ creditors can confirm or reject. Includes basic reminders.
-- **Deliverables:** Deliver a functional prototype, APIs, technical documentation
-
-**Out-of-scope:**
-
-- **Financial Operations:** Holding funds, acting as a payment intermediary, or executing automated transfers/collections.
-- **Banking Integration:** Direct production banking integration, auto-reconciliation, or verifying real bank receipts/screenshots.
-- **Advanced Finance:** Debt netting (offsetting), credit scoring, lending (BNPL), cryptocurrency, or managing disputes/refunds.
-- **Production Deployment:** Processing real financial transactions, high-availability infrastructure, or full CI/CD pipelines.
+**Out-of-Scope:**
+- **Fund Custody & Money Transmission:** Holding user deposits, managing stored-value balances, or acting as an intermediary payment gateway under Decree 52/2024/NĐ-CP.
+- **Direct Core Banking Auto-Reconciliation:** Direct production API integration with proprietary core banking settlement networks or webhooks to auto-reconcile bank statements without creditor review.
+- **Complex Financial Instruments:** Cross-member multi-party debt netting (e.g. A owes B, B owes C $\implies$ A owes C), credit scoring, lending (Buy-Now-Pay-Later), cryptocurrency transfers, or automated chargeback disputes.
 
 ## **2\. Product Overview** {#2.-product-overview}
 
-**PaySplit** is a **_group expense-splitting_** prototype designed for digital wallet systems. It combines OCR-assisted bill extraction, flexible expense allocation, and automatic calculation to determine how much each member must pay. The system generates individual QR codes containing the exact amount, creditor information, and a unique transfer description for direct payment through an external banking or wallet application. PaySplit does not hold or transfer user funds; creditors manually confirm received payments. This proof of concept validates the end-to-end workflow—from bill entry and expense splitting to QR-based payment and confirmation—while improving efficiency, transparency, and convenience for group members.  
- ![][image4]
+**PaySplit** is an intelligent group expense-splitting system engineered for mobile and digital wallet platforms. It integrates Vision LLM receipt extraction, weighted item allocation, exact integer arithmetic, dynamic VietQR generation, and manual creditor verification into a unified, transparent workflow.
+
+![][image4]
 
 ###### **Figure 3\. Context Diagram** {#figure-3.-context-diagram}
-
-##
 
 ## **3\. User Requirements** {#3.-user-requirements}
 
@@ -285,17 +229,18 @@ Ultimately, this prototype serves as a foundation to evaluate usability, OCR acc
 
 | \#  | Actor                                    | Description                                                                                                                                                                                                                                                               |
 | :-: | ---------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-|  1  | **Guest** _(Human)_                      | An unauthenticated user exploring the platform, registering, or recovering passwords. They expect a seamless and secure onboarding experience to quickly access the application.                                                                                          |
-|  2  | **Authenticated User** _(Primary Human)_ | A logged-in user managing their profile, creating, or joining groups. This is the foundational role before becoming a Captain, Creditor, or Payer. They expect a clear interface and a transparent overview of their shared expenses.                                     |
-|  3  | **Captain** _(Primary Human)_            | The group administrator responsible for managing members, collaborating on expense allocation, and finalizing bills. They expect full control over group data and fast, automated calculations to ensure fair splitting.                                                  |
-|  4  | **Creditor** _(Primary Human)_           | One of the users who has paid upfront for a shared bill. Holding the receipt, they upload the bill image, verify data, allocate expenses, and confirm received payments. They expect smooth OCR extraction and an accurate reconciliation system to track reimbursements. |
-|  5  | **Payer** _(Primary Human)_              | A member obligated to reimburse the Creditor(s). They review their debts, scan QR codes to transfer funds, and submit payment proofs. They expect transparent itemization and a minimalist, manual-entry-free payment workflow.                                           |
-|  6  | **Admin** _(System Administrator)_       | The internal platform operator responsible for managing users, monitoring metrics, and tracking OCR system status. They expect real-time dashboards and instant alerts to maintain system stability.                                                                      |
-|  7  | **OCR Provider** _(External System)_     | A third-party service (e.g., Google Cloud Vision) that receives bill images and returns structured text data. It requires standard API requests and minimum-resolution images to provide accurate, automated extraction.                                                  |
+|  1  | **Guest** _(Human)_                      | An unauthenticated user registering an account, verifying email via 6-digit OTP, or requesting a password reset.                                                                                                                                                          |
+|  2  | **Authenticated User** _(Primary Human)_ | A logged-in user with an active session, managing profile settings, bank accounts, and personal group memberships.                                                                                                                                                       |
+|  3  | **Captain** _(Primary Human)_            | The administrator of a specific group, responsible for inviting/removing members, transferring the captaincy, locking/unlocking bill submissions, finalizing individual/all bills, and voiding bills.                                                                    |
+|  4  | **Creditor** _(Primary Human)_           | A group member who paid upfront for a shared bill. Uploads receipt images, reviews OCR drafts, assigns items, receives VietQR payments, and confirms or rejects payment proofs.                                                                                         |
+|  5  | **Payer / Debtor** _(Primary Human)_     | A member obligated to reimburse a Creditor for their share of a finalized bill. Scans VietQR codes, completes bank transfers via external banking apps, and submits payment proofs.                                                                                       |
+|  6  | **Admin** _(System Administrator)_       | Internal platform operator managing user account statuses (active, suspended, locked), reviewing audit logs, and monitoring system health, queue depths, and metrics via the Web Admin Portal.                                                                           |
+|  7  | **OCR Provider** _(External System)_     | Vision LLM service (e.g., LlamaExtract / Gemini Flash) that receives receipt images and extracts structured merchant, item, surcharge, tax, and total data.                                                                                                             |
+|  8  | **Push Notification Provider (FCM)**     | Firebase Cloud Messaging platform delivering background push notifications to user devices.                                                                                                                                                                               |
+|  9  | **Storage Provider (Cloudinary)**        | Object storage service hosting receipt images, payment proof screenshots, and user avatar images.                                                                                                                                                                         |
+| 10  | **VietQR / NAPAS Directory**             | Interbank QR formatting specification and banking directory used to validate bank codes and generate compliant VietQR payment payloads.                                                                                                                                  |
 
 ##### **Table 2\. All Actors in the System** {#table-2.-all-actors-in-the-system}
-
-###
 
 ### **3.2 Use Cases** {#3.2-use-cases}
 
@@ -313,29 +258,36 @@ Ultimately, this prototype serves as a foundation to evaluate usability, OCR acc
 
 | ID  | Use Case                     | Actors                         | Use Case Description                                                                                                                                                                                                                                |
 | :-: | ---------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 01  | Sign In                      | Guest                          | \- Allows a Guest to authenticate with email/password to obtain an access token and refresh token. On success, the Guest becomes an Authenticated User and gains access to group and bill features.                                                 |
-| 02  | Sign Up                      | Guest                          | \- Allows a Guest to register a new account using an email address and password. The account is created in an inactive state until email verification is completed.                                                                                 |
-| 03  | Forgot Password              | Guest                          | \- Allows a Guest who has lost access to their account to request a time-limited, single-use password reset link sent to the registered email address                                                                                               |
-| 04  | Sign Out                     | Authenticated User             | \- Terminates the current session by revoking the refresh token associated with the device, so that the session can no longer be renewed.                                                                                                           |
-| 05  | Change Password              | Authenticated User             | \- Allows an Authenticated User to replace the current password after re-verifying the existing one. All other active sessions are revoked to protect the account.                                                                                  |
-| 06  | Update Profile Information   | Authenticated User             | \- Allows an Authenticated User to update display name, avatar, phone number, and default bank account information (bank code, account number,...) used for VietQR generation.                                                                      |
-| 07  | Create New Group             | Authenticated User             | \- Creates a new expense group for a trip, meal, or shared activity. The creator automatically becomes the Captain of that group.                                                                                                                   |
-| 08  | Join Group                   | Authenticated User             | \- Allows an Authenticated User to join an existing group through an invite link or invite code. Once joined, the user becomes a group member and may act as Creditor or Payer for bills within that group.                                         |
-| 09  | Generate Group Invite        | Captain                        | \- Generates a shareable invite link or code with a configurable expiry so that other users can join the group.                                                                                                                                     |
-| 10  | Remove Member                | Captain                        | \- Removes a member from the group. Removal is only permitted when the member has no outstanding balance, in order to preserve data integrity: a member may only be removed once all of their debts and credits within the group have been settled. |
-| 11  | Upload Bill Image            | Creditor                       | \- Upload a photograph of a receipt to the system to start the automated bill parsing flow.                                                                                                                                                         |
-| 12  | Extract Data from Bill Image | OCR Provider (External System) | \- Sends the uploaded receipt image to the OCR/Vision LLM provider, receives a structured result (including merchant details, line items, taxes, and total), and normalizes it into draft bill data for the Creditor to review.                     |
-| 13  | Assign Items to Members      | Captain, Creditor              | \- Allocates each extracted line item to one or more group members, or applies an equal-split rule across selected participants, thereby determining who owes what portion of the bill and to which Creditor.                                       |
-| 14  | Update Bill Information      | Creditor                       | \- Reviews and refines the draft bill before finalization to correct OCR omissions, adjust item details, and update the participant list.                                                                                                           |
-| 15  | Finalize Bill                | Captain                        | \- Locks the bill immutably, computes exact participant shares, creates one aggregated debt record per debtor–creditor pair on that bill (item-level detail traceable through assignments), and makes those debts available for QR generation.      |
-| 16  | View Allocated Expense       | Payer                          | \- Displays the amount the Payer owes, the breakdown of the items charged to them, the rounding adjustment applied, the recipient of the payment, and the reference code attached to their payment request.                                         |
-| 17  | Scan Payment QR              | Payer                          | \- Displays the individual VietQR code for the Payer's debt so that it can be scanned or opened in a banking application. The QR encodes the recipient account, the exact amount.                                                                   |
-| 18  | Submit Payment Proof         | Payer                          | \- Allows a Payer to attach evidence of a transfer (screenshot or note) and mark the debt as "paid — awaiting confirmation"                                                                                                                         |
-| 19  | Confirm Received Payment     | Creditor                       | \- Allows the Creditor to manually confirm that a payment has been received, _closing the debt and recording the settlement in the group activity log_                                                                                              |
-| 20  | View List Account            | Admin                          | \- Displays a paginated, searchable, and filterable list of user accounts together with their status and registration date.                                                                                                                         |
-| 21  | View Account Details         | Admin                          | \- Displays the full profile of a selected account, including account status, group membership, and recent activity history.                                                                                                                        |
-| 22  | Update Account Status        | Admin                          | \- Changes an account's status (active, suspended, or locked). Suspending an account immediately revokes all active sessions of that account.                                                                                                       |
-| 23  | System Monitoring            | Admin                          | \- Monitors system health, API performance, and background tasks (OCR, **queues**) via endpoints and the admin dashboard.                                                                                                                           |
+| 01  | Sign In                      | Guest                          | Authenticates via email/password; enforces single-active-session policy by revoking older sessions (`replaced_by_sign_in`); enforces brute-force protection (5 failures/15m -> 15m block); returns JWT (15m) and Refresh Token (7d).              |
+| 02  | Sign Up                      | Guest                          | Registers a new account with mandatory Vietnamese phone number, email, display name, and password; creates user in `pending_verification` status; sends 6-digit SHA-256 OTP.                                                                       |
+| 03  | Verify Email                 | Guest                          | Submits 6-digit OTP; validates with max 5 failed attempts (5th failure permanently supersedes token); on success marks user `active`; requires manual sign-in afterwards.                                                                          |
+| 04  | Resend Verification OTP      | Guest                          | Requests a new verification OTP; rate-limited by email and IP; always returns HTTP 202 to prevent account enumeration.                                                                                                                              |
+| 05  | Token Refresh (Rotation)     | Authenticated User             | Rotates access/refresh tokens; validates single-use refresh token; detects reuse of consumed tokens and immediately revokes the session (`SESSION_REVOKED`).                                                                                       |
+| 06  | Forgot & Reset Password      | Guest                          | Requests password reset via email OTP (always returns HTTP 202); verifies OTP and sets new password; revokes **all** active sessions (`password_reset`).                                                                                             |
+| 07  | Sign Out                     | Authenticated User             | Terminates current session using `TokenAuth` (validates JWT without requiring active DB session); deletes FCM token from session; preserves local `device_id`.                                                                                       |
+| 08  | Change Password              | Authenticated User             | Replaces current password after verifying old password; updates password hash and revokes all other sessions (`password_changed`) while keeping the current session active.                                                                        |
+| 09  | Update Profile & Bank Info   | Authenticated User             | Updates display name, phone number, default bank account (all-3-fields or none, VietQR directory validated), and avatar (Cloudinary WebP conversion with automatic compensation cleanup).                                                           |
+| 10  | Create New Group             | Authenticated User             | Creates an expense group (1-100 runes, VND currency); caller automatically becomes the Captain; initializes group ledger and activity log.                                                                                                         |
+| 11  | Generate Group Invite        | Captain, Member                | Produces Base62 8-character case-sensitive invite code (default 24h, configurable 1-168h, optional max uses); Captain can configure or regenerate; regular members reuse available active invite.                                                   |
+| 12  | Preview & Join Group         | Authenticated User             | Previews group info with dual rate-limiting (30 req/min); joins group under row-level lock (`LockActiveGroup`); enforces 50-member capacity; reactivates soft-deleted members preserving ledger identity.                                           |
+| 13  | Remove Member / Leave Group  | Captain, Member                | Removes a member or allows self-leave; blocked if member has open debts/receivables (`409 GROUP_MEMBER_HAS_OPEN_DEBTS`); Captain cannot leave without transferring captaincy; soft-deactivates membership.                                          |
+| 14  | Transfer Captain Role        | Captain                        | Transfers captaincy to an active member using `NOWAIT` row lock and ascending UUID lock order to prevent deadlocks.                                                                                                                                 |
+| 15  | Disband (Archive) Group      | Captain                        | Archives the group; blocked if batch finalization is in progress or unsettled bills/debts exist; deactivates members and revokes invites.                                                                                                           |
+| 16  | Lock / Unlock Submissions    | Captain                        | Locks group bill submissions (`bill_submission_locked_at`) preventing new bill creation; Captain can unlock submissions at any time.                                                                                                                |
+| 17  | Upload Bill Image (OCR)      | Creditor, Member               | Uploads 1–5 receipt images (≤10MB); creates draft bill (version 1) and enqueues River job `bill_ocr` in the same transaction; returns HTTP 202 Accepted.                                                                                            |
+| 18  | Extract Data via River Worker| OCR Provider (External)        | River worker stitches images, invokes LlamaExtract, retries transient errors (max 3 attempts), stores candidate JSONB, and emits `ocr.updated` event.                                                                                                |
+| 19  | Update Draft & Assign Items  | Creditor, Captain              | Edits merchant, line items, taxes, discounts, and weighted assignments (`big.Rat`); derives total amount; enforces optimistic locking via `version` CAS; resets reviewed bills to draft.                                                           |
+| 20  | Review Bill                  | Creditor, Captain              | Validates allocation rules and blocker checks (`ITEM_UNASSIGNED`, `INACTIVE_MEMBER_ASSIGNED`, `DISCOUNT_EXCEEDS_BILL`, `SUBTOTAL_MISMATCH`, `TOTAL_MISMATCH`); transitions clean bill to `reviewed`.                                              |
+| 21  | Finalize Bill                | Captain                        | Immutably locks bill; computes exact shares via Hamilton largest-remainder algorithm without creditor bias (1-VND tie-break by UUID); creates `awaiting` debt records, logs activity, and enqueues FCM push notifications.                        |
+| 22  | Batch Finalize-All           | Captain                        | Automatically locks bill submissions; captures all draft/reviewed bills into batch items; processes each bill in an independent River job transaction; notifies Captain upon completion.                                                           |
+| 23  | Void Finalized Bill          | Captain                        | Voids a finalized bill with mandatory reason (1-500 chars); blocked if payment proof is submitted or in-progress; supersedes pending QR intents; voids all associated debts.                                                                      |
+| 24  | View Allocated Expense       | Debtor, Member                 | Displays itemized breakdown, proportional surcharges/discounts, exact rounding adjustments, net group balance, and payment references.                                                                                                              |
+| 25  | Generate Payment QR          | Debtor                         | Generates VietQR code for 1–100 `awaiting` debts owed to a creditor; uses deterministic UUIDv5 idempotency key; creates non-locking `pending_proof` payment intent with unique reference code (`PAY` + 8 Base32 chars).                            |
+| 26  | Submit Payment Proof         | Debtor                         | 2-phase process: reserves idempotency key `in_progress`, uploads screenshot to Cloudinary, snapshots creditor bank info, transitions payment and debts to `pending_confirmation`, and notifies creditor.                                           |
+| 27  | Confirm / Reject Payment     | Creditor                       | Creditor manually confirms (transitions payment to `confirmed` and debts to `settled`) or rejects (with mandatory reason, resetting debts to `awaiting` and clearing `payment_id`).                                                                |
+| 28  | Debt Reminders & Auto Scan   | Creditor, Captain, System      | Manual reminder (max 3 times, ≥24h cooldown, UUIDv4 key); hourly River job (`settlement_scan`) sends automated reminders for 72h stale debts (sharing 3-count limit) and alerts creditors on 48h stalled proofs.                                   |
+| 29  | In-App & Push Notifications  | Authenticated User             | Lists paginated in-app notifications with optimistic read marking; dispatches FCM push notifications asynchronously; resolves notification taps via type-first deep linking.                                                                       |
+| 30  | Admin Portal & Monitoring    | Admin                          | Embedded static Web Admin Portal (`/admin-portal/`); manages accounts; updates status (active, suspended, locked) with instant session revocation and SSE notification; views system overview metrics and probes health endpoints.                   |
 
 ##### **Table 3\. Use Case Description** {#table-3.-use-case-description}
 
@@ -345,438 +297,429 @@ Ultimately, this prototype serves as a foundation to evaluate usability, OCR acc
 
 #### **_4.1.1 \- Sign In_** {#4.1.1---sign-in}
 
-- **_Function trigger:_** A Guest submits credentials on the sign-in screen.
-- **_Function description:_** Authenticates a user and issues the token pair required to access protected resources.
-- **_Function detail:_**
-  - **Data Validation**: Email must be a syntactically valid address; password must not be empty.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The user submits an email and password
-      - The system locates the user by email and verifies the password against the hash stored on the user record.
-      - The system issues a short-lived access token (JWT) and a long-lived refresh token bound to the device, and records the session.
-      - The system returns the token pair together with the user's basic profile.
-    - _In Abnormal Cases:_
-      - _Invalid credentials:_ Return HTTP 401 with a generic message that does not disclose whether the email exists.
-      - _Unverified account:_ Return HTTP 403 with an **EMAIL_NOT_VERIFIED** code and offer to resend the verification email.
-      - _Suspended or locked account:_ Return HTTP 403 and refuse token issuance.
-      - _Repeated failed attempts:_ The system applies rate limiting per IP address and per account, and returns HTTP 429 once the threshold is exceeded.
+- **_Function Trigger:_** A Guest submits credentials on the sign-in screen (`POST /api/v1/auth/sign-in`).
+- **_Function Description:_** Authenticates the user, enforces the single-active-session policy, applies brute-force rate-limiting, and issues a JWT access token and refresh token.
+- **_Function Detail:_**
+  - **Data Validation:** Email must be a valid email address; password must not be empty; optional persistent `device_id` (UUID) and optional `fcm_token`.
+  - **Single Active Session Rule:** Each user may possess at most one active session (`revoked_at IS NULL`, enforced by unique index `uq_sessions_one_active_per_user`). When signing in on a new device, the system immediately revokes any existing active session with reason `replaced_by_sign_in`.
+  - **Execution Order (Security Gate):**
+    1. System checks `login_blocked_until` **before** password evaluation. If active, returns HTTP `429 RATE_LIMITED` with a `Retry-After` header.
+    2. System queries user by email. If not found, runs a dummy failure record and returns HTTP `401 INVALID_CREDENTIALS` (anti-enumeration).
+    3. System verifies password hash using bcrypt (`DefaultCost = 10`). On failure, increments failure count (5 failures in 15 minutes triggers a 15-minute lock) and returns HTTP 401 (or 429 if newly locked).
+    4. Password verified: System checks account `status`. If `pending_verification`, returns HTTP `403 EMAIL_NOT_VERIFIED`. If `suspended` or `locked`, returns HTTP `403 ACCOUNT_UNAVAILABLE`.
+    5. Active account: System revokes old session, creates new session record storing SHA-256 hash of refresh token, binds `device_id`, issues 15-minute Access Token (JWT containing `sub`, `role`, `sid`) and 7-day Refresh Token, binds optional FCM token, and returns HTTP 200.
+  - **Client Handling:** Flutter client stores `access_token`, `refresh_token`, and `device_id` in `flutter_secure_storage`, initializes FCM manager, and navigates to `/home`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
 #### **_4.1.2 \- Sign Up_** {#4.1.2---sign-up}
 
-- **_Function trigger:_** A Guest submits the registration form.
-- **_Function description:_** Creates a new user account and initiates email verification.
-- **_Function detail :_**
-  - **\*Data Validation**:\* Email must be valid and not already registered; password must meet the minimum strength policy (length and character-class requirements); display name must not be empty.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system verifies that the email is not already associated with an existing account.
-      - The system creates a user record with a UUID v7 identifier and stores only the password hash.
-      - The system sends a verification email containing a single-use, time-limited token.
-      - Once the user opens the verification link, the account is marked as verified and may sign in.
-    - _In Abnormal Cases:_
-      - _Email already registered:_ Return HTTP 409 and suggest signing in or recovering the password.
-      - _Weak password:_ Return HTTP 400 with the specific policy rules that were not satisfied.
-      - _Email delivery failure:_ The account is still created; the system logs the failure and exposes a "resend verification email" action.
+- **_Function Trigger:_** A Guest submits the registration form (`POST /api/v1/auth/sign-up`).
+- **_Function Description:_** Registers a new user account in `pending_verification` status and dispatches a 6-digit verification OTP.
+- **_Function Detail:_**
+  - **Data Validation:** Display name (1–100 runes; FE min 2 chars); email (lowercase, valid syntax); password (8–72 bytes, requiring uppercase, lowercase, and numeric characters); phone number (**mandatory**, unique, matching Vietnamese E.164 format `0[35789]...`).
+  - **Rate Limiting:** Maximum 10 registration requests per hour per IP address, enforced via database advisory locks (`pg_advisory_xact_lock`).
+  - **Execution:**
+    - Generates UUID v7 primary key and stores only the bcrypt password hash.
+    - Generates a 6-digit numeric OTP (10-minute TTL) and stores its SHA-256 hash in `user_tokens`.
+    - Dispatches verification email via Gmail SMTP. If SMTP fails, the failure is logged, `verification_email_sent` is set to `false`, and the registration still succeeds with HTTP `201 Created` (ensuring SMTP outages do not block user onboarding).
+    - Client navigates to `/verify-otp` passing the registered email.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.3 \- Forgot Password_** {#4.1.3---forgot-password}
+#### **_4.1.3 \- Verify Email_** {#4.1.3---verify-email}
 
-- **_Function trigger:_** A Guest requests a password reset from the sign-in screen.
-- **_Function description:_** Provides a secure recovery path for users who cannot access their account.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The submitted email must be syntactically valid. The reset token must be unexpired, unused, and correctly bound to the account.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system generates a single-use reset token with a short expiry and stores only its hash.
-      - The system sends the reset link to the registered email address.
-      - The user opens the link and submits a new password.
-      - The system updates the password hash, invalidates the reset token, and revokes all existing refresh tokens for that account.
-    - _In Abnormal Cases:_
-      - _Unregistered email:_ The system returns the same success response as the normal case to avoid account enumeration, and sends no email.
-      - _Expired or already used token:_ Return HTTP 400 and invite the user to request a new reset link.
+- **_Function Trigger:_** A Guest enters the 6-digit OTP on the verification screen (`POST /api/v1/auth/verify-email`).
+- **_Function Description:_** Validates the email OTP, activates the account, and marks the token as used.
+- **_Function Detail:_**
+  - **Data Validation:** Email and 6-digit numeric OTP.
+  - **Execution:**
+    - Queries user and token with `FOR UPDATE`.
+    - If user is already `active` (e.g. accidental double submit), performs constant-time comparison against the previously used token and returns HTTP 200 (idempotent replay).
+    - If OTP is incorrect, increments `attempt_count`. If `attempt_count >= 5`, the token is **permanently superseded** (cannot be reused, requiring resending a new OTP). Returns HTTP `400 INVALID_OR_EXPIRED_TOKEN`.
+    - If OTP is valid and unexpired, sets `users.status = 'active'`, marks token `used_at = now()`, and returns HTTP 200.
+    - **No JWT is issued at this step.** The client navigates the user to `/login` to enter their password.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.4 \- Sign Out_** {#4.1.4---sign-out}
+#### **_4.1.4 \- Resend Verification OTP_** {#4.1.4---resend-verification-otp}
 
-- **_Function trigger:_** An Authenticated User selects the sign-out action.
-- **_Function description:_** Ends the current session and prevents further token renewal from that device.
-- **_Function detail :_**
-  - **\*Data Validation**:\* None.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system revokes the refresh token associated with the current device and marks the session as closed.
-      - The client discards the stored tokens and returns to the unauthenticated state.
-    - _In Abnormal Cases:_
-      - _Token already revoked or missing:_ The system treats the operation as successful (idempotent behaviour) so that the client can always return to a clean state.
+- **_Function Trigger:_** A Guest requests a new OTP on the verification screen (`POST /api/v1/auth/resend-verification`).
+- **_Function Description:_** Issues and emails a fresh 6-digit verification OTP.
+- **_Function Detail:_**
+  - **Rate Limiting:** Enforced independently by hash(email) and hash(IP) with minimum 1 request per minute and maximum 10 requests per hour.
+  - **Anti-Enumeration:** If the email does not exist or the account is already active, the system returns HTTP `202 Accepted` without sending an email.
+  - **Execution:** Generates a new 6-digit OTP, supersedes any existing active token (`uq_user_tokens_one_active_per_type`), and dispatches the email.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.5 \- Change Password_** {#4.1.5---change-password}
+#### **_4.1.5 \- Token Refresh & Session Rotation_** {#4.1.5---token-refresh-&-session-rotation}
 
-- **_Function trigger:_** An Authenticated User submits the change-password form in profile settings.
-- **_Function description:_** Replaces the account password after re-verifying the user's identity.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The current password must be correct; the new password must satisfy the strength policy and differ from the current one.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system verifies the current password hash.
-      - The system stores the new password hash.
-      - The system revokes all refresh tokens except the one belonging to the current device.
-    - _In Abnormal Cases:_
-      - _Incorrect current password:_ Return HTTP 400 without modifying the account, and count the attempt towards the rate limit.
-      - _Account not in_ `ACTIVE` _status:_ Return HTTP 403\.
+- **_Function Trigger:_** The Flutter client receives HTTP 401 on an authenticated REST or SSE request (`POST /api/v1/auth/refresh`).
+- **_Function Description:_** Rotates the refresh token, validates device binding, detects token reuse attacks, and issues a new access/refresh token pair.
+- **_Function Detail:_**
+  - **Single-Flight Coordination:** The Flutter client executes token refreshes through a single-flight manager (`SessionRefresher`), ensuring concurrent REST and SSE 401 failures await the same refresh operation rather than triggering concurrent rotations.
+  - **Execution:**
+    - Verifies `refresh_token` and `device_id`.
+    - Hashes token using SHA-256 and queries `refresh_tokens` table.
+    - **Reuse Detection:** If the token has already been consumed (`used_at IS NOT NULL`), the system treats the event as a token theft attempt: immediately revokes the session and all associated refresh tokens with reason `refresh_reuse`, emits a `session.ended` SSE event, and returns HTTP `401 SESSION_REVOKED`. The client clears all local storage and redirects to `/welcome`.
+    - If the token is invalid, expired, or bound to a different `device_id`, returns HTTP `400 INVALID_OR_EXPIRED_TOKEN`.
+    - If valid, marks the old token `used_at = now()`, inserts a new 7-day refresh token (capped by `session.expires_at`), signs a new 15-minute access token, and returns HTTP 200.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.6 \- Update Profile Information_** {#4.1.6---update-profile-information}
+#### **_4.1.6 \- Forgot Password & Reset Password_** {#4.1.6---forgot-password-&-reset-password}
 
-- **_Function trigger:_** An Authenticated User saves changes on the profile screen.
-- **_Function description:_** Maintains the personal and banking information required for display within groups and for generating payment QR codes.
-- **_Function detail :_**
-  - **\*Data Validation**:\* Display name must not be empty; avatar must be an accepted image type within the size limit; bank code must exist in the supported NAPAS bank list; bank account number must match the format expected for that bank.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The user updates the display name, avatar, phone number, and default receiving bank account.
-      - The system stores the updated profile, where an avatar is uploaded, persists the file through the storage adapter and records the resulting object key.
-      - Subsequent VietQR generation uses the updated bank account information.
-    - _In Abnormal Cases:_
-      - _Invalid bank account information:_ Return HTTP 400 and retain the previous bank details, since an incorrect account would cause payments to be misdirected.
-      - _Storage service unavailable:_ The system saves the non-image fields and reports that the avatar upload must be retried.
+- **_Function Trigger:_** A user requests password recovery from the sign-in screen.
+- **_Function Description:_** Issues a time-limited 6-digit recovery OTP and resets the account password.
+- **_Function Detail:_**
+  - **Forgot Password (`POST /api/v1/auth/forgot-password`):** Submits email; rate-limited by email and IP; always returns HTTP `202 Accepted` to prevent account enumeration. Generates a 6-digit SHA-256 hashed OTP (10m TTL) and sends the reset email.
+  - **Reset Password (`POST /api/v1/auth/reset-password`):** Submits email, 6-digit OTP, and new password. Validates password policy; updates bcrypt hash; marks OTP as used; **revokes ALL active sessions** (`password_reset`) for that user. Returns HTTP 204. Client navigates to `/login` with a green success banner.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.7 \- Create New Group_** {#4.1.7---create-new-group}
+#### **_4.1.7 \- Sign Out_** {#4.1.7---sign-out}
 
-- **_Function trigger:_** An Authenticated User creates a group from the home screen.
-- **_Function description:_** Establishes the shared context in which bills are recorded and debts are tracked.
-- **_Function detail :_**
-  - **\*Data Validation**:\* Group name must not be empty and must be within the maximum length; the default currency is VND.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system creates the group record and adds the creator as its first member with the Captain role.
-      - The system initializes an empty bill list and activity log for the group.
-      - The group appears in the creator's group list, ready to receive members and bills.
-    - _In Abnormal Cases:_
-      - _Group quota exceeded:_ Return HTTP 429 or 403 with an explanation of the limit on concurrently active groups per user.
+- **_Function Trigger:_** An Authenticated User selects Sign Out from the profile settings (`POST /api/v1/auth/sign-out`).
+- **_Function Description:_** Terminates the current device session and deletes local tokens.
+- **_Function Detail:_**
+  - Uses `TokenAuth` middleware (validates JWT signature without requiring an active database session), allowing users to sign out cleanly even if their session was already revoked.
+  - Revokes the session `sid` in PostgreSQL with reason `sign_out`.
+  - Client unregisters FCM token from device (`onLogout`), clears `access_token` and `refresh_token` from secure storage while **preserving `device_id`**, and navigates to `/welcome`. Network errors during sign-out are caught and swallowed so local logout always completes.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.8 \- Generate Group Invite_** {#4.1.8---generate-group-invite}
+#### **_4.1.8 \- Change Password_** {#4.1.8---change-password}
 
-- **_Function trigger:_** The Captain selects the invite action within a group
-- **_Function description:_** Produces a shareable link or code allowing other users to join the group.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The requesting user must hold the Captain role in the target group; the requested expiry must be within the permitted range.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system generates a random, unguessable invite code with an expiry time and an optional maximum use count.
-      - The system returns a deep link that can be shared through any messaging channel.
-      - The Captain may revoke an active invite, after which the code can no longer be redeemed.
-    - _In Abnormal Cases:_
-      - _Requester is not the Captain:_ Return HTTP 403\.
-      - _An active invite already exists:_ The system returns the existing invite rather than creating a duplicate, unless regeneration is explicitly requested.
+- **_Function Trigger:_** An Authenticated User submits the change password form (`PUT /api/v1/users/me/password`).
+- **_Function Description:_** Updates the account password while preserving the current active session.
+- **_Function Detail:_**
+  - Verifies current password bcrypt hash. If incorrect, returns HTTP `400 INVALID_CURRENT_PASSWORD`.
+  - Validates new password strength (8–72 bytes, uppercase, lowercase, numbers) and ensures it differs from the old password (`400 VALIDATION_FAILED`).
+  - Updates password bcrypt hash and **revokes all OTHER active sessions** (`password_changed`) while **keeping the current device session (`sid`) active**. Returns HTTP 204. User remains in the app.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.9 \- Join Group_** {#4.1.9---join-group}
+#### **_4.1.9 \- Update Profile & Bank Information_** {#4.1.9---update-profile-&-bank-information}
 
-- **_Function trigger:_** An Authenticated User opens an invite link or submits an invite code.
-- **_Function description:_** Adds the user to the group as a member.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The invite code must exist, be unexpired, unrevoked, and below its usage limit.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system validates the invite and adds the user to the group with the standard member role.
-      - The system increments the invite usage counter.
-      - The user gains visibility of the group's bills and of their own allocated expenses.
-    - _In Abnormal Cases:_
-      - _Expired, revoked, or exhausted invite:_ Return HTTP 410 and advise the user to request a new link from the Captain.
-      - _User is already a member:_ Return success and navigate directly to the group, without creating a duplicate membership.
-
-––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
-
-#### **_4.1.10 \- Remove Member_** {#4.1.10---remove-member}
-
-- **_Function trigger:_** The Captain removes a member from the group member list.
-- **_Function description:_** Withdraws a member's access to the group while preserving ledger integrity.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The requester must be the Captain; the target member must have a net balance of zero; the Captain cannot remove themselves while other members remain.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system verifies that the member has no outstanding debt and no outstanding credit.
-      - The system marks the membership as inactive rather than deleting it, so that past bill participation, debt records and activity history remain intact.
-      - The removed member loses access to the group but their contribution to finalized bills is preserved.
-    - _In Abnormal Cases:_
-      - _Members still have an outstanding balance:_ Return HTTP 409 with the exact amount owed or owing, and require settlement before removal.
-      - _Requester is not the Captain:_ Return HTTP 403\.
+- **_Function Trigger:_** An Authenticated User updates profile details, bank details, or uploads an avatar (`PATCH /api/v1/users/me`, `PUT /api/v1/users/me/avatar`).
+- **_Function Description:_** Manages user personal data, receiving bank account details for VietQR generation, and avatar images.
+- **_Function Detail:_**
+  - **Profile & Bank Details (`PATCH /api/v1/users/me`):**
+    - Bank details enforce an **all-three-or-none** rule: `bank_code`, `bank_account_number`, and `bank_account_holder` must all be present or all null.
+    - `bank_code` is validated against the VietQR NAPAS directory (`400 UNSUPPORTED_BANK`).
+    - `bank_account_number` must be 6–19 numeric digits.
+    - `bank_account_holder` is automatically sanitized to uppercase unaccented format (e.g., `NGUYEN VAN A`).
+  - **Avatar Upload (`PUT /api/v1/users/me/avatar`):**
+    - Accepts multipart image up to 10MB (JPEG, PNG, GIF, WebP).
+    - Server converts image to WebP (q82, max 1024px, EXIF stripped) under a concurrency semaphore (`AVATAR_MAX_CONCURRENT_CONVERSIONS = 2`). HEIC/unsupported formats are uploaded raw.
+    - Uploads to Cloudinary (`paysplit/avatars/{uid}/{uuidv7}`) **before** updating database.
+    - If DB update fails, server executes compensation deletion of the new image from Cloudinary (no job enqueued).
+    - If deleting the old avatar from Cloudinary fails, server enqueues a background job in `media_cleanup_jobs` (retried up to 10 times via internal ticker worker). Returns HTTP 200 with `avatar_url`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.11 \- Upload Bill Image_** {#4.1.11---upload-bill-image}
+#### **_4.1.10 \- Create New Group_** {#4.1.10---create-new-group}
 
-- **_Function trigger:_** The Creditor photographs a receipt or selects an image from the device gallery and submits it to a group.
-- **_Function description:_** Starts the automated bill-parsing pipeline by storing the receipt image and enqueuing an extraction job.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The file must be an accepted image type (JPEG, PNG, HEIC,...), must not exceed the configured maximum size, and the uploader must be an active member of the target group.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The client uploads the image, which the system persists through the storage adapter.
-      - The system creates a bill record in `DRAFT` status and enqueues an OCR job in the background job queue.
-      - The system returns a bill identifier and a progress channel (SSE) so that the client can display extraction progress.
-      - On completion, the draft bill is populated with the extracted line items and presented to the Creditor for review.
-    - _In Abnormal Cases:_
-      - _Unsupported file type or oversized file:_ Return HTTP 400 without creating a bill record.
-      - _Storage service unavailable:_ Return HTTP 503 and prompt the user to retry; no bill record is created.
-      - _Network interruption during upload:_ The partially uploaded object is discarded by the storage lifecycle policy and the client retries.
+- **_Function Trigger:_** An Authenticated User creates an expense group (`POST /api/v1/groups`).
+- **_Function Description:_** Creates an expense group, sets the creator as Captain, and initializes ledger tracking.
+- **_Function Detail:_**
+  - **Data Validation:** Group name (1–100 runes; FE enforces 3–50 characters); currency defaults to `VND`.
+  - **Execution:** In a single transaction: inserts group record (`status = 'active'`), inserts creator as first active member with `captain` role, records `group_created` activity log, and returns HTTP `201 Created` with group details and membership. Client navigates to Add Members screen.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.12 \- Extract Data from Bill Image_** {#4.1.12---extract-data-from-bill-image}
+#### **_4.1.11 \- Generate Group Invite_** {#4.1.11---generate-group-invite}
 
-- **_Function trigger:_** The OCR background job is picked up from the queue after a bill image has been uploaded.
-- **_Function description:_** Converts a receipt photograph into structured, editable bill data using an external Vision LLM / OCR provider.
-- **_Function detail :_**
-  - **\*Data Validation**:\* The provider response must conform to the expected schema; all monetary values must be parsable into non-negative integers in VND; the sum of line items plus surcharges must be reconciled against the extracted total.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system sends the image to the OCR Provider together with a structured extraction prompt.
-      - The system receives merchant name, date, line items (name, quantity, unit price, line total), service charge, VAT, discount, and grand total.
-      - The system normalizes Vietnamese number formatting into `int64` VND values and stores them as draft bill items.
-      - The system emits a progress event so that the client can present the parsed result for review.
-    - _In Abnormal Cases:_
-      - _Provider timeout or transient error:_ The job is retried with exponential backoff up to the configured maximum attempts.
-      - _Provider permanently unavailable or retries exhausted:_ The bill remains in `DRAFT` status with an empty item list, and the Creditor is invited to enter the items manually.
-      - _Extracted totals do not reconcile:_ The system still stores the items but flags the bill with a mismatch warning so that the Creditor verifies the figures before finalization.
-      - _Unreadable image:_ The system returns an explicit "could not read this receipt" state and suggests retaking the photograph.
+- **_Function Trigger:_** A user requests a shareable group invite link (`POST /api/v1/groups/{id}/invites`, `GET /api/v1/groups/{id}/invites`).
+- **_Function Description:_** Generates or reuses a shareable Base62 8-character invite link.
+- **_Function Detail:_**
+  - **Invite Code Format:** Random 8-character Base62 string (case-sensitive). Expiry defaults to 24 hours (configurable 1–168 hours). Optional `max_uses` (1–50; NULL indicates unlimited).
+  - **Permission Rules:**
+    - If the request specifies `expires_in_hours`, `max_uses`, or `regenerate = true`, the caller **must be the Captain** (`403 FORBIDDEN` if not).
+    - If a regular member calls with an empty body, the system returns an existing active/available invite without altering parameters.
+  - **Collision Handling:** Code uniqueness collisions are retried up to 5 times; returns HTTP 200 with `invite_url` (derived from `APP_INVITE_BASE_URL + code`, e.g. `https://paysplit.app/join/{code}`).
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.13 \- Assign Items to Members_** {#4.1.13---assign-items-to-members}
+#### **_4.1.12 \- Preview & Join Group_** {#4.1.12---preview-&-join-group}
 
-- **_Function trigger:_** The Captain or the Creditor allocates items on the bill review screen.
-- **_Function description:_** Determines the share of the bill attributable to each participant, either per item or by an equal split across selected members. The Captain can assign items for any bill within their group, whereas a Creditor can assign items for bills they have personally uploaded.
-- **_Function detail:_**
-  - **Data Validation**: Every assignee must be an active member of the group. Each item must be assigned to at least one participant before the bill can be finalized. Assignment weights must be positive.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The Captain or the Creditor selects an item and chooses the participants who consumed it, optionally with different weights or quantities.
-      - Alternatively, the acting user applies an "equal split" rule that distributes the whole bill evenly across the selected participants.
-      - The system continuously recalculates a preview of each participant's provisional share.
-      - Shared surcharges (service charge, VAT) and discounts are apportioned proportionally to each participant's subtotal.
-      - Equal split over the whole bill is implemented by assigning every line item to all selected participants with weight \= 1; manually entered bills without line items must be represented as a single synthetic line item covering the whole amount.
-    - _In Abnormal Cases:_
-      - _Unassigned items remain:_ The system blocks finalization and highlights the items still requiring an assignee.
-      - _Assignment to a member who has left the group:_ Return HTTP 409 and prompt the user to reassign the item.
+- **_Function Trigger:_** An Authenticated User pastes an invite link or scans a group QR code (`GET /api/v1/groups/invites/{code}`, `POST /api/v1/groups/join`).
+- **_Function Description:_** Previews group metadata and joins the user to the group under concurrency control.
+- **_Function Detail:_**
+  - **Rate Limiting:** Both endpoints enforce dual rate-limiting `RateLimitByAccountAndIP` (default 30 requests/min across account and IP).
+  - **Preview (`GET /groups/invites/{code}`):** If the invite code is expired, revoked, exhausted, or the group is archived, returns uniform HTTP `404 INVITE_NOT_FOUND` (anti-enumeration). Otherwise returns group name, active member count, and captain display name.
+  - **Join (`POST /groups/join`):**
+    - Acquires group row lock (`LockActiveGroup` `FOR UPDATE`).
+    - If user is already an active member, returns HTTP 200 `already_active` without consuming invite usages.
+    - If group has reached maximum active capacity (50 members), returns HTTP `409 GROUP_MEMBER_LIMIT_REACHED`.
+    - If user was previously a member (`status = 'inactive'`), re-activates the existing membership row, sets `role = 'member'`, `joined_at = now()`, preserves historical `member_id`, and logs `member_reactivated` activity.
+    - If new user, inserts `group_members` row, increments invite `use_count`, logs `member_joined` activity, and returns HTTP 200 `joined`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.14 \- Update Bill Information_** {#4.1.14---update-bill-information}
+#### **_4.1.13 \- Remove Member & Leave Group_** {#4.1.13---remove-member-&-leave-group}
 
-- **_Function trigger:_** The Creditor edits bill details before finalization.
-- **_Function description:_** Corrects OCR inaccuracies and completes any information missing from the extracted receipt.
-- **_Function detail:_**
-  - **Data Validation**: The bill must be in `DRAFT` status; all monetary values must be non-negative integers; the requester must be the Creditor who created the bill or the group Captain.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The Creditor edits the merchant name, bill date, item names, quantities, unit prices, service charge, VAT, and discount.
-      - The Creditor may add items the OCR missed, delete spurious items, and adjust the participant list.
-      - The system recomputes derived totals after every change and revalidates the reconciliation between line items and the grand total.
-    - _In Abnormal Cases:_
-      - _Bill already finalized:_ Return HTTP 409; corrections after finalization must be made through a reversal entry rather than by editing history.
-      - _Requester lacks permission:_ Return HTTP 403\.
-      - _Concurrent edits by two users:_ The system applies optimistic locking using a version field and returns HTTP 409 to the second writer, prompting a refresh before retrying.
+- **_Function Trigger:_** A Captain removes a member or a member leaves the group (`DELETE /api/v1/groups/{id}/members/{memberId}`).
+- **_Function Description:_** Deactivates group membership while preserving financial ledger integrity.
+- **_Function Detail:_**
+  - **Security Gate:** Caller must be the Captain or the member themselves (`403 FORBIDDEN` if unauthorized; non-existent member returns 403 to prevent member enumeration).
+  - **Captaincy Check:** A Captain cannot leave or be removed without first transferring the Captain role (`409 CAPTAIN_TRANSFER_REQUIRED`).
+  - **Two-Way Debt Invariant:** System checks all unsettled debts where member is debtor (`payable`) or creditor (`receivable`). If any debt is in `awaiting` or `pending_confirmation`, returns HTTP `409 GROUP_MEMBER_HAS_OPEN_DEBTS` with exact open payable and receivable amounts.
+  - **Execution:** Sets `group_members.status = 'inactive'`, `left_at = now()`, records `member_left` or `member_removed` activity log, and returns HTTP 204. Historical bill assignments and settled debts remain intact.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.15 \- Finalize Bill_** {#4.1.15---finalize-bill}
+#### **_4.1.14 \- Transfer Captain Role_** {#4.1.14---transfer-captain-role}
 
-- **_Function trigger:_** The Captain confirms the finalization action via the review screen.
-- **_Function description:_** Executed exclusively by the Captain. This action locks the bill immutably, computes the definitive per-person amounts, records them in the ledger, simplifies the resulting debts, and issues an individual payment QR code for each debtor.
-- **_Function detail:_**
-  - **Data Validation**: The bill must be in `DRAFT` status with all items assigned. The respective Creditors must have valid receiving bank account information configured.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system takes an immutable snapshot of the participant list at the moment of execution.
-      - The system globally locks the bill to prevent any further modifications.
-      - The Split Controller computes each participant's share using int64 arithmetic and distributes rounding remainders through the largest-remainder (Hamilton) method, guaranteeing that the sum of all shares equals the bill total exactly.
-      - For every participant other than the Creditor, the system creates (or updates, keyed on `bill_id + debtor + creditor`) exactly one `debts` row carrying the participant's total share of that bill, so that the sum of all debt amounts equals the bill total exactly. Item-level traceability is derived on read from `bill_item_assignments`; no separate source table is persisted.
-      - The Settlement Controller computes a simplified set of transfers that minimizes the number of transactions required to clear the outstanding balances.
-      - For each resulting transfer, the system generates a VietQR payload encoding the recipient account, the exact amount, and a unique reference code for manual cross-checking.
-      - The system transitions the bill to `FINALIZED`, notifies all participants through push notifications, and displays the rounding adjustment applied to each person for transparency.
-    - _In Abnormal Cases:_
-      - _Unassigned items or an empty participant list:_ Return HTTP 400 identifying the specific blocking condition.
-      - _Debt-generation failure:_ the entire finalization is rolled back in a single database transaction; the bill stays in `DRAFT` and no partial debt records are persisted.
-      - _QR generation failure for one recipient:_ Finalization still completes, and the affected debt is shown with the recipient's bank details in plain form so that a manual transfer remains possible.
+- **_Function Trigger:_** The Captain assigns captaincy to another member (`PUT /api/v1/groups/{id}/members/{memberId}/role`).
+- **_Function Description:_** Atomically transfers group leadership.
+- **_Function Detail:_**
+  - Request body must specify `{ "role": "captain" }`. Caller must be the current Captain (`403 CAPTAIN_REQUIRED`). Target cannot be self (`400 VALIDATION_FAILED`).
+  - Acquires group lock with `FOR UPDATE NOWAIT`. If another mutation holds the lock, immediately returns HTTP `409 CAPTAIN_TRANSFER_CONFLICT` rather than blocking.
+  - Locks both membership records in ascending UUID order to prevent deadlocks.
+  - Demotes old captain to `member`, promotes target member to `captain`, records `captain_transferred` activity, and returns HTTP 200.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.16 \- View Allocated Expense_** {#4.1.16---view-allocated-expense}
+#### **_4.1.15 \- Disband (Archive) Group_** {#4.1.15---disband-(archive)-group}
 
-- **_Function trigger:_** A Payer opens a bill or the group summary screen.
-- **_Function description:_** Shows the Payer exactly what they owe, to whom, and why.
-- **_Function detail:_**
-  - **Data Validation**: The requester must be a participant in the bill or an active member of the group.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system displays the Payer's total amount due, the items charged to them with the corresponding unit amounts, and the proportional share of service charge, VAT, and discount.
-      - The system explicitly discloses any rounding adjustment applied to that participant.
-      - The system shows the recipient of the payment, the current settlement status, and the reference code associated with the payment request.
-    - _In Abnormal Cases:_
-      - _Requester is not a participant:_ Return HTTP 403\.
-      - _Bill not yet finalized:_ The system displays the provisional calculation and marks it clearly as an estimate that may still change.
+- **_Function Trigger:_** The Captain disbands the group (`DELETE /api/v1/groups/{id}`).
+- **_Function Description:_** Archives the group after verifying all obligations are settled.
+- **_Function Detail:_**
+  - Caller must be Captain. System locks group.
+  - Blocks if a batch finalization is active (`409 BULK_FINALIZE_IN_PROGRESS`).
+  - Blocks if any bills are not finalized/voided or any debts remain unsettled (`409 GROUP_HAS_UNSETTLED_OBLIGATIONS`).
+  - Sets `groups.status = 'archived'`, deactivates all active memberships, revokes all invites, records `group_archived` activity, and returns HTTP 204. Subsequent requests for group detail return HTTP `404 GROUP_NOT_FOUND`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.17 \- Generate Payment QR_** {#4.1.17---generate-payment-qr}
+#### **_4.1.16 \- Lock and Unlock Bill Submissions_** {#4.1.16---lock-and-unlock-bill-submissions}
 
-- **_Function trigger:_** A Payer opens the payment screen for one or more outstanding debts owed to the same Creditor.
-- **_Function description:_** Produces a single VietQR code that allows the Payer to transfer the exact aggregated amount directly to the Creditor's bank account.
-- **_Function detail:_**
-  - **Data Validation**: All selected debts must belong to the same group, share the same debtor and the same creditor, and be in `AWAITING` status. The Creditor must have valid receiving bank account information configured. The aggregated amount must be a positive integer in VND.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - **Aggregation within a single bill** is performed at finalization: when a Payer is charged for several items on the same bill, the system stores exactly one debt record per `(bill, debtor, creditor)` triple carrying the summed amount, rather than one record per item. Item-level detail remains traceable through the item assignments.
-      - **Aggregation across bills** is performed here: the system groups all of the Payer's `AWAITING` debts owed to the same Creditor within the group into a single payment record, and sums their amounts.
-      - All debts covered by the payment transition to `PENDING_CONFIRMATION` and are linked to the payment record.
-      - The screen lists which bills the QR covers, so that the Payer can see exactly what is being settled, and displays the reference code in text beneath the QR so that it can be entered manually if the Payer types the transfer by hand.
-      - The Payer may choose to settle only a subset of their debts to that Creditor; the system then generates a QR covering only the selected subset.
-    - _In Abnormal Cases:_
-      - _Selected debts have different creditors: Return HTTP 400\. A single QR can only target one receiving bank account._
-      - _Debts already settled or already covered by an active payment: Return HTTP 409 and refresh the debt list._
-      - _Creditor has no bank account configured: Return HTTP 409 and prompt the Payer to ask the Creditor to complete their profile._
-      - _QR generation error: The system falls back to displaying the Creditor's bank name, account number, account holder name, aggregated amount, and reference code as copyable text._
-
-**Note on architecture:** PaySplit never holds user funds. Money moves peer-to-peer directly between the Payer's and the Creditor's bank accounts, which keeps the system outside the scope of the payment intermediary licensing requirements of Decree 52/2024/NĐ-CP.  
-––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
-
-#### **_4.1.18 \- Submit Payment Proof_** {#4.1.18---submit-payment-proof}
-
-- **_Function trigger:_** A Payer marks a payment as sent after completing the bank transfer.
-- **_Function description:_** Records the Payer's claim of payment for all debts covered by that payment, pending confirmation by the Creditor.
-- **_Function detail:_**
-  - **Data Validation**: The requester must be the debtor on the payment record; the payment must not already be confirmed or rejected; any attached image must be an accepted type within the size limit.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The Payer optionally attaches a transfer screenshot and a short note, which are stored once on the payment record and therefore apply to every debt it covers.
-      - The system stamps the submission timestamp. The covered debts remain in `PENDING_CONFIRMATION`; no settlement is written yet.
-      - The system notifies the Creditor that a confirmation is awaiting their review, showing the aggregated amount, the reference code, and the list of bills covered.
-      - The system stops sending automated reminders for every debt covered by that payment.
-    - _In Abnormal Cases:_
-      - _Payment already confirmed:_ Return HTTP 409 and inform the Payer that the Creditor has already acknowledged receipt.
-      - _Duplicate submission:_ The system updates the existing payment record (replacing the image and note) instead of creating a new one.
-      - _Storage service unavailable:_ The note and the submission are still recorded; the system reports that the image upload must be retried.
+- **_Function Trigger:_** The Captain closes or re-opens group bill intake (`POST /api/v1/groups/{id}/bills/lock-submissions`, `POST /api/v1/groups/{id}/bills/unlock-submissions`).
+- **_Function Description:_** Controls whether members can submit new bills to the group.
+- **_Function Detail:_**
+  - **Lock Submissions:** Sets `groups.bill_submission_locked_at = now()`. Any subsequent bill upload attempts fail with HTTP `409 BILL_SUBMISSION_LOCKED`. Emits `group.bill_submission_locked` realtime event.
+  - **Unlock Submissions:** Clears `bill_submission_locked_at = NULL`. Restores bill upload capability. Emits `group.bill_submission_locked` event.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.19 \- Confirm or Reject Received Payment_** {#4.1.19---confirm-or-reject-received-payment}
+#### **_4.1.17 \- Upload Bill Image & Async OCR Extraction_** {#4.1.17---upload-bill-image-&-async-ocr-extraction}
 
-- **_Function trigger:_** The Creditor reviews a pending payment from the debt list or from a pending-confirmation notification.
-- **_Function description:_** The requester must be the creditor on the payment record; the payment must not already be confirmed or rejected; settlement is all-or-nothing for the aggregated amount — partial settlement is not supported in this prototype. A rejection requires a reason.
-- **_Function detail:_**
-  - **Data Validation**: The requester must be the creditor of the debt; the debt must be unsettled; settlement is all-or-nothing for the full debt amount.
-  - **\*Functionality**:\*
-    - _In Normal Cases (confirm):_
-      - The Creditor reviews the claim against their actual bank statement, matching on the reference code and the aggregated amount.
-      - In a single database transaction, the system stamps the confirmation timestamp on the payment and sets every covered debt to `SETTLED` with its `settled_at` timestamp.
-      - The system appends a `confirmed_payment` entry to the group activity log and sends a single push notification to the Payer.
-      - Group balances are derived on read by aggregating unsettled debt records; no ledger entry is written.
-    - _In Normal Cases (reject):_
-      - _The Creditor supplies a reason. The system stamps the rejection timestamp and reason on the payment, and returns every covered debt to `AWAITING`, detaching it from the payment._
-      - _The rejected payment record is retained as an audit trail; the reference code is not reused._
-      - _The system appends a `rejected_payment` entry to the activity log and notifies the Payer with the reason._
-      - _The detached debts become individually selectable again, so the Payer may retry with a new QR covering any combination of them._
-    - _In Abnormal Cases:_
-      - _Requester is not the creditor:_ Return HTTP 403\.
-      - _Rejection without a reason:_ Return HTTP 400\.
-      - _Confirmation issued in error:_ not supported in this prototype; the Creditor and Payer must resolve it outside the system. (Out-of-scope)
-      - _Database interruption:_ The transaction is rolled back in full — no payment may be left confirmed while its debts remain unsettled — and the user is asked to retry.
+- **_Function Trigger:_** A group member uploads 1–5 receipt photographs (`POST /api/v1/bills` multipart).
+- **_Function Description:_** Persists bill receipt images, initializes a draft bill record, and enqueues an asynchronous OCR extraction job in the River queue.
+- **_Function Detail:_**
+  - **Image Validation:** Accepts 1–5 images (JPEG, PNG, HEIC) up to 10MB each. Validates magic bytes.
+  - **Submission Check:** Pre-checks that group bill submissions are not locked (`409 BILL_SUBMISSION_LOCKED`) and caller is an active group member.
+  - **Upload & Queue:**
+    - Uploads images to Cloudinary storage.
+    - In a single database transaction: inserts `bills` record in `draft` status (version = 1, caller as `creditor`), inserts image metadata, and enqueues River job `bill_ocr` carrying `bill_id`.
+    - Returns HTTP `202 Accepted` with initial draft bill entity.
+  - **Worker Extraction:**
+    - River worker claims job; stitches multi-page images vertically; resizes width > 1200px (JPEG 90); calls LlamaExtract (8s timeout).
+    - If permanent schema failure, marks job `failed` without River retry. If transient failure, retries with exponential backoff up to `BILL_OCR_MAX_ATTEMPTS` (default 3).
+    - On success: saves candidate extraction JSONB and emits `ocr.updated` (status: `succeeded`).
+    - On failure: updates job status to `failed` and emits `ocr.updated` (status: `failed`).
+  - **Client Review:** Client receives `ocr.updated` on user SSE stream, presents extraction review modal, and applies candidate via local merge and versioned `PUT /bills/{id}`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.20 \- View List Account_** {#4.1.20---view-list-account}
+#### **_4.1.18 \- Update Draft Bill & Item Assignments_** {#4.1.18---update-draft-bill-&-item-assignments}
 
-- **_Function trigger:_** An Admin opens the account management screen.
-- **_Function description:_** Provides an overview of all registered accounts for support and moderation purposes.
-- **_Function detail:_**
-  - **Data Validation**: The requester must hold the Admin role; pagination parameters must be within the permitted limits.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system returns a paginated list of accounts including identifier, display name, email, status, and registration date.
-      - The Admin may search by email or display name and filter by status.
-      - Password hashes and authentication secrets are never included in the response.
-    - _In Abnormal Cases:_
-      - _Page size exceeds the maximum:_ The system clamps the value to the maximum and returns the result with the applied limit indicated.
-      - _Requester is not an Admin:_ Return HTTP 403\.
+- **_Function Trigger:_** Creditor or Captain updates bill details, line items, surcharges, or participant assignments (`PUT /api/v1/bills/{id}`).
+- **_Function Description:_** Modifies draft bill contents and item assignments under optimistic version locking.
+- **_Function Detail:_**
+  - **Permission & Status:** Caller must be Captain or Creditor. Bill must be in `draft` or `reviewed` status. If bill was in `reviewed` status, saving edits **automatically demotes status back to `draft`** and clears review timestamps.
+  - **Optimistic Locking:** Request must submit current `version`. Server checks `WHERE id = $1 AND version = $2`. If version mismatched, returns HTTP `409 VERSION_CONFLICT`.
+  - **Calculations & Derivations:**
+    - Line item final price: $\text{final\_price} = \text{line\_total} - \text{item\_discount}$.
+    - Derived total: $\text{allocTotal} = \sum \text{final\_price} + \text{service\_charge} + \text{vat} - \text{general\_discount}$. (Field `total` sent by client/OCR is ignored to prevent rounding mismatches).
+    - Item assignments assign members with positive weights (scaled by $10^8$ using rational `big.Rat` arithmetic).
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.21 \- View Account Details_** {#4.1.21---view-account-details}
+#### **_4.1.19 \- Review Bill_** {#4.1.19---review-bill}
 
-- **_Function trigger:_** An Admin selects an account from the list.
-- **_Function description:_** Presents the complete record of a single account for investigation and support.
-- **_Function detail:_**
-  - **Data Validation**: The requester must hold the Admin role; the target account identifier must exist.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system displays the account profile, account status, active session count, group membership, and recent activity history.
-      - Sensitive fields such as full bank account numbers are masked by default.
-    - _In Abnormal Cases:_
-      - _Account not found or soft-deleted:_ Return HTTP 404, or display the record in read-only form with a "deleted" marker where historical review is required.
+- **_Function Trigger:_** Creditor or Captain confirms draft review readiness (`POST /api/v1/bills/{id}/review`).
+- **_Function Description:_** Runs comprehensive allocation dry-run and blocker validation before locking review state.
+- **_Function Detail:_**
+  - **Blocker Validations:** Evaluates whether bill has: unassigned items (`ITEM_UNASSIGNED`), inactive members assigned (`INACTIVE_MEMBER_ASSIGNED`), missing creditor (`CREDITOR_REQUIRED`), discounts exceeding total (`DISCOUNT_EXCEEDS_BILL`), subtotal mismatch ($\text{subtotal} \neq \sum \text{line\_totals}$), or grand total mismatch.
+  - **Response:** If any blocker fails, returns HTTP `422 BILL_NOT_READY`. (Specific mismatch codes are populated on `GET /bills/{id}` in `mismatch_codes`). If clean, transitions bill status to `reviewed` and increments version.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.22 \- Update Account Status_** {#4.1.22---update-account-status}
+#### **_4.1.20 \- Finalize Bill_** {#4.1.20---finalize-bill}
 
-- **_Function trigger:_** An Admin changes an account's status from the account details screen.
-- **_Function description:_** Suspends, locks, or reactivates an account in response to a policy violation or a support request.
-- **_Function detail:_**
-  - **Data Validation**: The requester must hold the Admin role; the target status must be a valid transition from the current one; a reason must be supplied for suspension or locking.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The Admin selects the new status and provides a reason.
-      - The system updates the account status and, for suspension or locking, immediately revokes all refresh tokens belonging to that account.
-      - The change is written to the audit log with the acting Admin's identifier, the reason, and a timestamp.
-      - Reactivating an account restores access without requiring re-registration.
-    - _In Abnormal Cases:_
-      - _Attempt to suspend an account with outstanding group debts:_ The system permits the action but warns the Admin that affected groups will be unable to complete settlement until the situation is resolved.
-      - _Invalid status transition:_ Return HTTP 400 describing the permitted transitions.
+- **_Function Trigger:_** The Captain finalizes a reviewed bill (`POST /api/v1/bills/{id}/finalize`).
+- **_Function Description:_** Computes definitive participant shares using the Hamilton largest-remainder method, immutably locks the bill, creates awaiting debt records, and dispatches push notifications.
+- **_Function Detail:_**
+  - **Authorization & Invariants:** Caller must be the Captain (`403 FORBIDDEN` if not). Creditor must have a valid bank account configured (`422 BANK_ACCOUNT_REQUIRED`). Request must include `version` and `Idempotency-Key`.
+  - **Split Calculation Algorithm (Largest-Remainder / Hamilton Method):**
+    1. Computes exact rational shares (`big.Rat`) for each participant based on item weights and proportional surcharges/discounts.
+    2. Caps non-creditor discounts so individual shares cannot be negative (surplus discount flows to creditor).
+    3. Floors each participant's share to integer VND ($\lfloor \text{share}_i \rfloor$).
+    4. Computes remainder: $R = \text{allocTotal} - \sum \lfloor \text{share}_i \rfloor$ (where $0 \le R < N$).
+    5. Distributes $+1$ VND to the $R$ participants with the **largest fractional remainder** values. Ties are broken strictly by **ascending member UUID order** (no creditor bias).
+    6. Verifies $\sum \text{final\_shares} = \text{allocTotal}$ exactly.
+  - **Transaction Execution:**
+    - Transitions bill status to `finalized`.
+    - Inserts immutable `bill_shares` snapshots for all participants.
+    - Inserts `debts` in `awaiting` status for each non-creditor participant with $\text{amount} > 0$ (single debt per debtor-creditor pair for this bill).
+    - Enqueues River `send_notification` jobs and records group activity log. Returns HTTP 200.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
-#### **_4.1.23 \- System Monitoring_** {#4.1.23---system-monitoring}
+#### **_4.1.21 \- Batch Finalize-All Bills_** {#4.1.21---batch-finalize-all-bills}
 
-- **_Function trigger:_** An Admin opens the monitoring dashboard, or an automated monitoring system polls the `/health` and `/metrics` endpoints.
-- **_Function description:_** Provides real-time visibility into service health and the operational quality of the bill-splitting and payment pipelines.
-- **_Function detail:_**
-  - **Data Validation**: None.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - The system continuously collects operational metrics: request volume, latency histograms per endpoint, error rates by status class, background job queue depth and job failure rate, and OCR extraction success rate.
-      - The system exposes a liveness and readiness endpoint reporting the status of the database, the storage service, and the OCR provider.
-      - Metrics are published in a standard format (Prometheus) for visualization on the engineering dashboard.
-    - _In Abnormal Cases:_
-      - A downstream dependency is unavailable: The readiness endpoint reports a degraded status while the liveness endpoint remains healthy, so that the service is not restarted unnecessarily.
-      - Sustained high resource utilization: Metric collection may be delayed; the system prioritizes serving the core bill and payment APIs and raises an alert to the operations channel.
+- **_Function Trigger:_** The Captain initiates bulk group settlement (`POST /api/v1/groups/{id}/bills/finalize-all`).
+- **_Function Description:_** Automatically locks bill submissions and processes finalization for all draft/reviewed bills in parallel queue jobs.
+- **_Function Detail:_**
+  - Caller must be Captain. Automatically sets `groups.bill_submission_locked_at = now()`.
+  - Blocks if an active batch is already running (`409 BULK_FINALIZE_IN_PROGRESS`).
+  - Creates a `bill_finalize_batches` record and snapshots all `draft` and `reviewed` bill IDs and versions into `bill_finalize_batch_items`.
+  - Enqueues a River job `bill_bulk_finalize_item` for each bill item.
+  - **Independent Job Transactions:** Each bill item executes in its own database transaction. If a specific bill fails validation (e.g. unassigned items), that item marks `failed` with error reason, while all valid bills finalize successfully.
+  - Upon processing all items, updates batch status to `completed` and notifies the Captain.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.22 \- Void Finalized Bill_** {#4.1.22---void-finalized-bill}
+
+- **_Function Trigger:_** The Captain voids an erroneous finalized bill (`POST /api/v1/bills/{id}/void`).
+- **_Function Description:_** Voids an immutable finalized bill and its associated awaiting debts.
+- **_Function Detail:_**
+  - **Validation:** Caller must be Captain; bill must be `finalized`; request requires `version` and mandatory `reason` (1–500 chars).
+  - **Payment State Gating:** Acquires lock on group, bill, and debts in ascending UUID order. If any associated debt is no longer in `awaiting` status or has `payment_id` set (indicating a payment proof has been submitted), voiding is rejected with HTTP `409 PAYMENT_ALREADY_STARTED`.
+  - **QR Intent Handling:** If only unsubmitted payment QR intents exist (`pending_proof`), the system automatically marks the payment intent as `superseded` and permits the void operation.
+  - **Execution:** Sets `bills.status = 'voided'`, sets all associated debts to `status = 'voided'`, records `voided_bill` activity log, and emits `bill.voided` realtime event. Returns HTTP 200.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.23 \- View Allocated Expense & Group Breakdown_** {#4.1.23---view-allocated-expense-&-group-breakdown}
+
+- **_Function Trigger:_** A group member views a bill or the group financial breakdown.
+- **_Function Description:_** Renders exact itemized charges, proportional tax/surcharge splits, rounding adjustments, and net member balances.
+- **_Function Detail:_**
+  - Displays participant's allocated line items with unit quantities.
+  - Explicitly displays proportional service charges, VAT taxes, discounts, and individual `rounding_adjustment` (+1/0 VND).
+  - Renders overall group balance ($+\text{receivable} / -\text{payable}$) and list of open debts.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.24 \- Generate Payment QR_** {#4.1.24---generate-payment-qr}
+
+- **_Function Trigger:_** A Debtor selects one or more outstanding debts to pay (`POST /api/v1/groups/{id}/payments/qr`).
+- **_Function Description:_** Generates a compliant dynamic VietQR code encoding recipient bank details, exact aggregated amount, and a unique reference code.
+- **_Function Detail:_**
+  - **Idempotency & Debt Aggregation:** Requires deterministic UUIDv5 `Idempotency-Key` (derived from `groupId + creditorId + sortedDebtIds`). Debts list accepts 1–100 debt IDs (or omitted to aggregate all `awaiting` debts owed to that creditor).
+  - **Non-Locking Intent Architecture:** Generating a QR code **does not lock debts** (`debts` remain in `awaiting` status, `payment_id` remains NULL). The Captain can still void a bill while a QR is open.
+  - **Execution:**
+    - Verifies all selected debts belong to the caller as debtor and target as creditor, and are in `awaiting` status (`409 DEBTS_NOT_AWAITING` if any mismatch).
+    - Verifies Creditor has valid bank details configured (`422 BANK_ACCOUNT_REQUIRED`).
+    - Creates or reuses a `pending_proof` payment record with unique `reference_code` (`PAY` + 8 Base32 characters, excluding ambiguous `I`, `O`, `0`, `1`).
+    - Builds VietQR payload and returns payment entity containing `qr_image_url`. (VietQR images are dynamically rendered using the compact NAPAS template without holding funds).
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.25 \- Submit Payment Proof_** {#4.1.25---submit-payment-proof}
+
+- **_Function Trigger:_** A Debtor attaches a transfer receipt screenshot after completing the bank transfer (`POST /api/v1/groups/{id}/payments/{pid}/proof`).
+- **_Function Description:_** Uploads the payment proof screenshot and locks the debts in `pending_confirmation` status awaiting creditor review.
+- **_Function Detail:_**
+  - **2-Phase Execution Workflow:**
+    - **Phase 1 (`PrepareProof`):** Verifies caller is debtor; verifies payment is in `pending_proof` status (`409 PAYMENT_NOT_PENDING_PROOF` if invalid); reserves idempotency key in `in_progress` state with UUIDv7 `operation_id`. Uploads screenshot (JPEG/PNG/HEIC up to 10MB) to Cloudinary (`payments/{pid}/proofs/{operationId}`).
+    - **Phase 2 (`SubmitProof`):** Acquires lock on debts; verifies all covered debts are still in `awaiting` status; snapshots current creditor bank details into the payment record; transitions payment status to `pending_confirmation` and sets `debts.status = 'pending_confirmation'` and `debts.payment_id = pid`.
+  - **Compensation Handling:** If Phase 2 fails (e.g. concurrent bill void), server deletes uploaded Cloudinary object (or enqueues cleanup job) and resets proof attempt with a new operation ID.
+  - Emits `settlement.payment_changed`, logs activity, and sends push notification to Creditor.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.26 \- Confirm or Reject Received Payment_** {#4.1.26---confirm-or-reject-received-payment}
+
+- **_Function Trigger:_** The Creditor reviews a pending payment proof (`POST /api/v1/groups/{id}/payments/{pid}/confirm`, `POST /api/v1/groups/{id}/payments/{pid}/reject`).
+- **_Function Description:_** Confirms receipt (settling debts) or rejects invalid proofs (resetting debts).
+- **_Function Detail:_**
+  - **Authorization:** Caller **must be the Creditor** on the payment (`403 FORBIDDEN` if Captain or other member). Requires `Idempotency-Key` (UUIDv5).
+  - **Confirm Flow:**
+    - In a single transaction: verifies payment is `pending_confirmation`; transitions payment status to `confirmed` (`confirmed_at = now()`); transitions all linked debts to `settled` (`settled_at = now()`).
+    - Records `confirmed_payment` activity log; sends push notification to Debtor; emits `home.balance_changed` to both debtor and creditor.
+  - **Reject Flow:**
+    - Requires mandatory `reason` (1–500 runes, `400 VALIDATION_FAILED` if empty).
+    - In a single transaction: transitions payment status to `rejected` (retained for audit trail); resets all linked debts back to `awaiting` status and sets `payment_id = NULL`.
+    - Records `rejected_payment` activity log; sends push notification to Debtor with rejection reason; allows Debtor to generate a new QR.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.27 \- Debt Reminders & Automated Scanner_** {#4.1.27---debt-reminders-&-automated-scanner}
+
+- **_Function Trigger:_** A Creditor/Captain triggers a manual reminder or the scheduled background worker runs.
+- **_Function Description:_** Dispatches notifications for unpaid debts and stalled payment confirmations.
+- **_Function Detail:_**
+  - **Manual Reminder (`POST /groups/{id}/debts/{did}/remind`):**
+    - Caller must be Creditor or Captain; debt must be in `awaiting` status.
+    - Uses random UUIDv4 `Idempotency-Key`.
+    - Rate-limited to **maximum 3 reminders per debt spaced $\ge 24$ hours apart** (`429 REMINDER_RATE_LIMITED`).
+    - Increments `reminder_count`, logs `payment_reminder` activity, and sends push notification to Debtor. Client UI enforces a 24-hour countdown cooldown timer.
+  - **Automated Scanner (`settlement_scan` River Job):**
+    - Runs hourly (and on server boot).
+    - Scans debts in `awaiting` status older than 72 hours with `reminder_count < 3` and last reminder $\ge 24$ hours ago using `SKIP LOCKED LIMIT 100`. Sends automated system reminders (sharing the 3-count limit).
+    - Scans payments in `pending_confirmation` status older than 48 hours with `stalled_alerted_at IS NULL`. Sends a one-time stalled confirmation alert to the Creditor without auto-completing the payment.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.28 \- In-App & Push Notifications_** {#4.1.28---in-app-&-push-notifications}
+
+- **_Function Trigger:_** System events generate notifications (`GET /api/v1/notifications`, `PATCH /api/v1/notifications/{id}/read`).
+- **_Function Description:_** Coordinates in-app notification logs, unread counters, FCM push delivery, and deep linking navigation.
+- **_Function Detail:_**
+  - **Transactional Consistency:** In-app notification records and River `send_notification` jobs are always enqueued **in the same database transaction** as the originating business action (finalize, proof, confirm, remind).
+  - **FCM Push Worker:** River worker claims `send_notification` jobs, fetches the recipient's latest active session FCM token (`ORDER BY issued_at DESC`), and dispatches push notifications. Invalid/unregistered tokens are cleaned from the database (`ClearFCMToken`).
+  - **In-App Notification Center:** Provides paginated notification history (`GET /notifications`), optimistic single/bulk read marking (`PATCH /notifications/{id}/read`, `PATCH /notifications/read-all`), and unread badge count.
+  - **Deep Linking Resolver:** Resolves tapped notifications using a type-first resolver (`NotificationRouteResolver`), prioritizing direct navigation to Group Detail tabs (`/groups/:id`) whenever `group_id` is present.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.29 \- Admin Management & Web Portal_** {#4.1.29---admin-management-&-web-portal}
+
+- **_Function Trigger:_** System Administrator accesses the embedded Web Admin Portal (`/admin-portal/`, `GET/PUT /api/v1/admin/*`).
+- **_Function Description:_** Provides platform observability, system health probes, and account moderation.
+- **_Function Detail:_**
+  - **Embedded Web Portal:** Embedded directly into the Go binary (`//go:embed` in `web/web.go`) and served at `/admin-portal/`.
+  - **Account Management (`GET /admin/accounts`, `GET /admin/accounts/{id}`):** Paginated search (email, name, phone) and filtering by status/role; renders safe user profiles with masked bank account numbers (`******` + last 4 digits) and open debt/credit counts.
+  - **Status Updates (`PUT /admin/accounts/{id}/status`):**
+    - Allows transitioning account status to `active`, `suspended`, or `locked` with a mandatory audit reason.
+    - Prevents self-modification (`403 CANNOT_MODIFY_SELF`) and suspending other admins (`403 CANNOT_MODIFY_ADMIN`).
+    - **Instant Session Revocation:** Suspending or locking an account immediately revokes all active sessions (`admin_suspended` / `admin_locked`), revokes refresh tokens, and broadcasts `session.ended` SSE events in the same transaction.
+    - Warns administrator if the target account has unsettled debts or credits without blocking the action.
+    - Records immutable entries in `admin_audit_logs`.
+  - **System Overview & Health Probes:** `GET /admin/system/overview` provides real-time counts for users, groups, bills, debts, and River queue depths; `/health/ready` validates database connectivity and listener health (returning HTTP 503 degraded if listener disconnects).
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.30 \- Unified Realtime Event Architecture_** {#4.1.30---unified-realtime-event-architecture}
+
+- **_Function Trigger:_** Client opens persistent SSE stream upon login (`GET /api/v1/users/me/events`).
+- **_Function Description:_** Multiplexes live system events across a single connection per session using shared PostgreSQL `LISTEN/NOTIFY`.
+- **_Function Detail:_**
+  - **Single Shared Listener:** A single PostgreSQL connection per backend instance listens to `bill_events`, `group_events`, and `user_events`.
+  - **Connection Replacement Arbitration:** Concurrent streams on the same session are arbitrated via PostgreSQL `NOTIFY` commit ordering (`stream.replace`), ensuring exactly one active stream per session.
+  - **Small Invalidation Payload:** Server emits lightweight event descriptors (`ready`, `invalidate`, `roster`, `ocr.updated`, `heartbeat`, `close`).
+  - **Client Interest Registry:** Flutter client registers active screen surfaces (`home.groups`, `groups.index`, `group.bills`, `group.debts`, etc.), debounces refresh triggers across a 250ms window, and executes in-place list patching for group cards (`patchGroup`) without resetting pagination.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
 ### **4.2 Automated System Functions** {#4.2-automated-system-functions}
 
-#### **_4.2.1 \- Automated Debt Reminders & Stalled Confirmation_** {#4.2.1---automated-debt-reminders-&-stalled-confirmation}
+#### **_4.2.1 \- Automated Background Jobs & Queue Workers_** {#4.2.1---automated-background-jobs-&-queue-workers}
 
-- **_Function trigger:_** A scheduled job scans unsettled debts.
-- **_Function detail:_**
-  - **Data Validation**: None.
-  - **\*Functionality**:\*
-    - _In Normal Cases:_
-      - For debts in `AWAITING` past the reminder interval, the system notifies the Payer and increments reminder_count.
-      - When a debt stays in `PENDING_CONFIRMATION` beyond `N` reminders without the Creditor acting, the system transitions it to `STALLED_CONFIRMATION`, logs a stalled_payment_reminder activity, and notifies both parties. The debt is never auto-settled.
-    - _In Abnormal Cases:_
-      - ANotification delivery failure: logged; reminder_count is not incremented so the next run retries.
+- **_Function Trigger:_** River Queue engine and background tickers.
+- **_Function Description:_** Executes asynchronous workloads reliably on PostgreSQL without Redis or external message brokers.
+- **_Queue Workers & Schedules:_**
+  1. **`bill_ocr` Worker:** Asynchronously stitches multi-page receipt images, invokes Vision LLM OCR, retries transient network errors (up to 3 attempts), and emits `ocr.updated` completion events.
+  2. **`bill_bulk_finalize_item` Worker:** Processes individual bill finalizations in bulk batches in separate, isolated database transactions.
+  3. **`send_notification` Worker:** Asynchronously pushes FCM messages to device tokens, automatically cleaning up unregistered tokens.
+  4. **`settlement_scan` Worker:** Hourly cron job scanning 72-hour stale awaiting debts (sending automated reminders) and 48-hour stalled payment confirmations (alerting creditors).
+  5. **Auth & Media Cleanup Tickers:** 24-hour background ticker cleaning expired tokens/sessions; 60-second ticker retrying orphaned Cloudinary avatar deletions from `media_cleanup_jobs`.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
@@ -786,145 +729,143 @@ Ultimately, this prototype serves as a foundation to evaluate usability, OCR acc
 
 #### **_5.1.1 User Interface_** {#5.1.1-user-interface}
 
-- **UI-01:** The cross-platform Flutter app (Android, iOS) must default to Vietnamese and support responsive design for 5-inch to 10-inch screens without horizontal scrolling for critical components.
-- **UI-02:** Main user flows must include Group Management, OCR Bill Scanning, inline Bill Editing, Bill Splitting (equal or per-item), and a Breakdown/Summary screen.
-- **UI-03:** The payment flow must display debt details, a "Marked as Paid" button, creditor confirmation options.
-- **UI-04:** UX standards require immediate action feedback, bottom navigation tabs, and QR codes rendered at a minimum of 250×250 pixels.
+- **UI-01:** Cross-platform Flutter mobile application (iOS & Android) supporting responsive layouts from 5.0" to 10.0" displays without horizontal scrolling on critical checkout/splitting flows.
+- **UI-02:** Embedded Web Admin Portal (`/admin-portal/`) responsive for desktop browsers (Chrome, Firefox, Safari, Edge) supporting dashboard charts, user tables, and modal actions.
+- **UI-03:** Standard VietQR codes rendered dynamically at a minimum resolution of $250 \times 250$ pixels with copyable bank code, account number, amount, and reference code.
+- **UI-04:** Immediate user feedback: Pinput OTP auto-submission, 60s/24h cooldown timers, optimistic in-app notification read state, and debounced realtime list updates.
 
 #### **_5.1.2 Software Interface_** {#5.1.2-software-interface}
 
-- **SI-01:** The backend RESTful API must be written in Go and communicate via HTTPS (TLS 1.2+) and JSON.
-- **SI-02:** The PostgreSQL database must store core entities and connect via internal TCP.
-- **SI-03:** The OCR Service must integrate with Vision LLMs via HTTPS and API Keys.
-- **SI-04:** Asynchronous tasks must operate through a Postgres-backed River job queue.
+- **SI-01:** Backend API built in Go 1.24+ using Chi router, communicating over HTTPS/TLS 1.2+ with standardized JSON response envelopes (`success`, `data`, `error`).
+- **SI-02:** PostgreSQL 18 database accessed via `pgxpool` and `sqlc` type-safe generated queries with Goose SQL migrations.
+- **SI-03:** Asynchronous background job processing executed via River Queue (`github.com/riverqueue/river`) running natively on PostgreSQL.
+- **SI-04:** Vision OCR integration with LlamaExtract / Gemini Flash via HTTPS.
+- **SI-05:** Object storage integration with Cloudinary API for receipts, avatars, and payment proof screenshots.
+- **SI-06:** Push notifications delivered via Firebase Cloud Messaging (FCM) HTTP v1 API.
+- **SI-07:** Outbound transactional emails sent via Gmail SMTP.
 
 #### **_5.1.3 Hardware Interface_** {#5.1.3-hardware-interface}
 
-- **HI-01:** The application requires a device rear camera with a minimum resolution of 5MP for OCR bill capture.
-- **HI-02:** The device display must have a minimum resolution of 720×1280 pixels to render scannable QR codes.
-- **HI-03:** An active Wi-Fi or 4G/5G Internet connection is required for operation.
-- **HI-04:** A minimum of 100MB of free device storage is required for installation and image caching.
+- **HI-01:** Mobile device rear camera ($\ge 5\text{MP}$) required for receipt capture and group invite QR scanning.
+- **HI-02:** Minimum screen resolution of $720 \times 1280$ pixels to render scannable VietQR codes.
+- **HI-03:** Active Wi-Fi or 4G/5G Internet connectivity.
+- **HI-04:** Minimum 100MB of free device storage for application installation and local image caching.
 
 ### **5.2. Quality Attributes** {#5.2.-quality-attributes}
 
 #### **_5.2.1 Performance & Scalability_** {#5.2.1-performance-&-scalability}
 
-- **PERF-01:** Standard CRUD API response times must be ≤ 200ms at the server.
-- **PERF-02:** Asynchronous OCR processing must complete in ≤ 10 seconds.
-- **PERF-03:** Server-side VietQR generation must be processed in ≤ 100ms per code.
-- **PERF-04:** Split calculations must complete in ≤ 50ms.
-- **PERF-05:** The system must support a minimum of 500 concurrent users during the MVP phase.
-- **PERF-06:** System limits are set to a maximum of 50 members per group and 100 items per bill.
+- **PERF-01:** Standard CRUD API server response times $\le 200\text{ms}$ at p95 under standard load.
+- **PERF-02:** Asynchronous receipt OCR extraction processing completed in $\le 10\text{s}$ at p90.
+- **PERF-03:** Server-side VietQR payload and reference code generation processed in $\le 50\text{ms}$.
+- **PERF-04:** Split share calculation and Hamilton rounding completed in $\le 20\text{ms}$ for bills with 100 items and 50 members.
+- **PERF-05:** Connection-efficient realtime architecture supporting $\ge 10,000$ concurrent user SSE connections per instance using a single shared PostgreSQL `LISTEN` connection.
+- **PERF-06:** Group capacity capped at 50 active members and 100 items per bill.
 
 #### **_5.2.2 Reliability & Robustness_** {#5.2.2-reliability-&-robustness}
 
-- **REL-01:** Financial calculations must strictly use 64-bit integers (int64) and Hamilton rounding algorithms to prevent errors and guarantee that the sum of all participant shares equals the bill total exactly (no money created or lost by rounding)
-- **REL-02:** Unconfirmed OCR results cannot be automatically split and must require user review and manual correction.
-- **REL-03:** Finalized bills are immutable. Corrections are made by voiding the bill and issuing a replacement; every change is appended to the group activity log (`updated_bill` / `deleted_bill`) instead of being deleted silently.
-- **REL-04:** The system targets an uptime of ≥ 99% during peak operational hours.
+- **REL-01:** Strict mathematical invariants: all monetary calculations use 64-bit signed integers (`int64` VND) and exact rational numbers (`big.Rat`); the Hamilton largest-remainder rounding algorithm guarantees $\sum \text{shares} = \text{bill\_total}$ exactly with zero rounding drift.
+- **REL-02:** Finalized bills are strictly immutable; adjustments require voiding the bill with mandatory audit reasoning and issuing a replacement bill (`replaces_bill_id`).
+- **REL-03:** Transactional job consistency: River queue jobs (`send_notification`, `bill_ocr`) are enqueued inside the same database transaction as the business mutation (BeforeCommit hooks).
+- **REL-04:** All destructive actions and financial status updates are logged to append-only activity tables (`group_activities`, `admin_audit_logs`).
 
 #### **_5.2.3 Security & Privacy_** {#5.2.3-security-&-privacy}
 
-- **SEC-01:** Authorization logic must be strictly enforced at the use case layer.
-- **SEC-02:** Data must be protected, hashed passwords (bcrypt/argon2), and database-level encryption.
-- **SEC-03:** The system complies with NĐ 52/2024 by using a no-custody model where funds transfer directly between users' bank accounts.
+- **SEC-01:** Authorization logic strictly enforced at the use case layer using `liveAuth` session verification.
+- **SEC-02:** Single-session enforcement and Refresh Token Rotation with reuse detection; passwords hashed using bcrypt (`DefaultCost = 10`); OTPs and refresh tokens stored as SHA-256 hashes.
+- **SEC-03:** Anti-enumeration: Sign-in, resend OTP, and forgot-password endpoints return uniform responses; group invite endpoints return uniform 404s for invalid/expired codes.
+- **SEC-04:** Bank account masking (`******` + last 4 digits) across admin views; log sanitizer filters out passwords, tokens, full bank accounts, and raw OCR payloads.
+- **SEC-05:** No-custody compliance: PaySplit does not hold user funds or process direct monetary debits, remaining exempt from payment intermediary licensing under Decree 52/2024/NĐ-CP.
 
 #### **_5.2.4 Explainability_** {#5.2.4-explainability}
 
-- **EXP-01:** OCR results and split calculations must display full, transparent breakdowns (including VAT and rounding absorbers) to the users.
-- **EXP-02:** Debt statuses and historical actions must be highly visible to involved parties.
-- **EXP-03:** Every debt must be traceable back to the exact bills and line items that produced it, and every state change must be recorded in an append-only group log.
+- **EXP-01:** Complete expense transparency: every bill breakdown explicitly presents itemized costs, proportional service charges, VAT taxes, discounts, and individual rounding adjustments (+1/0 VND).
+- **EXP-02:** Full traceability: every debt record links directly to its parent bill, creditor, debtor, and associated payment proof receipt.
 
 #### **_5.2.5 Maintainability & Reproducibility_** {#5.2.5-maintainability-&-reproducibility}
 
-- **MNT-01:** The codebase must utilize a modular monolith architecture with clear Port/Adapter layer separation.
-- **MNT-02:** The database schema must be managed via sequential migration files and use UUID v7 primary keys.
+- **MNT-01:** Modular Monolith architecture following Clean Architecture (Domain $\leftarrow$ UseCase $\leftarrow$ Repository Interface $\leftarrow$ PostgreSQL Adapter / HTTP Delivery).
+- **MNT-02:** Database schema managed via sequential Goose migrations (`db/migrations/`) with type-safe query generation via `sqlc`.
+- **MNT-03:** Mobile frontend structured with Clean Architecture + Feature-First packaging, Riverpod code generation, Freezed immutable models, and Injectable DI.
 
 ## **6\. Architecture Overview (High-Level)** {#6.-architecture-overview-(high-level)}
-
-Detailed architecture is covered in the TDD (System Architecture, Level 1 & Level 2). This PRD only outlines the main components to align the scope.
 
 ### **6.1 Components** {#6.1-components}
 
 - **_Client Layer:_**
-  - **Flutter App:** Cross-platform mobile client
-- **_API Layer:_**
-  - **REST Router (Chi):** Receives HTTP requests and routes them to the appropriate controller. Middleware handles JWT authentication, rate limiting, and structured logging.
-- **_Core — Domain Modules_**
-  - **Auth/User:** Manages login, registration, sessions, user profiles, and bank account details.
-
-  - **Group:** Handles group creation, membership management, and invite links.
-
-  - **Bill/Expense:** Orchestrates the bill upload workflow and item assignment.
-
-  - **OCR:** Calls the external Vision LLM to extract text from images and normalizes it into draft bill data.
-
-  - **Split Controller*:*** Handles the basic math for splitting the bill (equal split or per-item). It uses standard integer arithmetic (int64 for VND) to prevent rounding errors.
-
-  - **Settlement Controller:** Manages the debt lifecycle (`AWAITING → PENDING_CONFIRMATION → SETTLED | REJECTED | STALLED_CONFIRMATION`) and performs two-tier aggregation: within a bill, all items a Payer owes the same Creditor collapse into one debt record at finalization; across bills, all outstanding debts between the same debtor–creditor pair can be grouped into a single payment carrying one QR code and one reference code. Cross-member debt netting (A owes B, B owes C ⇒ A owes C) is out of scope for this prototype.
-
-  - **QR Service**: VietQR generation (TLV, CRC-16/CCITT-FALSE), unique reference code per debtor for manual cross-checking.
-
-  - **Notification:** Dispatches push notifications for reminders and status updates.
-
-- **_Async Workers_**
-  - **OCR Worker**: consumes OCR jobs from the queue, calls the Vision LLM provider, retries with backoff.
-
-  - **Job Queue**: River (Postgres-backed), also used for QR generation and notification delivery.
-
-  - **Reminder Scheduler**: cron-style jobs for payment reminders and the N-times reminder rule (transitions stale pending payments to `STALLED_CONFIRMATION` without auto-completing).
-
-- **_Data Layer_**
-  - **PostgreSQL**: stores bills, debts and debt sources, groups, and user data (accessed via sqlc/pgx).
-
-  - **Object Storage:** Stores uploaded bill images.
-
-- **_External Systems_**
-  - **OCR Provider / Vision LLM**: Gemini Flash or GPT-4o (fallback: local OCR or FPT.AI Reader)
-
-  - **VietQR / NAPAS 247**: neutral interbank QR standard.
-
-###
+  - **Flutter Mobile App:** Cross-platform client for iOS & Android built with Riverpod state management, GoRouter navigation, Dio HTTP client, and `flutter_secure_storage`.
+  - **Embedded Web Admin Portal:** Single-page dashboard embedded into the Go binary (`//go:embed`) and mounted at `/admin-portal/`.
+- **_API & Delivery Layer:_**
+  - **Chi HTTP Router:** Modular REST routing with middleware stack (RequestID, ClientIP, Prometheus Metrics, Logger, Recoverer, CORS, RateLimit, LiveAuth).
+  - **Unified Realtime SSE Handler:** Persistent stream handler (`GET /api/v1/users/me/events`) managing client subscriptions and replacement handshakes.
+- **_Domain Business Modules:_**
+  - **Auth / User:** Identity, registration, email OTP verification, bcrypt hashing, JWT access token, refresh token rotation, Cloudinary avatar uploads, bank directory validation.
+  - **Group:** Group lifecycle, Base62 invite codes, 50-member capacity, `NOWAIT` captain transfers, soft deactivation, bill submission locks.
+  - **Bill / OCR:** Receipt image processing, LlamaExtract OCR integration, weighted item allocations, optimistic `version` locking, Hamilton split calculation, single & batch finalization, bill voiding.
+  - **Settlement:** VietQR payload generation, non-locking QR intents (`pending_proof`), 2-phase proof submission, creditor confirmation/rejection, manual/automated debt reminders.
+  - **Notification:** In-app notification center, unread counters, FCM push dispatching, type-first deep routing.
+  - **Admin:** Account status moderation (`active`, `suspended`, `locked`), audit logging, masked bank details, system overview metrics, health probes.
+- **_Asynchronous Worker Layer:_**
+  - **River Queue (PostgreSQL-backed):** Transactional queue workers for `bill_ocr`, `bill_bulk_finalize_item`, `send_notification`, and `settlement_scan`.
+  - **Background Tickers:** Auth token retention cleanup ticker (24h) and Cloudinary media deletion cleanup worker (60s).
+- **_Data & Infrastructure Layer:_**
+  - **PostgreSQL 18:** Primary relational database utilizing UUID v7 primary keys, `pgxpool` connection pooling, and `LISTEN/NOTIFY` pub-sub.
+  - **Shared Notification Listener:** Single dedicated PostgreSQL connection per instance listening to `bill_events`, `group_events`, and `user_events`.
+- **_External Services:_**
+  - **LlamaExtract / Gemini Flash:** Receipt Vision OCR extraction.
+  - **Cloudinary:** Cloud storage for receipt images, payment proof screenshots, and user avatars.
+  - **Firebase Cloud Messaging (FCM):** Background push notification delivery.
+  - **Gmail SMTP:** Transactional email OTP delivery.
+  - **VietQR / NAPAS 247:** Interbank QR standard and banking directory.
 
 ### **6.2 Tech Stack** {#6.2-tech-stack}
 
-| Category        | Technology                                           |
-| :-------------- | :--------------------------------------------------- |
-| Language        | Go 1.22+ (backend), Dart (Flutter frontend)          |
-| API Framework   | Chi \+ net/http                                      |
-| Front-end       | Flutter (flutter_riverpod, go_router, dio)           |
-| Database        | PostgreSQL, UUID v7 PKs (app layer), sqlc/pgx        |
-| Job Queue       | River (Postgres-backed, no Redis/broker)             |
-| QR Generation   | VietQR TLV                                           |
-| OCR/Vision LLM  | Gemini Flash or GPT-4o SDK                           |
-| Container       | Docker \+ Docker Compose                             |
-| Testing         | Go testing \+ testify                                |
-| Observability   | Structured logging \+ Prometheus (/health, /metrics) |
-| Docs & Diagrams | C4 Model via draw.io; DBML via dbdiagram.io          |
+| Category               | Technology / Library                                                        |
+| :--------------------- | :-------------------------------------------------------------------------- |
+| **Backend Language**   | Go 1.24+                                                                    |
+| **HTTP Router**        | Chi v5 (`github.com/go-chi/chi/v5`)                                         |
+| **Database**           | PostgreSQL 18, `pgx/v5` (`pgxpool`), UUID v7 primary keys                   |
+| **SQL & Migrations**   | `sqlc` (Type-safe Go SQL generator), `goose` (Centralized schema migration) |
+| **Job Queue**          | River Queue (`github.com/riverqueue/river`) on PostgreSQL                   |
+| **Realtime**           | Server-Sent Events (SSE) + PostgreSQL `LISTEN/NOTIFY` (Shared Listener)     |
+| **Frontend Framework** | Flutter 3.x (Dart 3.x)                                                      |
+| **State Management**   | Riverpod (StateNotifier / AsyncNotifier)                                    |
+| **DI & Networking**    | `get_it`, `injectable`, `dio`, `retrofit`, `freezed`                        |
+| **Routing**            | `go_router` (Guards, ShellRoute, Deep Linking)                              |
+| **Secure Storage**     | `flutter_secure_storage`                                                    |
+| **QR & Scanning**      | `mobile_scanner`, `zxing2`, VietQR TLV / Compact Image API                  |
+| **OCR & Vision**       | LlamaExtract / Gemini Flash API                                             |
+| **Storage & Media**    | Cloudinary Go SDK & REST API                                                |
+| **Push Notifications** | Firebase Cloud Messaging (FCM) v1 API                                       |
+| **Email Delivery**     | Gmail SMTP (TLS)                                                            |
+| **Web Admin Portal**   | Static HTML5 / CSS3 / Vanilla JS embedded via `//go:embed`                  |
+| **Observability**      | Structured JSON logging (`slog`), Prometheus `/metrics`, `/health/ready`   |
+| **Containerization**   | Docker, Docker Compose                                                      |
 
 ##### **Table 4\. Tech Stack** {#table-4.-tech-stack}
 
 ## **7\. Milestones & Timeline** {#7.-milestones-&-timeline}
 
-|  Week  | Deliverables                                                                                                                                                                                                                                                                                                                                     | Checkpoint                                                        |
-| :----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| **W1** | **Design & Core Backend** • TDD Level 1 (system architecture, API design, DB schema overview) • TDD Level 2 per service owner • C4 Context & Container diagrams • Auth/User migration (000001_user_schema) • Group module • Bill/OCR module skeleton • Split Controller with unit tests • DB schemas for remaining modules                       | **TDD review (HARD gate) — end of W1**                            |
-| **W2** | **Integration, Testing & Demo** • Debt aggregation \+ Settlement Controller integrated • VietQR generation per debtor • Manual payment confirmation flow • Sequence diagram (photograph bill → generate QR) • Unit and integration tests • Security checklist • API contract finalized • Final report, Docker package, demo script, presentation | **Test report (HARD gate) — mid W2** Demo \+ handover — end of W2 |
+|  Phase  | Deliverables & Implemented Modules                                                                                                                                                                                                                                                                               | Status                                                                  |
+| :-----: | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------: |
+| **M1**  | **Architecture, Database & Core Auth Engine**<br>• Modular Monolith setup with Clean Architecture & Ports/Adapters<br>• PostgreSQL Goose migrations & sqlc type-safe query generation<br>• Single-session authentication, bcrypt hashing, JWT access token, refresh token rotation, and 6-digit email OTP verify | ✅ **Completed**                                                        |
+| **M2**  | **Group Management & Asynchronous Bill OCR**<br>• Group lifecycle, Base62 invite codes, 50-member capacity, `NOWAIT` captain transfer<br>• River queue setup on PostgreSQL<br>• Multi-image receipt upload (HTTP 202 Accepted), Cloudinary integration, and LlamaExtract OCR worker                              | ✅ **Completed**                                                        |
+| **M3**  | **Hamilton Bill Split Calculation & Settlement Engine**<br>• Rational `big.Rat` arithmetic and Hamilton largest-remainder bill finalization<br>• Dynamic VietQR generation and non-locking `pending_proof` intents<br>• 2-phase payment proof submission, Cloudinary upload, and creditor manual confirm/reject | ✅ **Completed**                                                        |
+| **M4**  | **Realtime Engine, Notifications & Web Admin Portal**<br>• Single shared PostgreSQL listener and unified user SSE stream (`GET /users/me/events`)<br>• River `send_notification` worker and Firebase FCM push integration<br>• Embedded Web Admin Portal (`/admin-portal/`), audit logging, and health probes  | ✅ **Completed**                                                        |
+| **M5**  | **Cross-Platform Mobile App & End-to-End Hardening**<br>• Flutter Clean Architecture app (Home, Groups, Camera QR, Bill Capture, Settlement tabs, Notifications)<br>• Single-flight `SessionRefresher`, in-place list patching, 24h reminder cooldowns<br>• Integration testing, security audit, and documentation | ✅ **Completed**                                                        |
 
 ##### **Table 5\. Milestones & Timeline** {#table-5.-milestones-&-timeline}
 
-##
-
 ## **8\. Risks & Mitigations** {#8.-risks-&-mitigations}
 
-| ID  | Impact | Priority | Description & Mitigation                                                                                                                                                                                                                                    |
-| :-: | :----: | :------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1  |  HIGH  |   MED    | OCR misparses Vietnamese receipts (unusual layouts, poor lighting, handwritten totals). **Mitigation:** User always reviews/edits before finalization; test with varied real-world receipts; manual entry as fallback.                                      |
-| R2  |  MED   |   MED    | Vietnamese banking API for resolving account holder names may be unavailable or restricted. **Mitigation:** Fall back to manual entry/confirmation; flag as open question for mentor guidance.                                                              |
-| R3  |  MED   |   MED    | Manual payment confirmation depends on user diligence; users may forget, delay, or falsely confirm. **Mitigation:** Show reference code & amount prominently; send reminder notifications; support reversal entries for corrections.                        |
-| R4  |  HIGH  |   LOW    | Rounding or aggregation bugs break the core invariant (Σ debt_sources \= bill total). **Mitigation:** Enforce int64 VND arithmetic (never float64); Hamilton rounding; pure-logic controller enable 100% deterministic unit tests.                          |
-| R5  |  MED   |   HIGH   | Debt aggregation and settlement logic take longer than estimated. **Mitigation:** Escalate to mentor if blocked \> 1 day (Handbook §7); pure-logic modules can be prototyped independently.                                                                 |
-| R6  |  HIGH  |   HIGH   | 2-week timeline is very tight; any W1 slip pushes all integration, testing, and demo into W2. **Mitigation:** Prioritize critical path first; secondary features only if time permits; daily updates with mentor; escalate immediately if blocked \> 1 day. |
+| ID  | Impact | Priority | Description & Implemented Mitigation                                                                                                                                                                                                                                    |
+| :-: | :----: | :------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  |  HIGH  |   MED    | **OCR Inaccuracies & Provider Timeouts:** Vietnamese receipt layouts, handwritten totals, or network timeouts may fail extraction. **Mitigation:** Asynchronous River queue with 3 retries; HTTP 202 Accepted response; manual draft entry and inline item editing review gates before finalization. |
+| R2  |  HIGH  |   LOW    | **Rounding Invariant Drift:** Floating-point rounding errors could violate $\sum \text{debts} = \text{bill\_total}$. **Mitigation:** Strict integer `int64` VND arithmetic and `big.Rat` rational shares; Hamilton largest-remainder distribution with deterministic UUID tie-breaking; 100% unit test coverage.  |
+| R3  |  MED   |   MED    | **Manual Confirmation Delays:** Creditors may forget or delay confirming received bank transfers. **Mitigation:** Prominent reference codes (`PAY`+8 Base32); manual reminders (max 3 times, $\ge 24$h cooldown); automated hourly `settlement_scan` alerts for 48h stalled proofs.              |
+| R4  |  HIGH  |   HIGH   | **Session Hijacking & Token Replay:** Stolen refresh tokens could prolong unauthorized access. **Mitigation:** Refresh token rotation with reuse detection (revokes entire session upon replay); single active session per user; brute-force rate-limiting (5 failures/15m -> 15m block).           |
+| R5  |  HIGH  |   MED    | **Realtime Connection Exhaustion:** Multiple SSE connections per user could exhaust PostgreSQL connection pools. **Mitigation:** Unified user SSE stream (`GET /users/me/events`); single shared PostgreSQL listener across all 3 channels; small invalidation notifications with client REST re-fetch. |
+| R6  |  MED   |   LOW    | **Concurrent Modification Conflicts:** Simultaneous bill edits or joins could corrupt group balances. **Mitigation:** Database row-level locks (`LockActiveGroup`), optimistic `version` CAS checks, and deterministic `Idempotency-Key` headers on all settlement mutations.                      |
 
 ##### **Table 6\. Risks & Mitigations** {#table-6.-risks-&-mitigations}
 

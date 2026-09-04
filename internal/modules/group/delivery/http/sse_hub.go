@@ -3,17 +3,16 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // notifyChannel là kênh pg_notify mà tầng repository phát sự kiện nhóm vào,
 // ngay bên trong transaction của mutation.
-const notifyChannel = "group_events"
+const NotificationChannel = "group_events"
 
 // subscriberBuffer là độ sâu hàng đợi cho mỗi kết nối SSE. Client chậm hơn mức
 // này sẽ bị bỏ sự kiện — đúng thiết kế: version fencing khiến client tự phát
@@ -45,13 +44,11 @@ type Broadcaster interface {
 type Hub struct {
 	mu          sync.RWMutex
 	subscribers map[uuid.UUID]map[chan Event]struct{}
-	pool        *pgxpool.Pool
 }
 
-func NewHub(pool *pgxpool.Pool) *Hub {
+func NewHub() *Hub {
 	return &Hub{
 		subscribers: make(map[uuid.UUID]map[chan Event]struct{}),
-		pool:        pool,
 	}
 }
 
@@ -66,19 +63,18 @@ func (h *Hub) Subscribe(groupID uuid.UUID) (chan Event, func()) {
 	h.subscribers[groupID][ch] = struct{}{}
 	h.mu.Unlock()
 
-	var once sync.Once
 	return ch, func() {
-		once.Do(func() {
-			h.mu.Lock()
-			defer h.mu.Unlock()
-			if subs, ok := h.subscribers[groupID]; ok {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if subs, ok := h.subscribers[groupID]; ok {
+			if _, exists := subs[ch]; exists {
 				delete(subs, ch)
+				close(ch)
 				if len(subs) == 0 {
 					delete(h.subscribers, groupID)
 				}
 			}
-			close(ch)
-		})
+		}
 	}
 }
 
@@ -97,53 +93,31 @@ func (h *Hub) Publish(event Event) {
 	}
 }
 
-// StartPostgresListener lắng nghe kênh pg_notify và tự kết nối lại khi mạng
-// hoặc database gặp sự cố.
-func (h *Hub) StartPostgresListener(ctx context.Context) error {
-	if h.pool == nil {
-		return nil
+func (h *Hub) HandlePostgresNotification(_ context.Context, payload string) error {
+	var event Event
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return errors.New("invalid_json")
 	}
-
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err := h.listenLoop(ctx); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			select {
-			case <-time.After(1 * time.Second):
-			case <-ctx.Done():
-				return nil
-			}
-		}
+	if event.GroupID == uuid.Nil {
+		return errors.New("missing_group_id")
 	}
+	if event.Version <= 0 {
+		return errors.New("invalid_version")
+	}
+	if strings.TrimSpace(event.Type) == "" {
+		return errors.New("missing_type")
+	}
+	h.Publish(event)
+	return nil
 }
 
-func (h *Hub) listenLoop(ctx context.Context) error {
-	conn, err := h.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire conn for group event listener: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err = conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
-		return fmt.Errorf("listen %s: %w", notifyChannel, err)
-	}
-
-	for {
-		notification, err := conn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return fmt.Errorf("wait for group notification: %w", err)
+func (h *Hub) CloseSubscribers() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for groupID, subscribers := range h.subscribers {
+		for ch := range subscribers {
+			close(ch)
 		}
-
-		var event Event
-		if err := json.Unmarshal([]byte(notification.Payload), &event); err == nil {
-			h.Publish(event)
-		}
+		delete(h.subscribers, groupID)
 	}
 }

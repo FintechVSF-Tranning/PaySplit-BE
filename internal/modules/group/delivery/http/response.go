@@ -107,6 +107,10 @@ func newGroupListItemResponse(item domain.GroupListItem) groupListItemResponse {
 // renderEventPayload đổi avatar_object_key thành avatar_url trước khi payload
 // rời server, đúng một quy tắc với newMemberResponse. Repository cố tình chỉ
 // lưu object key vì nó không biết cách dựng URL.
+func (h *Handler) RenderEventPayload(raw json.RawMessage) any {
+	return h.renderEventPayload(raw)
+}
+
 func (h *Handler) renderEventPayload(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return map[string]any{}
@@ -145,6 +149,9 @@ func (h *Handler) newGroupDetailResponse(detail domain.GroupDetail) map[string]a
 		"members":     members,
 		"balances":    balances,
 		"caller_role": detail.CallerRole,
+		// Cùng định nghĩa với trường cùng tên trong danh sách nhóm, để client
+		// làm mới một thẻ nhóm tại chỗ mà không phải tải lại cả trang.
+		"pending_bill_count": detail.PendingBillCount,
 		// Client dùng field này để đánh dấu "tôi" trong members mà không phải
 		// suy đoán từ vai trò.
 		"caller_membership_id": detail.CallerMembershipID,

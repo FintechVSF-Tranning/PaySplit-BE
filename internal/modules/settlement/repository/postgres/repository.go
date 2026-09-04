@@ -22,6 +22,7 @@ import (
 	"paysplit-backend/internal/modules/settlement/repository"
 	dbgen "paysplit-backend/internal/modules/settlement/repository/postgres/sqlc"
 	"paysplit-backend/internal/platform/database"
+	"paysplit-backend/internal/platform/realtime"
 )
 
 const (
@@ -39,9 +40,10 @@ type QRGenerator interface {
 }
 
 type postgresRepository struct {
-	pool  *pgxpool.Pool
-	banks func(string) (BankInfo, bool)
-	qr    QRGenerator
+	pool   *pgxpool.Pool
+	banks  func(string) (BankInfo, bool)
+	qr     QRGenerator
+	events *realtime.Publisher
 }
 
 func New(pool *pgxpool.Pool) repository.Repository {
@@ -469,6 +471,12 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 	}
 	metadata, _ := json.Marshal(map[string]any{"payment_id": pid, "creditor_member_id": cid, "amount": amount, "covered_debt_count": len(selected)})
 	if _, err = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_created','Đã tạo mã QR thanh toán',$3)`, gid, debtorID, metadata); err != nil {
+		return nil, false, err
+	}
+	if err = r.notifyAll(ctx, tx, gid, "settlement.payment_changed", realtime.ScopeSettlement, &pid); err != nil {
+		return nil, false, err
+	}
+	if err = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); err != nil {
 		return nil, false, err
 	}
 	if in.BeforeCommit != nil {
@@ -981,6 +989,24 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 	if e != nil {
 		return nil, e
 	}
+	bills, e := r.distinctBillIDs(ctx, tx, debtIDs)
+	if e != nil {
+		return nil, e
+	}
+	if e = r.notifyAll(ctx, tx, gid, "settlement.payment_changed", realtime.ScopeSettlement, &pid); e != nil {
+		return nil, e
+	}
+	if e = r.notifyAll(ctx, tx, gid, "group.debts_changed", realtime.ScopeGroup, nil); e != nil {
+		return nil, e
+	}
+	for i := range bills {
+		if e = r.notifyAll(ctx, tx, gid, "bill.settlement_changed", realtime.ScopeBill, &bills[i]); e != nil {
+			return nil, e
+		}
+	}
+	if e = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
+		return nil, e
+	}
 	if in.BeforeCommit != nil {
 		if e = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
 			return nil, e
@@ -1144,6 +1170,34 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 	if e != nil {
 		return nil, nil, e
 	}
+	bills, e := r.distinctBillIDs(ctx, tx, ids)
+	if e != nil {
+		return nil, nil, e
+	}
+	if e = r.notifyAll(ctx, tx, gid, "settlement.payment_changed", realtime.ScopeSettlement, &pid); e != nil {
+		return nil, nil, e
+	}
+	if e = r.notifyAll(ctx, tx, gid, "group.debts_changed", realtime.ScopeGroup, nil); e != nil {
+		return nil, nil, e
+	}
+	for i := range bills {
+		if e = r.notifyAll(ctx, tx, gid, "bill.settlement_changed", realtime.ScopeBill, &bills[i]); e != nil {
+			return nil, nil, e
+		}
+	}
+	if e = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
+		return nil, nil, e
+	}
+	if confirm {
+		homeAudience := realtime.NormalizeAudience([]uuid.UUID{debtorUser, uid})
+		if e = r.notifyInvalidate(ctx, tx, homeAudience, realtime.InvalidateBody{
+			Scope:   realtime.ScopeHome,
+			GroupID: gid,
+			Type:    "home.balance_changed",
+		}); e != nil {
+			return nil, nil, e
+		}
+	}
 	if in.BeforeCommit != nil {
 		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
 			return nil, nil, e
@@ -1257,6 +1311,12 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1`, debtor).Scan(&debtorUser); e != nil {
 		return nil, e
 	}
+	if e = r.notifyAll(ctx, tx, gid, "settlement.debt_reminded", realtime.ScopeSettlement, &did); e != nil {
+		return nil, e
+	}
+	if e = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
+		return nil, e
+	}
 	if in.BeforeCommit != nil {
 		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "debt_id": did.String()}); e != nil {
 			return nil, e
@@ -1315,6 +1375,12 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','debt_reminded','Hệ thống đã tự động gửi nhắc nợ',$2)`, c.group, metadata); e != nil {
 			return e
 		}
+		if e = r.notifyAll(ctx, tx, c.group, "settlement.debt_reminded", realtime.ScopeSettlement, &c.id); e != nil {
+			return e
+		}
+		if e = r.notifyAll(ctx, tx, c.group, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
+			return e
+		}
 		if before != nil {
 			if e = before(ctx, tx, []string{c.user.String()}, map[string]string{"group_id": c.group.String(), "debt_id": c.id.String()}); e != nil {
 				return e
@@ -1362,6 +1428,12 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 		hours := int64(time.Since(c.submitted).Hours())
 		metadata, _ := json.Marshal(map[string]any{"payment_id": c.id, "creditor_member_id": c.creditor, "debtor_member_id": c.debtor, "hours_pending": hours})
 		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','payment_stalled_confirmation','Minh chứng thanh toán đang chờ xác nhận',$2)`, c.group, metadata); e != nil {
+			return e
+		}
+		if e = r.notifyAll(ctx, tx, c.group, "settlement.payment_changed", realtime.ScopeSettlement, &c.id); e != nil {
+			return e
+		}
+		if e = r.notifyAll(ctx, tx, c.group, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
 			return e
 		}
 		if before != nil {

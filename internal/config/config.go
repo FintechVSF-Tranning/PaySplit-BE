@@ -31,6 +31,12 @@ type Config struct {
 	GroupSync  GroupSyncConfig
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
+	Realtime   RealtimeConfig
+}
+
+type RealtimeConfig struct {
+	UserSSEEnabled          bool
+	MinUserStreamAppVersion string
 }
 
 // MetricsConfig chứa cấu hình Prometheus metrics scraper.
@@ -59,11 +65,25 @@ type AppConfig struct {
 // đại diện cho một kết nối database đã được mở.
 type DatabaseConfig struct {
 	URL               string
+	ListenerURL       string
+	ApplicationName   string
 	MaxConns          int32
 	MinConns          int32
 	MaxConnLifetime   time.Duration
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
+}
+
+func (c DatabaseConfig) ListenerDSN() string {
+	if strings.TrimSpace(c.ListenerURL) != "" {
+		return c.ListenerURL
+	}
+	return c.URL
+}
+
+func (c DatabaseConfig) UsesDedicatedListenerPool() bool {
+	listener := strings.TrimSpace(c.ListenerDSN())
+	return listener != "" && listener != strings.TrimSpace(c.URL)
 }
 
 // AuthConfig chứa các thiết lập cần thiết để phát hành access token.
@@ -110,13 +130,19 @@ type FirebaseConfig struct {
 
 // RiverConfig chứa cấu hình cho background job queue (River trên PostgreSQL).
 type RiverConfig struct {
-	WorkerCount   int
-	FetchCooldown time.Duration
+	WorkerCount       int
+	FetchCooldown     time.Duration
+	PollOnly          bool
+	FetchPollInterval time.Duration
 }
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
 type GroupConfig struct {
+	// InviteBaseURL là URL tuyệt đối dùng để tạo đường dẫn mời thành viên (ví dụ https://paysplit.app/join).
 	InviteBaseURL string
+	// MaxActiveMembers là số lượng thành viên hoạt động (active) tối đa trong một nhóm (mặc định: 50).
+	// Giới hạn này giúp đảm bảo hiệu năng thuật toán chia tiền và tối ưu giao diện trên thiết bị di động.
+	MaxActiveMembers int
 }
 
 // OCRConfig chứa cấu hình tích hợp dịch vụ LlamaExtract và background retry/retention cho OCR.
@@ -278,6 +304,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	riverFetchPollInterval, err := durationEnv("RIVER_FETCH_POLL_INTERVAL_MS", 1000, time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
 	ocrProviderTimeout, err := durationEnv("BILL_OCR_PROVIDER_TIMEOUT_SECONDS", 8, time.Second)
 	if err != nil {
 		return nil, err
@@ -363,6 +393,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	groupMaxActiveMembers, err := intEnv("GROUP_MAX_ACTIVE_MEMBERS", 50)
+	if err != nil {
+		return nil, err
+	}
 
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("PORT", stringEnv("HTTP_PORT", "8080"))
@@ -395,6 +429,8 @@ func Load() (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			URL:               os.Getenv("DATABASE_URL"),
+			ListenerURL:       strings.TrimSpace(os.Getenv("DATABASE_LISTENER_URL")),
+			ApplicationName:   stringEnv("DB_APPLICATION_NAME", "paysplit-api"),
 			MaxConns:          maxConns,
 			MinConns:          minConns,
 			MaxConnLifetime:   maxConnLifetime,
@@ -416,8 +452,16 @@ func Load() (*Config, error) {
 		Avatar:     AvatarConfig{UploadTimeout: avatarUploadTimeout, ProcessingTimeout: avatarProcessingTimeout, MaxConcurrentConversions: avatarConcurrency},
 		Cleanup:    CleanupConfig{Interval: cleanupInterval, Retention: retention, MediaWorkerInterval: mediaInterval, MediaMaxAttempts: mediaAttempts},
 		Firebase:   FirebaseConfig{CredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"), CredentialsJSON: os.Getenv("FIREBASE_CREDENTIALS_JSON"), Timeout: fcmTimeout},
-		River:      RiverConfig{WorkerCount: riverWorkerCount, FetchCooldown: riverFetchCooldown},
-		Group:      GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		River: RiverConfig{
+			WorkerCount:       riverWorkerCount,
+			FetchCooldown:     riverFetchCooldown,
+			PollOnly:          boolEnv("RIVER_POLL_ONLY", false),
+			FetchPollInterval: riverFetchPollInterval,
+		},
+		Group: GroupConfig{
+			InviteBaseURL:    os.Getenv("APP_INVITE_BASE_URL"),
+			MaxActiveMembers: groupMaxActiveMembers,
+		},
 		OCR: OCRConfig{
 			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
 			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
@@ -455,6 +499,10 @@ func Load() (*Config, error) {
 			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
 			StalledConfirmationAge: stalledConfirmationAge,
 		},
+		Realtime: RealtimeConfig{
+			UserSSEEnabled:          boolEnv("USER_SSE_ENABLED", false),
+			MinUserStreamAppVersion: strings.TrimSpace(os.Getenv("REALTIME_MIN_USER_STREAM_APP_VERSION")),
+		},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -486,6 +534,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Database.URL) == "" {
 		return errors.New("DATABASE_URL must not be empty")
+	}
+	if strings.TrimSpace(c.Database.ApplicationName) == "" {
+		return errors.New("DB_APPLICATION_NAME must not be empty")
 	}
 	if c.Database.MinConns < 0 || c.Database.MaxConns <= 0 || c.Database.MinConns > c.Database.MaxConns {
 		return errors.New("DB_MIN_CONNS must be non-negative and no greater than DB_MAX_CONNS")
@@ -520,8 +571,17 @@ func (c *Config) Validate() error {
 	if c.Cleanup.Interval <= 0 || c.Cleanup.Retention <= 0 || c.Cleanup.MediaWorkerInterval <= 0 || c.Cleanup.MediaMaxAttempts != 10 {
 		return errors.New("cleanup settings are invalid")
 	}
-	if c.River.WorkerCount <= 0 || c.River.FetchCooldown <= 0 {
-		return errors.New("river settings must be positive")
+	if c.River.WorkerCount <= 0 {
+		return errors.New("RIVER_WORKER_COUNT must be positive")
+	}
+	if c.River.FetchCooldown <= 0 {
+		return errors.New("RIVER_FETCH_COOLDOWN_MS must be positive")
+	}
+	if c.River.FetchPollInterval <= 0 {
+		return errors.New("RIVER_FETCH_POLL_INTERVAL_MS must be positive")
+	}
+	if c.River.FetchPollInterval < c.River.FetchCooldown {
+		return errors.New("RIVER_FETCH_POLL_INTERVAL_MS must be greater than or equal to RIVER_FETCH_COOLDOWN_MS")
 	}
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
@@ -529,6 +589,9 @@ func (c *Config) Validate() error {
 	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
 	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
 		return errors.New("APP_INVITE_BASE_URL must be an absolute HTTPS URL without user info, query, or fragment")
+	}
+	if c.Group.MaxActiveMembers <= 0 {
+		return errors.New("GROUP_MAX_ACTIVE_MEMBERS must be positive")
 	}
 	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
 		return errors.New("OCR settings must be positive")
@@ -569,6 +632,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Settlement.StalledConfirmationAge <= 0 {
 		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
+	}
+	if strings.TrimSpace(c.Realtime.MinUserStreamAppVersion) != "" {
+		parts := strings.Split(c.Realtime.MinUserStreamAppVersion, "+")
+		core := strings.Split(parts[0], ".")
+		if len(parts) != 2 || len(core) != 3 {
+			return errors.New("REALTIME_MIN_USER_STREAM_APP_VERSION must use major.minor.patch+build")
+		}
 	}
 	return nil
 }

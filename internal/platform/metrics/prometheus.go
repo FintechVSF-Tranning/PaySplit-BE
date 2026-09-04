@@ -83,6 +83,35 @@ var (
 		},
 	)
 
+	DBListenerConnected = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_connected",
+			Help:      "Whether the shared PostgreSQL notification listener is connected and subscribed to every channel.",
+		},
+	)
+
+	DBListenerReconnectsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_reconnects_total",
+			Help:      "Total shared PostgreSQL notification listener reconnects by bounded reason.",
+		},
+		[]string{"reason"},
+	)
+
+	DBListenerInvalidPayloadsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "db",
+			Name:      "listener_invalid_payloads_total",
+			Help:      "Total invalid PostgreSQL notification payloads by bounded channel.",
+		},
+		[]string{"channel"},
+	)
+
 	// Domain Metrics Module 3: Bill & OCR v1 (Spec 3 index.md:187, AC-14)
 	OCRQueueDepth = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -206,6 +235,60 @@ var (
 		},
 		[]string{"outcome"},
 	)
+
+	UserSSEConnectionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "user_sse",
+			Name:      "connections_total",
+			Help:      "Total user SSE subscribe attempts by bounded result.",
+		},
+		[]string{"result"},
+	)
+	UserSSEActiveConnections = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "paysplit",
+			Subsystem: "user_sse",
+			Name:      "active_connections",
+			Help:      "Local active user SSE streams.",
+		},
+	)
+	UserSSEClosesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "user_sse",
+			Name:      "closes_total",
+			Help:      "Total user SSE closes by public reason.",
+		},
+		[]string{"reason"},
+	)
+	UserEventsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "user",
+			Name:      "events_total",
+			Help:      "Total user realtime events by bounded channel and kind.",
+		},
+		[]string{"channel", "kind"},
+	)
+	UserEventInvalidPayloadsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "user",
+			Name:      "event_invalid_payloads_total",
+			Help:      "Total invalid user realtime payloads by bounded channel and reason.",
+		},
+		[]string{"channel", "reason"},
+	)
+	LegacySSERequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "legacy_sse",
+			Name:      "requests_total",
+			Help:      "Total legacy SSE requests by route and app version class.",
+		},
+		[]string{"route", "app_version_class"},
+	)
 )
 
 var activePool *pgxpool.Pool
@@ -216,6 +299,9 @@ func init() {
 	prometheus.MustRegister(dbPoolAcquiredConns)
 	prometheus.MustRegister(dbPoolIdleConns)
 	prometheus.MustRegister(dbPoolTotalConns)
+	prometheus.MustRegister(DBListenerConnected)
+	prometheus.MustRegister(DBListenerReconnectsTotal)
+	prometheus.MustRegister(DBListenerInvalidPayloadsTotal)
 
 	// Register Module 3 Domain Metrics
 	prometheus.MustRegister(OCRQueueDepth)
@@ -232,6 +318,12 @@ func init() {
 	prometheus.MustRegister(GroupBillBulkBatchesTotal)
 	prometheus.MustRegister(GroupBillBulkItemsTotal)
 	prometheus.MustRegister(GroupBillBulkDuration)
+	prometheus.MustRegister(UserSSEConnectionsTotal)
+	prometheus.MustRegister(UserSSEActiveConnections)
+	prometheus.MustRegister(UserSSEClosesTotal)
+	prometheus.MustRegister(UserEventsTotal)
+	prometheus.MustRegister(UserEventInvalidPayloadsTotal)
+	prometheus.MustRegister(LegacySSERequestsTotal)
 }
 
 func RecordSettlementOperation(operation, outcome string) {
@@ -300,6 +392,82 @@ func SetOCRQueueDepth(depth float64) {
 // RegisterDBPool đăng ký pool database để đo lường metrics kết nối.
 func RegisterDBPool(pool *pgxpool.Pool) {
 	activePool = pool
+}
+
+func SetDBListenerConnected(connected bool) {
+	if connected {
+		DBListenerConnected.Set(1)
+		return
+	}
+	DBListenerConnected.Set(0)
+}
+
+func RecordDBListenerReconnect(reason string) {
+	switch reason {
+	case "acquire", "listen", "wait":
+		DBListenerReconnectsTotal.WithLabelValues(reason).Inc()
+	}
+}
+
+func RecordDBListenerInvalidPayload(channel string) {
+	switch channel {
+	case "bill_events", "group_events", "user_events":
+		DBListenerInvalidPayloadsTotal.WithLabelValues(channel).Inc()
+	}
+}
+
+func RecordUserSSEConnection(result string) {
+	switch result {
+	case "opened", "auth_failed", "rate_limited", "listener_unavailable", "streaming_unsupported", "replace_publish_failed":
+		UserSSEConnectionsTotal.WithLabelValues(result).Inc()
+	}
+}
+
+func SetUserSSEActiveConnections(delta float64) {
+	UserSSEActiveConnections.Add(delta)
+}
+
+func RecordUserSSEClose(reason string) {
+	switch reason {
+	case "max_connection_age", "session_ended", "replaced", "listener_reset", "backpressure":
+		UserSSEClosesTotal.WithLabelValues(reason).Inc()
+	}
+}
+
+func RecordUserEvent(channel, kind string) {
+	switch channel {
+	case "group_events", "bill_events", "user_events":
+	default:
+		return
+	}
+	switch kind {
+	case "roster", "invalidate", "ocr_updated", "stream_replace", "session_ended", "ready", "heartbeat", "close":
+		UserEventsTotal.WithLabelValues(channel, kind).Inc()
+	}
+}
+
+func RecordUserEventInvalidPayload(channel, reason string) {
+	switch channel {
+	case "group_events", "bill_events", "user_events":
+	default:
+		return
+	}
+	switch reason {
+	case "invalid_json", "unknown_schema", "unknown_kind", "missing_recipient", "conflicting_recipient", "invalid_uuid", "invalid_body", "oversized":
+		UserEventInvalidPayloadsTotal.WithLabelValues(channel, reason).Inc()
+	}
+}
+
+func RecordLegacySSERequest(route, appVersionClass string) {
+	switch route {
+	case "group", "bill":
+	default:
+		return
+	}
+	switch appVersionClass {
+	case "supported", "legacy", "unknown":
+		LegacySSERequestsTotal.WithLabelValues(route, appVersionClass).Inc()
+	}
 }
 
 // HTTPMetricsMiddleware ghi nhận counter và latency cho mỗi request.
