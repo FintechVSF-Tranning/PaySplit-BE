@@ -449,8 +449,20 @@ curl -N -H "Authorization: Bearer <ACCESS_TOKEN>" \
 
 ```bash
 flutter run -t lib/main_staging.dart \
-  --dart-define=API_BASE_URL=https://161.118.233.21.nip.io
+  --dart-define=API_BASE_URL=https://161.118.233.21.nip.io/api/v1
 ```
+
+> ### Phải có hậu tố `/api/v1`
+>
+> Flutter khai báo mọi endpoint ở dạng tương đối (`/auth/sign-in`, `/groups/{id}`,
+> `/bills/{id}/events` — xem `lib/core/constants/api_endpoints.dart`), và Dio chỉ nối
+> `baseUrl + path`. Prefix `/api/v1` nằm ở **base URL**, không nằm trong từng endpoint.
+>
+> Đối chiếu giá trị mặc định trong `lib/main_staging.dart`:
+> `https://paysplitbe.vercel.app/api/v1` — cũng có hậu tố này.
+>
+> Thiếu `/api/v1` thì app build và chạy bình thường, chỉ là **mọi request đều 404** —
+> triệu chứng trông giống lỗi backend nên rất dễ đi lạc hướng khi debug.
 
 Vì đã có HTTPS thật nên Android không chặn cleartext traffic — không cần
 `android:usesCleartextTraffic`.
