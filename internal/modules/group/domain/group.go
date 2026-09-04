@@ -93,6 +93,10 @@ type GroupDetail struct {
 	Version    int64
 	Balances   []Balance
 	CallerRole string
+	// PendingBillCount đếm hóa đơn chưa chốt, cùng định nghĩa với trường cùng
+	// tên trong danh sách nhóm. Có mặt ở đây để client làm mới đúng một thẻ
+	// nhóm mà không phải tải lại cả trang danh sách.
+	PendingBillCount int
 	// CallerMembershipID cho client tự nhận ra mình trong Members mà không phải
 	// suy từ vai trò (nhiều thành viên cùng vai trò) hay gọi thêm GET /groups.
 	CallerMembershipID string

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -24,7 +25,7 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 				return
 			}
 
-			if _, ok := allowed[origin]; !ok {
+			if _, ok := allowed[origin]; !ok && !isLocalWebOrigin(origin) {
 				if r.Method == http.MethodOptions {
 					w.WriteHeader(http.StatusForbidden)
 					return
@@ -39,7 +40,8 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 			// Idempotency-Key phải nằm ở đây, nếu không trình duyệt cho preflight
 			// đi qua rồi vẫn chặn request thật: xóa hóa đơn, tạo QR thanh toán,
 			// nộp minh chứng và nhắc nợ đều gửi header này.
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key")
+			// X-App-Version đi cùng user và legacy SSE trên Flutter web.
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Idempotency-Key, X-App-Version")
 			// Retry-After là cách duy nhất client biết phải chờ bao lâu sau 429;
 			// không expose thì JavaScript không đọc được nó.
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Retry-After")
@@ -53,4 +55,16 @@ func CORS(allowedOrigins ...string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func isLocalWebOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "localhost" || host == "127.0.0.1"
 }

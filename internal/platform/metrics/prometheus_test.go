@@ -68,6 +68,39 @@ func TestDBListenerMetricsUseBoundedLabels(t *testing.T) {
 	if got := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("attacker-controlled-channel")); got != 0 {
 		t.Fatalf("unexpected unbounded channel label count %v", got)
 	}
+
+	userPayloadBefore := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("user_events"))
+	metrics.RecordDBListenerInvalidPayload("user_events")
+	if got := testutil.ToFloat64(metrics.DBListenerInvalidPayloadsTotal.WithLabelValues("user_events")); got != userPayloadBefore+1 {
+		t.Fatalf("user_events invalid payload counter = %v, want %v", got, userPayloadBefore+1)
+	}
+}
+
+func TestUserRealtimeMetricsUseBoundedLabels(t *testing.T) {
+	// covers: AC-13, AC-14, AC-23
+	openedBefore := testutil.ToFloat64(metrics.UserSSEConnectionsTotal.WithLabelValues("opened"))
+	metrics.RecordUserSSEConnection("opened")
+	metrics.RecordUserSSEConnection("not-a-result")
+	if got := testutil.ToFloat64(metrics.UserSSEConnectionsTotal.WithLabelValues("opened")); got != openedBefore+1 {
+		t.Fatalf("opened connections = %v, want %v", got, openedBefore+1)
+	}
+	if got := testutil.ToFloat64(metrics.UserSSEConnectionsTotal.WithLabelValues("not-a-result")); got != 0 {
+		t.Fatalf("unbounded connection result leaked: %v", got)
+	}
+
+	eventBefore := testutil.ToFloat64(metrics.UserEventsTotal.WithLabelValues("user_events", "invalidate"))
+	metrics.RecordUserEvent("user_events", "invalidate")
+	metrics.RecordUserEvent("evil_channel", "invalidate")
+	if got := testutil.ToFloat64(metrics.UserEventsTotal.WithLabelValues("user_events", "invalidate")); got != eventBefore+1 {
+		t.Fatalf("invalidate events = %v, want %v", got, eventBefore+1)
+	}
+
+	legacyBefore := testutil.ToFloat64(metrics.LegacySSERequestsTotal.WithLabelValues("group", "unknown"))
+	metrics.RecordLegacySSERequest("group", "unknown")
+	metrics.RecordLegacySSERequest("group", "v99")
+	if got := testutil.ToFloat64(metrics.LegacySSERequestsTotal.WithLabelValues("group", "unknown")); got != legacyBefore+1 {
+		t.Fatalf("legacy unknown = %v, want %v", got, legacyBefore+1)
+	}
 }
 
 func TestRecordOCRJob_IncrementsCounterWithStateAndErrorCodeLabels(t *testing.T) {

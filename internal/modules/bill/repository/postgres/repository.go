@@ -20,10 +20,12 @@ import (
 	"paysplit-backend/internal/modules/bill/repository"
 	"paysplit-backend/internal/modules/bill/repository/postgres/sqlc"
 	"paysplit-backend/internal/platform/database"
+	"paysplit-backend/internal/platform/realtime"
 )
 
 type postgresRepository struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	events *realtime.Publisher
 }
 
 // New khởi tạo Postgres repository cho module Bill & OCR.
@@ -201,7 +203,7 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 			jobVersion = p.OCRJob.Version
 		}
 
-		_, err := q.CreateOCRJob(ctx, sqlc.CreateOCRJobParams{
+		dbJob, err := q.CreateOCRJob(ctx, sqlc.CreateOCRJobParams{
 			ID:          pgtype.UUID{Bytes: p.OCRJob.ID, Valid: true},
 			BillID:      pgtype.UUID{Bytes: p.Bill.ID, Valid: true},
 			Status:      statusStr,
@@ -213,6 +215,13 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create ocr job: %w", err)
+		}
+		ocrJob, err := toDomainOCRJob(&dbJob)
+		if err != nil {
+			return nil, err
+		}
+		if err = r.notifyOCR(ctx, tx, p.Bill.GroupID, ocrJob); err != nil {
+			return nil, err
 		}
 	}
 
@@ -243,6 +252,10 @@ func (r *postgresRepository) CreateBill(ctx context.Context, p repository.Create
 		Description:   desc,
 		Metadata:      metaBytes,
 	})
+
+	if err := r.notifyBillInvalidate(ctx, tx, p.Bill.GroupID, p.Bill.ID, dbBill.Version, "bill.created"); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit create bill tx: %w", err)
@@ -638,6 +651,10 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 		Metadata:      metaBytes,
 	})
 
+	if err := r.notifyBillInvalidate(ctx, tx, p.Bill.GroupID, p.Bill.ID, dbBill.Version, "bill.content_changed"); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit update draft bill tx: %w", err)
 	}
@@ -693,6 +710,10 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 		Description:   desc,
 		Metadata:      metaBytes,
 	})
+
+	if err := r.notifyBillInvalidate(ctx, tx, groupID, id, dbBill.Version, "bill.reviewed"); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit review bill tx: %w", err)
@@ -929,6 +950,9 @@ func (r *postgresRepository) finalizeCore(ctx context.Context, tx pgx.Tx, p repo
 
 	result := toDomainBill(&dbBill)
 	result.Shares = createdShares
+	if err := r.notifyBillInvalidate(ctx, tx, p.GroupID, p.BillID, dbBill.Version, "bill.finalized"); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -1034,6 +1058,10 @@ func (r *postgresRepository) VoidBill(ctx context.Context, p repository.VoidBill
 		Metadata:      metaBytes,
 	})
 
+	if err := r.notifyBillInvalidate(ctx, tx, p.GroupID, p.BillID, dbBill.Version, "bill.voided"); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit void bill tx: %w", err)
 	}
@@ -1109,6 +1137,10 @@ func (r *postgresRepository) DeleteDraftBill(ctx context.Context, p repository.D
 		Metadata:      metaBytes,
 	})
 
+	if err := r.notifyBillInvalidate(ctx, tx, p.GroupID, p.ID, billRow.Version, "bill.deleted"); err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -1173,6 +1205,14 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 		return nil, fmt.Errorf("create ocr job: %w", err)
 	}
 
+	created, err := toDomainOCRJob(&dbJob)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.notifyOCR(ctx, tx, uuid.UUID(billRow.GroupID.Bytes), created); err != nil {
+		return nil, err
+	}
+
 	if beforeCommit != nil {
 		if err := beforeCommit(ctx, tx); err != nil {
 			return nil, fmt.Errorf("before commit hook: %w", err)
@@ -1183,7 +1223,7 @@ func (r *postgresRepository) CreateOCRJob(ctx context.Context, job *domain.OCRJo
 		return nil, fmt.Errorf("commit create ocr job tx: %w", err)
 	}
 
-	return toDomainOCRJob(&dbJob)
+	return created, nil
 }
 
 func (r *postgresRepository) GetOCRJobByID(ctx context.Context, id uuid.UUID) (*domain.OCRJob, error) {
@@ -1229,52 +1269,61 @@ func (r *postgresRepository) GetLatestOCRJobByBillID(ctx context.Context, billID
 }
 
 func (r *postgresRepository) UpdateOCRJobProcessing(ctx context.Context, id uuid.UUID) error {
-	q := sqlc.New(r.pool)
-
-	_, err := q.UpdateOCRJobProcessing(ctx, pgtype.UUID{Bytes: id, Valid: true})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrOcrJobConflict
-		}
-		return fmt.Errorf("update ocr job processing: %w", err)
-	}
-	return nil
+	return r.updateOCRJobWithNotify(ctx, func(ctx context.Context, q *sqlc.Queries) (sqlc.OcrJob, error) {
+		return q.UpdateOCRJobProcessing(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	})
 }
 
 func (r *postgresRepository) UpdateOCRJobSuccess(ctx context.Context, id uuid.UUID, candidate *domain.OCRCandidate, raw []byte) error {
-	q := sqlc.New(r.pool)
-
 	var candidateBytes []byte
 	if candidate != nil {
 		candidateBytes, _ = json.Marshal(candidate)
 	}
-
-	_, err := q.UpdateOCRJobSuccess(ctx, sqlc.UpdateOCRJobSuccessParams{
-		ID:          pgtype.UUID{Bytes: id, Valid: true},
-		Candidate:   candidateBytes,
-		RawResponse: raw,
+	return r.updateOCRJobWithNotify(ctx, func(ctx context.Context, q *sqlc.Queries) (sqlc.OcrJob, error) {
+		return q.UpdateOCRJobSuccess(ctx, sqlc.UpdateOCRJobSuccessParams{
+			ID:          pgtype.UUID{Bytes: id, Valid: true},
+			Candidate:   candidateBytes,
+			RawResponse: raw,
+		})
 	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ErrOcrJobConflict
-		}
-		return fmt.Errorf("update ocr job success: %w", err)
-	}
-	return nil
 }
 
 func (r *postgresRepository) UpdateOCRJobFailed(ctx context.Context, id uuid.UUID, errReason string) error {
-	q := sqlc.New(r.pool)
-
-	_, err := q.UpdateOCRJobFailed(ctx, sqlc.UpdateOCRJobFailedParams{
-		ID:           pgtype.UUID{Bytes: id, Valid: true},
-		ErrorMessage: pgtype.Text{String: errReason, Valid: true},
+	return r.updateOCRJobWithNotify(ctx, func(ctx context.Context, q *sqlc.Queries) (sqlc.OcrJob, error) {
+		return q.UpdateOCRJobFailed(ctx, sqlc.UpdateOCRJobFailedParams{
+			ID:           pgtype.UUID{Bytes: id, Valid: true},
+			ErrorMessage: pgtype.Text{String: errReason, Valid: true},
+		})
 	})
+}
+
+func (r *postgresRepository) updateOCRJobWithNotify(ctx context.Context, update func(context.Context, *sqlc.Queries) (sqlc.OcrJob, error)) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin ocr job update tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	q := sqlc.New(tx)
+	dbJob, err := update(ctx, q)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrOcrJobConflict
 		}
-		return fmt.Errorf("update ocr job failed: %w", err)
+		return fmt.Errorf("update ocr job: %w", err)
+	}
+	job, err := toDomainOCRJob(&dbJob)
+	if err != nil {
+		return err
+	}
+	billRow, err := q.GetBillOnlyByID(ctx, pgtype.UUID{Bytes: job.BillID, Valid: true})
+	if err != nil {
+		return fmt.Errorf("get ocr job bill: %w", err)
+	}
+	if err = r.notifyOCR(ctx, tx, uuid.UUID(billRow.GroupID.Bytes), job); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit ocr job update tx: %w", err)
 	}
 	return nil
 }

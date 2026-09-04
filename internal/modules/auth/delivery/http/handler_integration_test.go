@@ -82,7 +82,7 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	router := chi.NewRouter()
 	router.Route("/api/v1", func(api chi.Router) {
 		api.Route("/auth", func(r chi.Router) { handler.RegisterAuthRoutes(r, authmw.TokenAuth(tokenManager)) })
-		api.Route("/users", func(r chi.Router) { handler.RegisterUserRoutes(r, authmw.Auth(tokenManager, repo)) })
+		api.Route("/users", func(r chi.Router) { handler.RegisterUserRoutes(r, authmw.Auth(tokenManager, repo), nil) })
 	})
 	response := request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-up", `{"email":"`+email+`","phone_number":"0976543210","display_name":"HTTP Test","password":"StrongPass1"}`, "")
 	if response.Code != stdhttp.StatusCreated {

@@ -1,7 +1,15 @@
 # Rationale: 0009 Group realtime sync v1
 
-> **Ngày**: 2026-08-26 · **Trạng thái**: Implemented
-> **Phạm vi**: `internal/modules/group` (BE) + `lib/features/groups` (FE)
+> **Ngày**: 2026-08-26 · **Cập nhật**: 2026-09-03 · **Trạng thái**: Proposed
+> **Phạm vi**: `internal/modules/group`, `internal/modules/bill`, `internal/modules/settlement` (BE) + `lib/features/groups`, `lib/features/bills`, `lib/features/home` (FE)
+
+## Context
+
+> ⚠️ Premise note: The pain is not “too many Postgres LISTEN connections from each screen.” Screens add HTTP SSE connections, while API listeners consume PostgreSQL connections. Spec 0010 now provides one shared listener connection per API process for `group_events` and `bill_events`. This amendment keeps that one connection, adds `user_events` as a third logical channel, and avoids a `user_events` table that would copy `group_events`.
+
+Roster sync shipped. Home still loads `GET /groups` once. Bill detail after OCR is REST only. `bill.updated` was specified in 0003 and never emitted. Bill submission lock never writes `group_events`. Flutter opens one SSE per open group plus a short OCR SSE, then disposes them. Operators worry that “full realtime” will multiply database connections. Without a decision, the next feature will add a third LISTEN or a per bill socket.
+
+The original roster forces still hold: one way server to phone, a few events per minute, no presence, no chat. Auth still allows one live session per user. Timeout middleware already skips paths ending in `/events`.
 
 ---
 
@@ -150,7 +158,7 @@ Mirror dữ liệu nhóm sang Firestore, để client lắng nghe snapshot liste
   vài sự kiện mỗi phút. Và CDC cho ra **thay đổi ở mức dòng**, không phải sự kiện
   nghiệp vụ — vẫn phải viết một tầng dịch từ `UPDATE group_members SET status` sang
   `member_left`.
-- **Kết luận**: bị loại. Transactional outbox chính là ý tưởng đó ở quy mô phù hợp.
+- **Kết luận**: bị loại. Durable group event log kết hợp transactional `pg_notify` giữ phần cần thiết của ý tưởng đó ở quy mô phù hợp.
 
 #### Option J — Redis Pub/Sub thay cho `pg_notify`
 
@@ -172,7 +180,7 @@ Mirror dữ liệu nhóm sang Firestore, để client lắng nghe snapshot liste
   thật — mất sạch `group_events` thì hệ thống vẫn đúng, chỉ là mọi client nhận
   snapshot thay vì delta.
 
-### 3.3 Phương án đã chọn — SSE + transactional outbox + version fencing
+### 3.3 Phương án đã chọn — SSE + durable event log + transactional notify + version fencing
 
 Ba lớp xếp chồng, tin cậy giảm dần:
 
@@ -261,10 +269,10 @@ Trường `id:` vẫn được ghi, nhưng chỉ dành cho client dùng `EventSo
 
 | Hạng mục | Lý do hoãn |
 |---|---|
-| `GET /me/events` — một stream duy nhất mỗi thiết bị | Đúng mô hình của Slack/Telegram/Zalo và sẽ giảm số kết nối về 1, nhưng cần theo dõi tập nhóm của user thay đổi theo thời gian thực. Màn danh sách nhóm hiện dùng refetch, đủ dùng. |
 | FCM data-only đánh thức app ở nền | Là lớp bổ sung, không đổi giao thức. Làm sau khi giao thức đã ổn định trên thực địa. |
-| Đưa hóa đơn / công nợ lên cùng stream nhóm | Cấu trúc đã cho phép (chỉ là thêm `event_type`), nhưng mỗi loại cần định nghĩa payload riêng — làm cùng lúc sẽ khó kiểm chứng. |
+| Đưa hóa đơn / công nợ lên cùng stream nhóm as full deltas | Invalidation plus REST GET is enough. A bill event log is a later spec if refetch cost is measured. |
 | Presence ("ai đang mở nhóm") | Cần kênh hai chiều — đây mới là lúc WebSocket có lý. |
+| `user_events` table / per user version | Roster already has a log. Home and bill heal by refetch. A second log would duplicate `group_events`. |
 
 ---
 
@@ -272,19 +280,19 @@ Trường `id:` vẫn được ghi, nhưng chỉ dành cho client dùng `EventSo
 
 | Rủi ro | Cách chặn |
 |---|---|
-| Client chậm làm nghẽn server | Buffer 32 sự kiện mỗi kết nối, đầy thì **bỏ** sự kiện. An toàn vì version fencing khiến client tự phát hiện và gọi `/sync`. |
+| Client chậm làm nghẽn server | Legacy roster streams may rely on version fencing. The user stream closes a slow subscriber instead of silently dropping an invalidation that has no sequence number. Reconnect then refetches mounted surfaces. |
 | Khe hở giữa lúc đọc snapshot và lúc đăng ký | Handler `Subscribe` **trước**, đọc trạng thái **sau**; mọi sự kiện có `version <= lastSent` bị bỏ qua. |
-| Phiên bị thu hồi vẫn giữ stream | `maxConnectionAge` 15 phút buộc mở lại, và lần mở lại đi qua middleware auth đầy đủ. |
-| Thành viên bị xóa vẫn nghe được sự kiện nhóm | Handler phát `close` kèm `membership_ended` / `group_archived` rồi đóng. |
+| Phiên bị thu hồi vẫn giữ stream | Revocation publishes `session_ended` to every process. `maxConnectionAge` remains the bounded fallback. |
+| Thành viên bị xóa vẫn nghe được sự kiện nhóm | The final roster audience includes the removed user. Later transactions exclude that user. The legacy group stream closes for `membership_ended`. |
 | Deploy làm hàng loạt client reconnect | Backoff **có jitter** ±30% ở FE; và nhờ `since`, phần lớn lần reconnect trả về 0 sự kiện thay vì snapshot. |
 | Nhật ký phình to | Job dọn theo `GROUP_EVENT_RETENTION_DAYS` (mặc định 7). Client tụt xa hơn thế nhận snapshot — vẫn đúng, chỉ đắt hơn. |
-| Cạn connection pool | Mỗi instance dùng **một** connection cho `LISTEN`; handler chỉ mượn pool lúc đọc rồi trả ngay. |
+| Cạn connection pool | Mỗi instance dùng **một** connection cho `LISTEN` trên cả ba kênh; handler chỉ mượn pool lúc đọc rồi trả ngay. |
 
 ---
 
 ## 7. Quyết định
 
-Chọn **SSE + transactional outbox + version fencing**.
+Chọn **SSE + durable group event log + transactional `pg_notify` + version fencing**.
 
 Nó không phải phương án đơn giản nhất, cũng không phải phương án mạnh nhất. Nó là
 phương án duy nhất trong danh sách thỏa đồng thời bốn điều kiện:
@@ -295,4 +303,83 @@ phương án duy nhất trong danh sách thỏa đồng thời bốn điều ki�
 3. **Không thêm một thành phần hạ tầng nào** — không broker, không Redis, không
    Kafka, không nguồn sự thật thứ hai.
 4. Dùng lại **4 thứ đã có sẵn và đã được kiểm chứng** trong chính repo này
-   (mục 2), nên phần thực sự mới chỉ là ~500 dòng Go và ~400 dòng Dart.
+   (mục 2), nên không cần thêm broker hoặc nguồn sự thật mới.
+
+## Options considered
+
+The following amendment dated 2026-09-03 extends the shipped roster decision to one user stream.
+
+#### Option 1: Keep per resource SSE
+
+Add the missing bill and lock signals to the existing resource streams, then use polling or another stream for Home.
+
+**Pros**: This is the smallest backend change and leaves roster delivery untouched.
+
+**Cons**: Flutter still opens a stream for each active resource. Home needs a separate mechanism. The HTTP connection count still grows with navigation, even though spec 0010 already fixed the database listener count.
+
+#### Option 2: One user SSE with a mutable group membership cache
+
+Open `GET /api/v1/users/me/events`. At subscribe time, load the caller’s groups into the hub and update that in memory set when membership events arrive.
+
+**Pros**: One phone connection and no recipient list in database notifications.
+
+**Cons**: Correctness depends on event order and on every process updating the cache. A self join can be missed because the new member is not in the old set. A removal can leak later group events if cache removal races dispatch. Reconnect, process restart, and missed notifications all require a cache rebuild protocol.
+
+#### Option 3: One user SSE with transaction sourced audiences and invalidation (chosen)
+
+Keep the durable roster delta and `/sync`. Add a small `user_events` notification channel for Home, bill, lock, settlement, and stream control. Each mutation derives its recipient user IDs while it still owns the database transaction and puts that internal audience into `pg_notify`. The hub indexes subscribers only by `user_id`, `sid`, and `stream_id`; it does not maintain group membership.
+
+Spec 0010’s shared listener subscribes to `group_events`, `bill_events`, and `user_events` on the same dedicated PostgreSQL connection. The new channel does not mean a new connection or a new table.
+
+**Pros**: One SSE per signed in device, one database listener connection per API process, no membership cache race, and no new durable event log. Roster keeps efficient deltas. Other surfaces use their existing REST reads as the source of truth.
+
+**Cons**: Mutations do one bounded recipient query. Invalidation may cause an extra REST read. Non roster events are not replayable, so reconnect must refetch the surfaces that are currently mounted.
+
+#### Option 4: Add a durable per user event log
+
+Insert every group, bill, and settlement change into `user_events (user_id, seq)` and stream that log.
+
+**Pros**: It gives every device a single replay cursor and removes ambiguity after a disconnect.
+
+**Cons**: Every group mutation fans out one stored row per member. Retention, compaction, and backfill become part of the product. It duplicates the existing `group_events` log when refetch already repairs Home and bill state.
+
+#### Option 5: Move fanout to a hosted realtime service
+
+Move subscriptions outside the API and PostgreSQL listener.
+
+**Pros**: API processes no longer own long lived client fanout.
+
+**Cons**: Authorization and lifecycle rules move into another system. The current long lived Go API can solve this with infrastructure it already operates, so a vendor is not justified for this slice.
+
+## Rationale
+
+### Why option 3
+
+The requirement has two different counts. Flutter should not multiply HTTP streams as the user moves between Home, group, and bill. API replicas should not multiply database connections by resource type. A session scoped user SSE solves the first. Extending spec 0010’s fixed channel registry on its existing connection solves the second.
+
+The mutable membership cache was the tempting implementation, but it makes authorization depend on transient process state. Transaction sourced audiences are simpler to prove. The transaction already knows the group, bill, and affected users. `pg_notify` is issued inside that transaction, so PostgreSQL releases the notification only after commit and discards it on rollback. Public SSE frames never contain the audience.
+
+Server side topic subscription was also considered after the user stream was chosen. It does not reduce HTTP connections because every active device still needs its own transport. With SSE it also needs a second REST control surface. Flutter therefore keeps one transport and uses an in memory interest registry for local screen `sub/unsub`. The server continues to authorize and route by transaction sourced audience.
+
+Settlement uses invalidation rather than new deltas because its existing REST reads already combine payable, receivable, payment, debt, and bill state. The exact mutation matrix includes payment creation, proof submission, confirm, reject, reminder, and persisted worker changes. OCR keeps its specific frame because the waiter needs progress, including `queued`, but always confirms current state through the bill read.
+
+### Recovery decisions
+
+The user stream is deliberately an invalidation channel, not a replay log. Therefore recovery is explicit:
+
+1. New subscribe is admitted only while the local listener is healthy. Every successful subscribe or reconnect receives `ready`, and Flutter refetches only registered interests.
+2. A gap in roster versions still uses `GET /groups/{id}/sync?since=`.
+3. A listener reset from spec 0010 closes local SSE subscribers. A full subscriber buffer also closes that subscriber. Neither condition silently drops an invalidation.
+4. OCR current state, including `queued`, is confirmed by `GET /bills/{id}` after reconnect or after the existing timeout.
+5. Lock and settlement frames invalidate existing reads. They do not invent a roster version for data that is not roster state.
+6. Failed REST refresh remains dirty and retries while last good data stays visible. Bounded client buffers collapse to a mounted refetch or roster `/sync`, so recovery memory cannot grow without limit.
+
+This accepts duplicate notifications and duplicate GETs. It does not accept stale state hidden behind a connection that appears healthy.
+
+### Session and rollout decisions
+
+One live session per user does not by itself close an already authenticated SSE on another API replica. Session replacement and all revocation paths therefore publish a targeted control notification. A new stream for the same `sid` also publishes a replace instruction so only the newest `stream_id` remains active across replicas.
+
+The Flutter provider lives above the authenticated navigation shell and below auth state. Screens subscribe to in memory frames and never own the transport. Background lifecycle closes the foreground stream; resume reconnects and refetches. Legacy resource streams remain behind exclusive feature flags during the strangler period. Only `404` or `501` before the first `ready` can select legacy mode. A temporary listener failure never opens both modes. The API returns `410 Gone` only after the configured minimum app version uses the user stream and telemetry records no legacy route connection in any version bucket for 30 consecutive days.
+
+The listener must use a direct PostgreSQL endpoint or a session mode pooler. Transaction mode pooling is incompatible because `LISTEN` is session state. `DATABASE_LISTENER_URL` therefore defaults to `DATABASE_URL` for simple deployments but can point to a direct or session endpoint while request traffic uses transaction pooling. A notification round trip smoke test proves this path before production traffic is enabled.
