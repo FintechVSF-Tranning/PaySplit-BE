@@ -240,8 +240,8 @@ func New(ctx context.Context) (*App, error) {
 	// Gắn service cho worker item batch chốt toàn bộ trước khi client start (Spec 0008).
 	bulkFinalizeWorker.SetService(billService)
 
-	// 8. Khởi tạo Module Group
-	groupRepo := grouppostgres.New(db)
+	// 8. Khởi tạo Module Group (với dung lượng thành viên cấu hình từ GROUP_MAX_ACTIVE_MEMBERS)
+	groupRepo := grouppostgres.NewWithCapacity(db, cfg.Group.MaxActiveMembers)
 	groupService := groupusecase.NewService(groupRepo, cfg.Group.InviteBaseURL)
 	groupHandler := grouphttp.NewHandler(groupService, avatarStore.URL)
 	// Hub nhóm nhận sự kiện qua pg_notify do chính transaction của mutation phát,

@@ -90,6 +90,16 @@ func TestValidateRejectsUnsafeInviteBaseURLs_AC12(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidGroupMaxActiveMembers(t *testing.T) {
+	for _, invalid := range []int{0, -1, -50} {
+		cfg := validConfig()
+		cfg.Group.MaxActiveMembers = invalid
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "GROUP_MAX_ACTIVE_MEMBERS") {
+			t.Fatalf("Validate() with MaxActiveMembers=%d: error = %v, want GROUP_MAX_ACTIVE_MEMBERS error", invalid, err)
+		}
+	}
+}
+
 func TestValidateRejectsInvalidOCR(t *testing.T) {
 	cfg := validConfig()
 	cfg.OCR.ProviderTimeout = 0
@@ -251,7 +261,7 @@ func validConfig() *Config {
 		Avatar:     AvatarConfig{UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, MaxConcurrentConversions: 2},
 		Cleanup:    CleanupConfig{Interval: 24 * time.Hour, Retention: 30 * 24 * time.Hour, MediaWorkerInterval: time.Minute, MediaMaxAttempts: 10},
 		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond, FetchPollInterval: time.Second},
-		Group:      GroupConfig{InviteBaseURL: "https://paysplit.app/join"},
+		Group:      GroupConfig{InviteBaseURL: "https://paysplit.app/join", MaxActiveMembers: 50},
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},

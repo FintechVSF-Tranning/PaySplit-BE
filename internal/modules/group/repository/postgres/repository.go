@@ -26,19 +26,33 @@ import (
 const (
 	defaultListLimit = 20
 	maxListLimit     = 100
-	// maxGroupActiveMembers is the v1 group capacity spec 0002 fixes.
-	maxGroupActiveMembers = 50
+	// defaultMaxGroupActiveMembers là dung lượng nhóm mặc định (50 thành viên active) theo đặc tả v1.
+	// Có thể được ghi đè qua biến môi trường GROUP_MAX_ACTIVE_MEMBERS.
+	defaultMaxGroupActiveMembers = 50
 )
 
 type postgresRepository struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	maxActiveMembers int
 }
 
+// New khởi tạo group postgres repository với dung lượng nhóm mặc định (50 thành viên).
 func New(pool *pgxpool.Pool) repository.Repository {
+	return NewWithCapacity(pool, defaultMaxGroupActiveMembers)
+}
+
+// NewWithCapacity khởi tạo group postgres repository với dung lượng nhóm tối đa tùy chỉnh (từ GROUP_MAX_ACTIVE_MEMBERS).
+func NewWithCapacity(pool *pgxpool.Pool, maxActiveMembers int) repository.Repository {
 	if pool == nil {
 		panic("group repository pool must not be nil")
 	}
-	return &postgresRepository{pool: pool}
+	if maxActiveMembers <= 0 {
+		maxActiveMembers = defaultMaxGroupActiveMembers
+	}
+	return &postgresRepository{
+		pool:             pool,
+		maxActiveMembers: maxActiveMembers,
+	}
 }
 
 func (r *postgresRepository) CreateGroup(ctx context.Context, p repository.CreateGroupParams) (*domain.Group, *domain.Membership, error) {
@@ -641,7 +655,11 @@ func (r *postgresRepository) RedeemInvite(ctx context.Context, code, callerUserI
 	if err != nil {
 		return nil, fmt.Errorf("count active members: %w", err)
 	}
-	if activeCount >= maxGroupActiveMembers {
+	limit := r.maxActiveMembers
+	if limit <= 0 {
+		limit = defaultMaxGroupActiveMembers
+	}
+	if activeCount >= int64(limit) {
 		return nil, domain.ErrGroupMemberLimitReached
 	}
 

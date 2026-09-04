@@ -138,7 +138,11 @@ type RiverConfig struct {
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
 type GroupConfig struct {
+	// InviteBaseURL là URL tuyệt đối dùng để tạo đường dẫn mời thành viên (ví dụ https://paysplit.app/join).
 	InviteBaseURL string
+	// MaxActiveMembers là số lượng thành viên hoạt động (active) tối đa trong một nhóm (mặc định: 50).
+	// Giới hạn này giúp đảm bảo hiệu năng thuật toán chia tiền và tối ưu giao diện trên thiết bị di động.
+	MaxActiveMembers int
 }
 
 // OCRConfig chứa cấu hình tích hợp dịch vụ LlamaExtract và background retry/retention cho OCR.
@@ -389,6 +393,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	groupMaxActiveMembers, err := intEnv("GROUP_MAX_ACTIVE_MEMBERS", 50)
+	if err != nil {
+		return nil, err
+	}
 
 	httpHost := stringEnv("HTTP_HOST", "localhost")
 	httpPort := stringEnv("PORT", stringEnv("HTTP_PORT", "8080"))
@@ -450,7 +458,10 @@ func Load() (*Config, error) {
 			PollOnly:          boolEnv("RIVER_POLL_ONLY", false),
 			FetchPollInterval: riverFetchPollInterval,
 		},
-		Group: GroupConfig{InviteBaseURL: os.Getenv("APP_INVITE_BASE_URL")},
+		Group: GroupConfig{
+			InviteBaseURL:    os.Getenv("APP_INVITE_BASE_URL"),
+			MaxActiveMembers: groupMaxActiveMembers,
+		},
 		OCR: OCRConfig{
 			APIKey:            os.Getenv("LLAMAINDEX_API_KEY"),
 			Endpoint:          stringEnv("LLAMAINDEX_EXTRACT_ENDPOINT", "https://api.cloud.llamaindex.ai"),
@@ -578,6 +589,9 @@ func (c *Config) Validate() error {
 	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
 	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
 		return errors.New("APP_INVITE_BASE_URL must be an absolute HTTPS URL without user info, query, or fragment")
+	}
+	if c.Group.MaxActiveMembers <= 0 {
+		return errors.New("GROUP_MAX_ACTIVE_MEMBERS must be positive")
 	}
 	if c.OCR.ProviderTimeout <= 0 || c.OCR.MaxAttempts <= 0 || c.OCR.RetryBaseDelay <= 0 || c.OCR.ManualLimit <= 0 || c.OCR.ManualWindowHours <= 0 || c.OCR.RawRetentionDays <= 0 {
 		return errors.New("OCR settings must be positive")
