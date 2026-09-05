@@ -20,10 +20,16 @@ const (
 	KindStreamReplace = "stream.replace"
 	KindSessionEnded  = "session.ended"
 
-	ScopeHome       = "home"
-	ScopeGroup      = "group"
-	ScopeBill       = "bill"
-	ScopeSettlement = "settlement"
+	ScopeHome         = "home"
+	ScopeGroup        = "group"
+	ScopeBill         = "bill"
+	ScopeSettlement   = "settlement"
+	ScopeNotification = "notification"
+
+	// TypeNotificationCreated báo cho đúng những người vừa nhận thông báo rằng
+	// danh sách thông báo của họ đã đổi. Khác các sự kiện khác, audience của nó
+	// là danh sách người nhận chứ không phải toàn bộ thành viên nhóm.
+	TypeNotificationCreated = "notification.created"
 )
 
 var (
@@ -181,7 +187,7 @@ func DecodeUserEnvelope(payload string) (UserEnvelope, error) {
 
 func validateInvalidateBody(body InvalidateBody) error {
 	switch body.Scope {
-	case ScopeHome, ScopeGroup, ScopeBill, ScopeSettlement:
+	case ScopeHome, ScopeGroup, ScopeBill, ScopeSettlement, ScopeNotification:
 	default:
 		return ErrInvalidBody
 	}

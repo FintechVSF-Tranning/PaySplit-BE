@@ -480,7 +480,11 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, err
 	}
 	if in.BeforeCommit != nil {
-		if err = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); err != nil {
+		recipients := []string{creditorUser.String()}
+		if err = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); err != nil {
+			return nil, false, err
+		}
+		if err = r.notifyNotificationCreated(ctx, tx, gid, recipients); err != nil {
 			return nil, false, err
 		}
 	}
@@ -1008,7 +1012,11 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 		return nil, e
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{creditorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
+		recipients := []string{creditorUser.String()}
+		if e = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
+			return nil, e
+		}
+		if e = r.notifyNotificationCreated(ctx, tx, gid, recipients); e != nil {
 			return nil, e
 		}
 	}
@@ -1199,7 +1207,11 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 		}
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
+		recipients := []string{debtorUser.String()}
+		if e = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
+			return nil, nil, e
+		}
+		if e = r.notifyNotificationCreated(ctx, tx, gid, recipients); e != nil {
 			return nil, nil, e
 		}
 	}
@@ -1318,7 +1330,11 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 		return nil, e
 	}
 	if in.BeforeCommit != nil {
-		if e = in.BeforeCommit(ctx, tx, []string{debtorUser.String()}, map[string]string{"group_id": gid.String(), "debt_id": did.String()}); e != nil {
+		recipients := []string{debtorUser.String()}
+		if e = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "debt_id": did.String()}); e != nil {
+			return nil, e
+		}
+		if e = r.notifyNotificationCreated(ctx, tx, gid, recipients); e != nil {
 			return nil, e
 		}
 	}
@@ -1382,7 +1398,11 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 			return e
 		}
 		if before != nil {
-			if e = before(ctx, tx, []string{c.user.String()}, map[string]string{"group_id": c.group.String(), "debt_id": c.id.String()}); e != nil {
+			recipients := []string{c.user.String()}
+			if e = before(ctx, tx, recipients, map[string]string{"group_id": c.group.String(), "debt_id": c.id.String()}); e != nil {
+				return e
+			}
+			if e = r.notifyNotificationCreated(ctx, tx, c.group, recipients); e != nil {
 				return e
 			}
 		}
@@ -1437,7 +1457,11 @@ func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submitt
 			return e
 		}
 		if before != nil {
-			if e = before(ctx, tx, []string{c.user.String()}, map[string]string{"group_id": c.group.String(), "payment_id": c.id.String()}); e != nil {
+			recipients := []string{c.user.String()}
+			if e = before(ctx, tx, recipients, map[string]string{"group_id": c.group.String(), "payment_id": c.id.String()}); e != nil {
+				return e
+			}
+			if e = r.notifyNotificationCreated(ctx, tx, c.group, recipients); e != nil {
 				return e
 			}
 		}

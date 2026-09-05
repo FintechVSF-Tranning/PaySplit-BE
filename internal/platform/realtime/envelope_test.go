@@ -57,6 +57,33 @@ func TestEncodeInvalidateRejectsOversizedAndEncodesStreamReplace(t *testing.T) {
 	}
 }
 
+func TestInvalidateRoundTripsNotificationScope(t *testing.T) {
+	gid := uuid.Must(uuid.NewV7())
+	// Audience của scope này là danh sách người nhận thông báo, không phải cả nhóm.
+	audience := []uuid.UUID{uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())}
+	body := InvalidateBody{Scope: ScopeNotification, GroupID: gid, Type: TypeNotificationCreated}
+
+	encoded, err := EncodeInvalidate(audience, body)
+	if err != nil {
+		t.Fatalf("EncodeInvalidate() error = %v", err)
+	}
+	env, err := DecodeUserEnvelope(string(encoded))
+	if err != nil {
+		t.Fatalf("DecodeUserEnvelope() error = %v", err)
+	}
+	if env.Body == nil || env.Body.Scope != ScopeNotification || env.Body.Type != TypeNotificationCreated {
+		t.Fatalf("decoded body = %+v", env.Body)
+	}
+	if len(env.AudienceUserIDs) != 2 {
+		t.Fatalf("audience = %v, want 2 người nhận", env.AudienceUserIDs)
+	}
+
+	// GroupID vẫn bắt buộc: thông báo nào cũng gắn với một nhóm.
+	if _, err = EncodeInvalidate(audience, InvalidateBody{Scope: ScopeNotification, Type: TypeNotificationCreated}); err != ErrInvalidUUID {
+		t.Fatalf("thiếu group_id err = %v, want %v", err, ErrInvalidUUID)
+	}
+}
+
 func TestEncodeSessionEndedOmitsControlFields(t *testing.T) {
 	// covers: AC-14, AC-15
 	sid := uuid.Must(uuid.NewV7())

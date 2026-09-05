@@ -735,6 +735,10 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, p repository.Review
 		}
 	}
 
+	if err := r.notifyNotificationCreated(ctx, tx, groupID, notificationRecipients(p.Notifications)); err != nil {
+		return nil, err
+	}
+
 	if err := r.notifyBillInvalidate(ctx, tx, groupID, id, dbBill.Version, "bill.reviewed"); err != nil {
 		return nil, err
 	}
@@ -947,6 +951,10 @@ func (r *postgresRepository) finalizeCore(ctx context.Context, tx pgx.Tx, p repo
 		if err := p.BeforeCommit(ctx, tx); err != nil {
 			return nil, fmt.Errorf("before commit finalize hook: %w", err)
 		}
+	}
+
+	if err := r.notifyNotificationCreated(ctx, tx, p.GroupID, notificationRecipients(p.Notifications)); err != nil {
+		return nil, err
 	}
 
 	// 6. Ghi nhận hoạt động chốt hóa đơn vào group_activities (Spec 3 AC-9)

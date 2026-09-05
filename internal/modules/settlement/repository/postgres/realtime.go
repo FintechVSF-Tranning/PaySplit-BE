@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,29 @@ func (r *postgresRepository) distinctBillIDs(ctx context.Context, tx pgx.Tx, deb
 
 func (r *postgresRepository) notifyInvalidate(ctx context.Context, tx pgx.Tx, audience []uuid.UUID, body realtime.InvalidateBody) error {
 	return r.events.NotifyInvalidate(ctx, tx, audience, body)
+}
+
+// notifyNotificationCreated báo danh sách thông báo đã đổi cho đúng người vừa
+// nhận thông báo. Khác notifyAll, audience ở đây không phải cả nhóm — máy của
+// người không nhận gì thì không có lý do gì phải gọi lại API danh sách.
+func (r *postgresRepository) notifyNotificationCreated(ctx context.Context, tx pgx.Tx, groupID uuid.UUID, recipients []string) error {
+	ids := make([]uuid.UUID, 0, len(recipients))
+	for _, raw := range recipients {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("parse notification recipient %q: %w", raw, err)
+		}
+		ids = append(ids, id)
+	}
+	ids = realtime.NormalizeAudience(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	return r.notifyInvalidate(ctx, tx, ids, realtime.InvalidateBody{
+		Scope:   realtime.ScopeNotification,
+		GroupID: groupID,
+		Type:    realtime.TypeNotificationCreated,
+	})
 }
 
 func (r *postgresRepository) notifyAll(ctx context.Context, tx pgx.Tx, groupID uuid.UUID, typ, scope string, resourceID *uuid.UUID) error {

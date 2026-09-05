@@ -342,6 +342,9 @@ func (r *postgresRepository) StartBulkFinalize(ctx context.Context, p repository
 		if err != nil {
 			return nil, err
 		}
+		if err = r.notifyNotificationCreated(ctx, tx, uuid.UUID(batchRow.GroupID.Bytes), []uuid.UUID{uuid.UUID(member.UserID.Bytes)}); err != nil {
+			return nil, err
+		}
 		if p.BeforeCommit != nil {
 			if err := p.BeforeCommit(ctx, tx, &repository.BulkStartEnqueueInfo{
 				BatchID:         p.BatchID,
@@ -780,6 +783,9 @@ func (r *postgresRepository) TryCompleteBatch(ctx context.Context, batchID, grou
 	}
 	notificationIDs, err := r.insertBulkCompletionNotificationTx(ctx, q, batchRow, captain.UserID)
 	if err != nil {
+		return false, err
+	}
+	if err = r.notifyNotificationCreated(ctx, tx, uuid.UUID(batchRow.GroupID.Bytes), []uuid.UUID{uuid.UUID(captain.UserID.Bytes)}); err != nil {
 		return false, err
 	}
 

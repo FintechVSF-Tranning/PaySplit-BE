@@ -48,6 +48,30 @@ func (r *postgresRepository) notifyBillInvalidate(ctx context.Context, tx pgx.Tx
 	})
 }
 
+// notifyNotificationCreated báo danh sách thông báo đã đổi. Audience là đúng
+// những người vừa nhận thông báo, không phải cả nhóm — máy của người không nhận
+// gì thì không có lý do gì phải gọi lại API danh sách thông báo.
+func (r *postgresRepository) notifyNotificationCreated(ctx context.Context, tx pgx.Tx, groupID uuid.UUID, recipients []uuid.UUID) error {
+	recipients = realtime.NormalizeAudience(recipients)
+	if len(recipients) == 0 {
+		return nil
+	}
+	return r.events.NotifyInvalidate(ctx, tx, recipients, realtime.InvalidateBody{
+		Scope:   realtime.ScopeNotification,
+		GroupID: groupID,
+		Type:    realtime.TypeNotificationCreated,
+	})
+}
+
+// notificationRecipients gom danh sách người nhận từ các thông báo sắp ghi.
+func notificationRecipients(notifications []*repository.NotificationParam) []uuid.UUID {
+	recipients := make([]uuid.UUID, 0, len(notifications))
+	for _, notif := range notifications {
+		recipients = append(recipients, notif.UserID)
+	}
+	return recipients
+}
+
 func (r *postgresRepository) notifyGroupInvalidate(ctx context.Context, tx pgx.Tx, groupID uuid.UUID, typ string) error {
 	audience, err := r.activeUserIDs(ctx, tx, groupID)
 	if err != nil {
