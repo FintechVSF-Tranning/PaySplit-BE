@@ -67,6 +67,7 @@
     - [4.1.28 \- In-App & Push Notifications](#4.1.28---in-app-&-push-notifications)
     - [4.1.29 \- Admin Management & Web Portal](#4.1.29---admin-management-&-web-portal)
     - [4.1.30 \- Unified Realtime Event Architecture](#4.1.30---unified-realtime-event-architecture)
+    - [4.1.31 \- Group Delta Catch-up Synchronization](#4.1.31---group-delta-catch-up-synchronization)
   - [4.2 Automated System Functions](#4.2-automated-system-functions)
     - [4.2.1 \- Automated Background Jobs & Queue Workers](#4.2.1---automated-background-jobs-&-queue-workers)
 
@@ -130,6 +131,7 @@
 | 10/08/2026 |    A     | All members | Add Product Overview, Personas, Use cases                                                                                                                                                                                                                                                                                                                      |
 | 11/08/2026 |    M     | All members | Complete initial document                                                                                                                                                                                                                                                                                                                                      |
 | 04/09/2026 |    M     | All members | Comprehensive update matching current production codebase across Go backend and Flutter frontend: single-session authentication, River queue background jobs, LlamaExtract OCR async pipeline (HTTP 202), big.Rat Hamilton bill split algorithm, non-locking VietQR payment flow, 2-phase proof upload, FCM push & in-app notifications, embedded Web Admin portal, and unified connection-efficient realtime architecture. |
+| 05/09/2026 |    M     | All members | Add group delta catch-up synchronization (GET /api/v1/groups/{id}/sync), monotonic roster_version sequencing, and explicitly clarify V1 production release vs V2 proposed release (Debtor Bill Consent in Spec 0007). |
 
 ##### **Table 1\. Record of Change** {#table-1.-record-of-change}
 
@@ -203,12 +205,16 @@ The **PaySplit** system delivers substantial value across the entire group finan
 
 **In-Scope (System Capabilities):**
 - **Authentication & Security:** Single active session per user, JWT access token (15m TTL) validated against database session state (`liveAuth`), refresh token rotation (7d TTL) with reuse detection, mandatory phone number registration with 6-digit SHA-256 OTP verification (10m TTL, 5-attempt supersede rule), rate-limited brute-force protection (5 failures in 15m -> 15m block), profile & bank management with VietQR validation and Cloudinary avatar processing.
-- **Group Management:** Temporary/standing groups up to 50 active members, Base62 8-character case-sensitive invite codes with anti-enumeration protection, camera/gallery QR code scanning (`mobile_scanner` / `zxing2`), atomic Captain transfer with `NOWAIT` row locks, soft member deactivation/reactivation preserving ledger integrity, bill submission locking/unlocking, and group archival validation.
+- **Group Management:** Temporary/standing groups up to 50 active members, Base62 8-character case-sensitive invite codes with anti-enumeration protection, camera/gallery QR code scanning (`mobile_scanner` / `zxing2`), atomic Captain transfer with `NOWAIT` row locks, soft member deactivation/reactivation preserving ledger integrity, bill submission locking/unlocking, strictly monotonic group sequencing (`roster_version`), and delta catch-up synchronization (`GET /api/v1/groups/{id}/sync?since=N`).
 - **Bill Processing & OCR:** Multipart upload of 1–5 receipt images (JPEG/PNG/HEIC up to 10MB), asynchronous OCR processing via River Queue and LlamaExtract returning HTTP 202 Accepted, manual draft entry, item-level assignment with custom/equal weights (`big.Rat`), optimistic `version` locking, allocation dry-run validation (`BILL_NOT_READY` blockers), immutable finalization computing exact shares via the Hamilton largest-remainder algorithm, bill voiding with payment state gating, and batch finalize-all processing.
 - **Settlement & VietQR:** Non-locking VietQR generation (TLV/compact standard, unique reference code `PAY` + 8 Base32 chars, deterministic UUIDv5 idempotency), 2-phase payment proof submission with Cloudinary storage and creditor bank snapshotting, creditor manual confirmation (settling debts) and rejection (with mandatory reason, resetting debts), manual debt reminders (max 3 times, ≥24h cooldown), and hourly automated scanner jobs (`settlement_scan`) for 72h stale debt reminders and 48h stalled confirmation alerts.
 - **Notifications:** Transaction-atomic in-app notifications and River `send_notification` jobs, Firebase Cloud Messaging (FCM) push notifications routed to the user's latest active session, in-app notification center with optimistic mark-as-read, and type-first deep linking route resolver.
 - **Admin Management & Web Portal:** Embedded static Web Admin Portal (`//go:embed` at `/admin-portal/`), user accounts directory with masked bank details, account status transitions (`active`, `suspended`, `locked`) with instant session revocation and SSE notification, financial debt warnings, real-time system metric overview dashboard, and health probes (`/health`, `/health/live`, `/health/ready`).
-- **Realtime Infrastructure:** Single SSE stream per session (`GET /api/v1/users/me/events`), single shared PostgreSQL listener across `bill_events`, `group_events`, `user_events`, replacement arbitration via PostgreSQL commit ordering, lightweight invalidation events with 250ms debouncing, in-place list patching, and automatic reconnection with full resynchronization upon `ready`.
+- **Realtime Infrastructure:** Single SSE stream per session (`GET /api/v1/users/me/events`), single shared PostgreSQL listener across `bill_events`, `group_events`, `user_events`, replacement arbitration via PostgreSQL commit ordering, lightweight invalidation events with 250ms debouncing, in-place list patching, and automatic reconnection with full resynchronization upon `ready` or delta replay via `/sync`.
+
+**Release Phasing (V1 vs V2 Scope):**
+- **V1 (Current Production Scope):** Captain-driven bill finalization (single finalization and asynchronous bulk batch finalize with submission locking); automatic debt creation; dynamic VietQR payment coordination and creditor manual confirmation.
+- **V2 (Planned Target - Spec 0007):** Debtor Bill Consent rounds, where bills in review create immutable per-debtor approval requests that require explicit debtor acceptance before the Captain can finalize the bill.
 
 **Out-of-Scope:**
 - **Fund Custody & Money Transmission:** Holding user deposits, managing stored-value balances, or acting as an intermediary payment gateway under Decree 52/2024/NĐ-CP.
@@ -288,6 +294,7 @@ The **PaySplit** system delivers substantial value across the entire group finan
 | 28  | Debt Reminders & Auto Scan   | Creditor, Captain, System      | Manual reminder (max 3 times, ≥24h cooldown, UUIDv4 key); hourly River job (`settlement_scan`) sends automated reminders for 72h stale debts (sharing 3-count limit) and alerts creditors on 48h stalled proofs.                                   |
 | 29  | In-App & Push Notifications  | Authenticated User             | Lists paginated in-app notifications with optimistic read marking; dispatches FCM push notifications asynchronously; resolves notification taps via type-first deep linking.                                                                       |
 | 30  | Admin Portal & Monitoring    | Admin                          | Embedded static Web Admin Portal (`/admin-portal/`); manages accounts; updates status (active, suspended, locked) with instant session revocation and SSE notification; views system overview metrics and probes health endpoints.                   |
+| 31  | Group Catch-up Sync          | Authenticated User             | Fetches missed group event deltas (`GET /api/v1/groups/{id}/sync?since=N`) when client reconnects or detects a version gap; ensures zero-loss event recovery without full refetches.                                                                |
 
 ##### **Table 3\. Use Case Description** {#table-3.-use-case-description}
 
@@ -554,13 +561,14 @@ The **PaySplit** system delivers substantial value across the entire group finan
 - **_Function Description:_** Computes definitive participant shares using the Hamilton largest-remainder method, immutably locks the bill, creates awaiting debt records, and dispatches push notifications.
 - **_Function Detail:_**
   - **Authorization & Invariants:** Caller must be the Captain (`403 FORBIDDEN` if not). Creditor must have a valid bank account configured (`422 BANK_ACCOUNT_REQUIRED`). Request must include `version` and `Idempotency-Key`.
+  - **Release Boundary Note:** V1 operates under direct Captain finalization; individual debtor consent voting ([Spec 0007](specs/0007-debtor-bill-consent/index.md)) is reserved as a Post-V1 enhancement and does not gate V1 bill finalization.
   - **Split Calculation Algorithm (Largest-Remainder / Hamilton Method):**
-    1. Computes exact rational shares (`big.Rat`) for each participant based on item weights and proportional surcharges/discounts.
+    1. Computes exact rational shares (`big.Rat`) for each participant based on item weights and proportional surcharges/discounts (Migration 000016 exact allocation model).
     2. Caps non-creditor discounts so individual shares cannot be negative (surplus discount flows to creditor).
     3. Floors each participant's share to integer VND ($\lfloor \text{share}_i \rfloor$).
     4. Computes remainder: $R = \text{allocTotal} - \sum \lfloor \text{share}_i \rfloor$ (where $0 \le R < N$).
     5. Distributes $+1$ VND to the $R$ participants with the **largest fractional remainder** values. Ties are broken strictly by **ascending member UUID order** (no creditor bias).
-    6. Verifies $\sum \text{final\_shares} = \text{allocTotal}$ exactly.
+    6. Verifies $\sum \text{final\_shares} = \text{allocTotal}$ exactly down to 1 VND.
   - **Transaction Execution:**
     - Transitions bill status to `finalized`.
     - Inserts immutable `bill_shares` snapshots for all participants.
@@ -576,7 +584,7 @@ The **PaySplit** system delivers substantial value across the entire group finan
 - **_Function Detail:_**
   - Caller must be Captain. Automatically sets `groups.bill_submission_locked_at = now()`.
   - Blocks if an active batch is already running (`409 BULK_FINALIZE_IN_PROGRESS`).
-  - Creates a `bill_finalize_batches` record and snapshots all `draft` and `reviewed` bill IDs and versions into `bill_finalize_batch_items`.
+  - Creates a `group_bill_finalize_batches` record and snapshots all `draft` and `reviewed` bill IDs and versions into `group_bill_finalize_items`.
   - Enqueues a River job `bill_bulk_finalize_item` for each bill item.
   - **Independent Job Transactions:** Each bill item executes in its own database transaction. If a specific bill fails validation (e.g. unassigned items), that item marks `failed` with error reason, while all valid bills finalize successfully.
   - Upon processing all items, updates batch status to `completed` and notifies the Captain.
@@ -705,6 +713,18 @@ The **PaySplit** system delivers substantial value across the entire group finan
   - **Connection Replacement Arbitration:** Concurrent streams on the same session are arbitrated via PostgreSQL `NOTIFY` commit ordering (`stream.replace`), ensuring exactly one active stream per session.
   - **Small Invalidation Payload:** Server emits lightweight event descriptors (`ready`, `invalidate`, `roster`, `ocr.updated`, `heartbeat`, `close`).
   - **Client Interest Registry:** Flutter client registers active screen surfaces (`home.groups`, `groups.index`, `group.bills`, `group.debts`, etc.), debounces refresh triggers across a 250ms window, and executes in-place list patching for group cards (`patchGroup`) without resetting pagination.
+
+––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
+
+#### **_4.1.31 \- Group Delta Catch-up Synchronization_** {#4.1.31---group-delta-catch-up-synchronization}
+
+- **_Function Trigger:_** A mobile client reconnects following network drops or detects a version gap in incoming group events (e.g. current client version is 10, incoming event version is 12) via `GET /api/v1/groups/{id}/sync?since=N`.
+- **_Function Description:_** Delivers gapless, ordered event deltas from `group_events` allowing client state reconstruction without performing full, expensive screen re-fetches.
+- **_Function Detail:_**
+  - **Monotonic Version Sequencing:** Every group mutation increments `groups.roster_version` under a row-level lock (`LockActiveGroup`) and inserts into `group_events (group_id, version, event_type, payload, created_at)`.
+  - **Delta Query & Retrieval:** When requested with `?since=N`, returns all events with `version > N` in ascending order (`ORDER BY version ASC`).
+  - **Snapshot Recovery Fallback:** If the client's `since` version is older than the configured log retention window (or if the group log was pruned), the server returns HTTP 200 with `reset_required: true`, instructing the client to perform a full group detail fetch (`GET /api/v1/groups/{id}`).
+  - **Client Processing:** The Flutter Riverpod repository applies missed event deltas sequentially to local caches, seamlessly healing stale state.
 
 ––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––-
 
