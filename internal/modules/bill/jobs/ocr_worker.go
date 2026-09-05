@@ -323,6 +323,49 @@ func (w *OCRRetentionWorker) Work(ctx context.Context, job *river.Job[OCRRetenti
 	return err
 }
 
+// StaleOCRJobArgs định nghĩa payload công việc thu dọn các job OCR đứng yên quá lâu.
+type StaleOCRJobArgs struct {
+	OlderThanSeconds int `json:"older_than_seconds"`
+}
+
+// Kind định danh loại job trong River Queue.
+func (StaleOCRJobArgs) Kind() string { return "ocr_stale_job_reaper" }
+
+// StaleOCRReaperWorker đánh 'failed' cho những job OCR mắc kẹt ở queued/processing.
+//
+// Work ở trên đã cẩn thận chuyển mọi lỗi nó lường trước được thành failJob, nhưng
+// vẫn còn những đường thoát nó không kiểm soát: lỗi DB làm River hết attempt rồi
+// discard, worker panic, tiến trình chết giữa lúc đang gọi provider. Mỗi lần như
+// vậy hàng ocr_jobs nằm lại vĩnh viễn vì không có gì trong hệ thống chuyển nó sang
+// trạng thái kết thúc — client quay spinner mãi, và uq_ocr_jobs_active_bill khiến
+// chính hóa đơn đó không retry OCR được nữa.
+type StaleOCRReaperWorker struct {
+	river.WorkerDefaults[StaleOCRJobArgs]
+	repo repository.Repository
+}
+
+// NewStaleOCRReaperWorker khởi tạo StaleOCRReaperWorker.
+func NewStaleOCRReaperWorker(repo repository.Repository) *StaleOCRReaperWorker {
+	return &StaleOCRReaperWorker{repo: repo}
+}
+
+// Work thực hiện một lượt thu dọn.
+func (w *StaleOCRReaperWorker) Work(ctx context.Context, job *river.Job[StaleOCRJobArgs]) error {
+	if w.repo == nil {
+		return nil
+	}
+	olderThan := time.Duration(job.Args.OlderThanSeconds) * time.Second
+	reaped, err := w.repo.FailStaleOCRJobs(ctx, olderThan)
+	if err != nil {
+		return err
+	}
+	if reaped > 0 {
+		platformmetrics.RecordOCRJob("failed", "stale_timeout")
+		log.Printf("event=ocr_stale_job_reaped count=%d older_than=%s", reaped, olderThan)
+	}
+	return nil
+}
+
 // IdempotencyRetentionJobArgs định nghĩa payload công việc dọn các khóa idempotency đã hết hạn.
 // Không có bước dọn này thì bảng bill_idempotency_keys phình vô hạn (Spec 3 AC-11, AC-13).
 type IdempotencyRetentionJobArgs struct{}

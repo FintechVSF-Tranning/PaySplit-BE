@@ -869,3 +869,87 @@ func TestIntegration_CreateBill_ItemDiscountRoundTrips(t *testing.T) {
 		t.Fatalf("expected persisted item discount_amount 50000 and final_price 200000, got %+v", fetched.Items)
 	}
 }
+
+func TestIntegration_FailStaleOCRJobs(t *testing.T) {
+	// covers: reaper thu dọn job OCR mắc kẹt ở queued/processing.
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, creditorID, _ := setupTestGroupAndMembers(t, pool)
+	ctx := context.Background()
+
+	staleQueuedBill := uuid.New()
+	staleProcessingBill := uuid.New()
+	freshBill := uuid.New()
+	doneBill := uuid.New()
+	for _, id := range []uuid.UUID{staleQueuedBill, staleProcessingBill, freshBill, doneBill} {
+		bill := &domain.Bill{
+			ID: id, GroupID: groupID, CreditorMemberID: creditorID,
+			Status: domain.BillStatusDraft, SplitMethod: domain.SplitMethodEven,
+		}
+		if _, err := repo.CreateBill(ctx, repository.CreateBillParams{Bill: bill}); err != nil {
+			t.Fatalf("CreateBill() error = %v", err)
+		}
+	}
+
+	staleQueuedJob := uuid.New()
+	staleProcessingJob := uuid.New()
+	freshJob := uuid.New()
+	doneJob := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO ocr_jobs(id,bill_id,status,updated_at) VALUES
+			($1,$2,'queued',     now() - interval '1 hour'),
+			($3,$4,'processing', now() - interval '1 hour'),
+			($5,$6,'processing', now()),
+			($7,$8,'succeeded',  now() - interval '1 hour')`,
+		staleQueuedJob, staleQueuedBill,
+		staleProcessingJob, staleProcessingBill,
+		freshJob, freshBill,
+		doneJob, doneBill); err != nil {
+		t.Fatalf("insert ocr jobs: %v", err)
+	}
+
+	reaped, err := repo.FailStaleOCRJobs(ctx, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("FailStaleOCRJobs() error = %v", err)
+	}
+	// Không khẳng định con số tuyệt đối: reaper quét toàn database và test DB dùng
+	// chung còn giữ fixture của những test khác.
+	if reaped < 2 {
+		t.Fatalf("reaped = %d, want >= 2", reaped)
+	}
+
+	statusOf := func(id uuid.UUID) (string, *string) {
+		var status string
+		var errMsg *string
+		if err := pool.QueryRow(ctx, `SELECT status::text, error_message FROM ocr_jobs WHERE id=$1`, id).
+			Scan(&status, &errMsg); err != nil {
+			t.Fatalf("đọc ocr_job %s: %v", id, err)
+		}
+		return status, errMsg
+	}
+
+	for _, id := range []uuid.UUID{staleQueuedJob, staleProcessingJob} {
+		status, errMsg := statusOf(id)
+		if status != "failed" {
+			t.Errorf("job kẹt %s status = %q, want failed", id, status)
+		}
+		if errMsg == nil || *errMsg != postgres.StaleOCRJobErrorMessage {
+			t.Errorf("job kẹt %s error_message = %v, want %q", id, errMsg, postgres.StaleOCRJobErrorMessage)
+		}
+	}
+
+	// Job vừa chạm updated_at đang trong chuỗi retry hợp lệ: thu dọn nó là cắt
+	// ngang một lần bóc tách sắp có kết quả.
+	if status, _ := statusOf(freshJob); status != "processing" {
+		t.Errorf("job còn tươi status = %q, want processing", status)
+	}
+	if status, _ := statusOf(doneJob); status != "succeeded" {
+		t.Errorf("job đã xong status = %q, want succeeded", status)
+	}
+
+	// Bill vừa được giải phóng khỏi uq_ocr_jobs_active_bill: retry phải chèn được.
+	if _, err := pool.Exec(ctx, `INSERT INTO ocr_jobs(id,bill_id,status) VALUES ($1,$2,'queued')`,
+		uuid.New(), staleQueuedBill); err != nil {
+		t.Fatalf("bill đã thu dọn vẫn không tạo được job OCR mới: %v", err)
+	}
+}

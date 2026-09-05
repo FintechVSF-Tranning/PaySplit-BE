@@ -245,6 +245,13 @@ type Repository interface {
 	CountManualOCRAttemptsInWindow(ctx context.Context, billID uuid.UUID, since time.Time) (int64, error)
 	PurgeExpiredRawOCRResponses(ctx context.Context, olderThan time.Duration) (int64, error)
 	CountActiveOCRJobs(ctx context.Context) (int64, error)
+	// FailStaleOCRJobs đánh 'failed' cho các job đứng yên ở queued/processing quá
+	// olderThan. River có thể bỏ một job lại (hết attempt vì lỗi ngoài bộ mã đóng,
+	// worker panic, tiến trình chết giữa chừng) mà không ai chuyển ocr_jobs sang
+	// trạng thái kết thúc; hàng đó nằm lại vĩnh viễn, giữ spinner "đang quét" trên
+	// client và chiếm chỗ trong uq_ocr_jobs_active_bill nên chính bill đó không
+	// bao giờ retry OCR được nữa.
+	FailStaleOCRJobs(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// Media Cleanup
 	EnqueueMediaCleanup(ctx context.Context, prefix, kind string) error

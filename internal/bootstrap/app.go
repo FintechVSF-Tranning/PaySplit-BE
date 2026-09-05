@@ -208,7 +208,7 @@ func New(ctx context.Context) (*App, error) {
 
 	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
 	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
-	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays)
+	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays, cfg.OCR.StaleJobAge)
 	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, proofStorage, cfg.Settlement.ReminderStaleAge, cfg.Settlement.StalledConfirmationAge, cfg.Settlement.ReminderMaxCount)
 	periodicJobs := append(billPeriodicJobs, settlementPeriodicJobs...)
 

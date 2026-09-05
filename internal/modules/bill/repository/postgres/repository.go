@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -1788,6 +1789,99 @@ func (r *postgresRepository) PurgeExpiredRawOCRResponses(ctx context.Context, ol
 		return 0, fmt.Errorf("purge expired raw ocr responses: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// StaleOCRJobErrorMessage là mã lỗi ghi vào ocr_jobs.error_message khi một job bị
+// reaper thu dọn. Nằm trong bộ mã đóng như mọi mã lỗi OCR khác, nên an toàn để
+// phát qua realtime và hiển thị cho client.
+const StaleOCRJobErrorMessage = "stale_timeout"
+
+func (r *postgresRepository) FailStaleOCRJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		olderThan = 15 * time.Minute
+	}
+	threshold := time.Now().Add(-olderThan)
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin fail stale ocr jobs tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// updated_at chứ không phải created_at: mỗi lần worker nhận job nó chuyển sang
+	// 'processing' và chạm updated_at, nên một job đang thực sự retry theo backoff
+	// vẫn còn "tươi" và không bị thu dọn oan giữa chừng.
+	rows, err := tx.Query(ctx, `
+		UPDATE ocr_jobs j
+		SET status = 'failed',
+		    error_message = $2,
+		    updated_at = now(),
+		    completed_at = now()
+		FROM bills b
+		WHERE b.id = j.bill_id
+		  AND j.status IN ('queued', 'processing')
+		  AND j.updated_at < $1
+		RETURNING j.id, j.bill_id, b.group_id, j.provider, j.attempts, j.version,
+		          j.created_at, j.updated_at, j.completed_at;
+	`, threshold, StaleOCRJobErrorMessage)
+	if err != nil {
+		return 0, fmt.Errorf("fail stale ocr jobs: %w", err)
+	}
+
+	type reaped struct {
+		job     *domain.OCRJob
+		groupID uuid.UUID
+	}
+	var reapedJobs []reaped
+	for rows.Next() {
+		var (
+			id, billID, groupID pgtype.UUID
+			provider            string
+			attempts, version   int32
+			createdAt           time.Time
+			updatedAt           time.Time
+			completedAt         *time.Time
+		)
+		if err := rows.Scan(&id, &billID, &groupID, &provider, &attempts, &version, &createdAt, &updatedAt, &completedAt); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan stale ocr job: %w", err)
+		}
+		errMsg := StaleOCRJobErrorMessage
+		reapedJobs = append(reapedJobs, reaped{
+			job: &domain.OCRJob{
+				ID:           uuid.UUID(id.Bytes),
+				BillID:       uuid.UUID(billID.Bytes),
+				Status:       domain.OCRJobStatusFailed,
+				Provider:     provider,
+				Attempts:     attempts,
+				ErrorMessage: &errMsg,
+				Version:      version,
+				CreatedAt:    createdAt,
+				UpdatedAt:    updatedAt,
+				CompletedAt:  completedAt,
+			},
+			groupID: uuid.UUID(groupID.Bytes),
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate stale ocr jobs: %w", err)
+	}
+
+	// Client đang mở tab hóa đơn của nhóm chỉ tắt được spinner khi nhận
+	// 'ocr.updated'; thu dọn mà không báo thì hàng DB sạch nhưng màn hình vẫn quay.
+	for _, item := range reapedJobs {
+		if err := r.notifyOCR(ctx, tx, item.groupID, item.job); err != nil {
+			// Nhóm đã giải tán hết thành viên thì không còn ai để báo. Đó không phải
+			// lý do để bỏ luôn việc thu dọn những job còn lại.
+			log.Printf("event=ocr_stale_notify_failed job_id=%s group_id=%s err=%v", item.job.ID, item.groupID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit fail stale ocr jobs tx: %w", err)
+	}
+	return int64(len(reapedJobs)), nil
 }
 
 func formatVND(n int64) string {

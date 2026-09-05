@@ -14,10 +14,10 @@ import (
 func TestRegisterRetentionJobs(t *testing.T) {
 	workers := river.NewWorkers()
 
-	periodic := jobs.RegisterRetentionJobs(workers, nil, 30*24*time.Hour)
+	periodic := jobs.RegisterRetentionJobs(workers, nil, 30*24*time.Hour, 15*time.Minute)
 
-	if len(periodic) != 2 {
-		t.Fatalf("mong đợi 2 job định kỳ, nhận %d", len(periodic))
+	if len(periodic) != 3 {
+		t.Fatalf("mong đợi 3 job định kỳ, nhận %d", len(periodic))
 	}
 
 	// Đăng ký lại cùng worker sẽ panic, đó là bằng chứng lần đầu đã đăng ký thành công.
@@ -27,13 +27,16 @@ func TestRegisterRetentionJobs(t *testing.T) {
 	assertPanics(t, "IdempotencyRetentionWorker chưa được đăng ký", func() {
 		river.AddWorker(workers, jobs.NewIdempotencyRetentionWorker(nil))
 	})
+	assertPanics(t, "StaleOCRReaperWorker chưa được đăng ký", func() {
+		river.AddWorker(workers, jobs.NewStaleOCRReaperWorker(nil))
+	})
 }
 
 func TestRegisterRetentionJobs_DefaultsWhenRetentionUnset(t *testing.T) {
 	workers := river.NewWorkers()
 
-	if periodic := jobs.RegisterRetentionJobs(workers, nil, 0); len(periodic) != 2 {
-		t.Fatalf("mong đợi 2 job định kỳ kể cả khi retention chưa đặt, nhận %d", len(periodic))
+	if periodic := jobs.RegisterRetentionJobs(workers, nil, 0, 0); len(periodic) != 3 {
+		t.Fatalf("mong đợi 3 job định kỳ kể cả khi retention chưa đặt, nhận %d", len(periodic))
 	}
 }
 
@@ -46,6 +49,11 @@ func TestRetentionWorkers_NilRepo_NoPanic(t *testing.T) {
 	idem := jobs.NewIdempotencyRetentionWorker(nil)
 	if err := idem.Work(t.Context(), &river.Job[jobs.IdempotencyRetentionJobArgs]{}); err != nil {
 		t.Errorf("IdempotencyRetentionWorker với repo nil phải bỏ qua, nhận %v", err)
+	}
+
+	stale := jobs.NewStaleOCRReaperWorker(nil)
+	if err := stale.Work(t.Context(), &river.Job[jobs.StaleOCRJobArgs]{}); err != nil {
+		t.Errorf("StaleOCRReaperWorker với repo nil phải bỏ qua, nhận %v", err)
 	}
 }
 

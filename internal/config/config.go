@@ -155,6 +155,11 @@ type OCRConfig struct {
 	ManualLimit       int
 	ManualWindowHours time.Duration
 	RawRetentionDays  time.Duration
+	// StaleJobAge là thời gian một job OCR được phép đứng yên ở queued/processing
+	// trước khi bị reaper đánh 'failed'. Phải lớn hơn hẳn tổng thời gian một chuỗi
+	// retry hợp lệ (ProviderTimeout × MaxAttempts cộng backoff), nếu không job đang
+	// chờ retry sẽ bị thu dọn oan.
+	StaleJobAge time.Duration
 }
 
 // BillImageConfig chứa cấu hình tải lên, xử lý và tạo signed URL cho ảnh hóa đơn.
@@ -332,6 +337,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	ocrStaleJobAge, err := durationEnv("BILL_OCR_STALE_JOB_AGE_MINUTES", 15, time.Minute)
+	if err != nil {
+		return nil, err
+	}
 	billImageMaxCount, err := intEnv("BILL_IMAGE_MAX_COUNT", 5)
 	if err != nil {
 		return nil, err
@@ -471,6 +480,7 @@ func Load() (*Config, error) {
 			ManualLimit:       ocrManualLimit,
 			ManualWindowHours: ocrManualWindow,
 			RawRetentionDays:  ocrRawRetention,
+			StaleJobAge:       ocrStaleJobAge,
 		},
 		BillImage: BillImageConfig{
 			MaxCount:          billImageMaxCount,
