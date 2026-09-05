@@ -593,9 +593,10 @@ func TestReviewBill_NotifiesCaptain(t *testing.T) {
 	}
 }
 
-func TestReviewBill_CaptainReviewsOwnBill_SkipsNotification(t *testing.T) {
+func TestReviewBill_CaptainIsReviewer_SkipsSelfNotification(t *testing.T) {
 	repo, _, captainUserID, billID, groupID := reviewFixture()
-	// Trưởng nhóm tự gửi đối soát: không có ai khác cần được báo.
+	// Trưởng nhóm tự bấm gửi đối soát: không tự báo cho mình, và hai người bị gán
+	// món ở đây đúng là chủ nợ với trưởng nhóm nên cũng không còn ai để báo.
 	repo.member = repo.activeMembers[1]
 	enqueuer := &mockEnqueuer{}
 	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
@@ -609,6 +610,77 @@ func TestReviewBill_CaptainReviewsOwnBill_SkipsNotification(t *testing.T) {
 	}
 	if enqueuer.enqueuedCount != 0 {
 		t.Errorf("enqueued %d push jobs, want 0", enqueuer.enqueuedCount)
+	}
+}
+
+func TestReviewBill_NotifiesAssignedMembers(t *testing.T) {
+	repo, creditorUserID, captainUserID, billID, groupID := reviewFixture()
+	creditorMemberID := repo.activeMembers[0].ID
+	captainMemberID := repo.activeMembers[1].ID
+
+	// Một thực khách thường: không phải chủ nợ, không phải trưởng nhóm. Gán vào cả
+	// hai món để kiểm luôn việc chỉ nhận đúng một thông báo.
+	dinerMemberID := uuid.New()
+	dinerUserID := uuid.New()
+	repo.activeMembers = append(repo.activeMembers, &repository.GroupMember{
+		ID: dinerMemberID, GroupID: groupID, UserID: dinerUserID, Role: "member", Status: "active",
+	})
+	repo.bill.Items = []*domain.BillItem{
+		{
+			ID:        uuid.New(),
+			LineTotal: 60000,
+			Assignments: []*domain.BillItemAssignment{
+				{MemberID: creditorMemberID, Weight: "1"},
+				{MemberID: captainMemberID, Weight: "1"},
+				{MemberID: dinerMemberID, Weight: "1"},
+			},
+		},
+		{
+			ID:        uuid.New(),
+			LineTotal: 40000,
+			Assignments: []*domain.BillItemAssignment{
+				{MemberID: creditorMemberID, Weight: "1"},
+				{MemberID: dinerMemberID, Weight: "1"},
+			},
+		},
+	}
+
+	enqueuer := &mockEnqueuer{}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	if _, err := service.ReviewBill(context.Background(), creditorUserID, billID, groupID, 1); err != nil {
+		t.Fatalf("ReviewBill() error = %v", err)
+	}
+
+	byUser := make(map[uuid.UUID]*repository.NotificationParam, len(repo.reviewNotifications))
+	for _, n := range repo.reviewNotifications {
+		if _, dup := byUser[n.UserID]; dup {
+			t.Errorf("user %s nhận nhiều hơn một thông báo cho cùng một hóa đơn", n.UserID)
+		}
+		byUser[n.UserID] = n
+	}
+	if len(repo.reviewNotifications) != 2 {
+		t.Fatalf("expected 2 notifications (trưởng nhóm + thực khách), got %d", len(repo.reviewNotifications))
+	}
+	if got := byUser[captainUserID]; got == nil || got.Type != usecase.NotifyTypeBillReviewRequested {
+		t.Errorf("captain notification = %+v, want type %q", got, usecase.NotifyTypeBillReviewRequested)
+	}
+	diner := byUser[dinerUserID]
+	if diner == nil {
+		t.Fatal("thành viên bị gán món không nhận được thông báo nào")
+	}
+	if diner.Type != usecase.NotifyTypeNewBill {
+		t.Errorf("assigned member type = %q, want %q", diner.Type, usecase.NotifyTypeNewBill)
+	}
+	if !strings.Contains(diner.Body, "VIM Van Quan") {
+		t.Errorf("body %q nên nêu tên hóa đơn", diner.Body)
+	}
+	// Chủ nợ vừa tự dựng hóa đơn, báo lại cho họ là nhiễu.
+	if _, ok := byUser[creditorUserID]; ok {
+		t.Error("chủ nợ không nên nhận thông báo về hóa đơn của chính mình")
+	}
+	if enqueuer.enqueuedCount != 2 {
+		t.Errorf("enqueued %d push jobs, want 2", enqueuer.enqueuedCount)
 	}
 }
 

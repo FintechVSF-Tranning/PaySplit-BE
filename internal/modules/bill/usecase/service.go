@@ -994,7 +994,7 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 	// "Gửi đối soát" là hành động của người tạo hóa đơn, nhưng chỉ trưởng nhóm mới
 	// chốt sổ được. Không báo cho trưởng nhóm thì hóa đơn nằm im ở trạng thái
 	// reviewed cho tới khi họ tình cờ mở app.
-	notifications, beforeCommit := s.buildReviewNotification(bill, groupID, member, activeMembers)
+	notifications, beforeCommit := s.buildReviewNotifications(bill, groupID, member, activeMembers)
 
 	return s.repo.ReviewBill(ctx, repository.ReviewBillParams{
 		BillID:           billID,
@@ -1010,29 +1010,25 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 // đối soát và đang chờ chốt sổ.
 const NotifyTypeBillReviewRequested = "bill_review_requested"
 
-// buildReviewNotification dựng thông báo "chờ chốt sổ" gửi cho trưởng nhóm cùng
-// hook enqueue push trong transaction review.
+// NotifyTypeNewBill báo cho thành viên rằng họ vừa bị gán món trong một hóa đơn.
+const NotifyTypeNewBill = "new_bill"
+
+// buildReviewNotifications dựng toàn bộ thông báo phát ra khi hóa đơn được gửi đối
+// soát, cùng hook enqueue push chạy trong transaction review:
 //
-// Trả về nil khi nhóm không còn trưởng nhóm đang hoạt động, hoặc khi chính trưởng
-// nhóm là người gửi đối soát — tự bắn thông báo cho mình chỉ là nhiễu, và trưởng
-// nhóm gửi đối soát hóa đơn của chính họ là đường đi hợp lệ (xem ReviewBill).
-func (s *Service) buildReviewNotification(
+//   - trưởng nhóm nhận "chờ chốt sổ", vì họ là người duy nhất chốt được;
+//   - mỗi thành viên bị gán món nhận "có phần của bạn".
+//
+// Đây là thời điểm duy nhất hợp lý để báo cho người bị gán món. Lúc CreateBill thì
+// hóa đơn mới chỉ có ảnh — món do OCR sinh ra sau, gán món lưu qua UpdateDraftBill —
+// nên chưa có ai để báo; còn báo ở mỗi lần lưu nháp thì thành spam theo từng lần sửa.
+// Draft sang reviewed là chuyển đổi một chiều và xảy ra đúng một lần cho mỗi hóa đơn.
+func (s *Service) buildReviewNotifications(
 	bill *domain.Bill,
 	groupID uuid.UUID,
 	reviewer *repository.GroupMember,
 	activeMembers []*repository.GroupMember,
 ) ([]*repository.NotificationParam, func(ctx context.Context, tx pgx.Tx) error) {
-	var captain *repository.GroupMember
-	for _, m := range activeMembers {
-		if m.Role == "captain" {
-			captain = m
-			break
-		}
-	}
-	if captain == nil || captain.UserID == uuid.Nil || captain.ID == reviewer.ID {
-		return nil, nil
-	}
-
 	merchant := "Hóa đơn"
 	if bill.MerchantName != nil && strings.TrimSpace(*bill.MerchantName) != "" {
 		merchant = strings.TrimSpace(*bill.MerchantName)
@@ -1044,22 +1040,70 @@ func (s *Service) buildReviewNotification(
 		"total":    strconv.FormatInt(bill.Total, 10),
 	})
 
-	notif := &repository.NotificationParam{
-		ID:      uuid.Must(uuid.NewV7()),
-		UserID:  captain.UserID,
-		Type:    NotifyTypeBillReviewRequested,
-		Title:   "Hóa đơn chờ chốt sổ",
-		Body:    fmt.Sprintf("Hóa đơn %q vừa được gửi đối soát, đang chờ bạn chốt sổ.", merchant),
-		Payload: payloadBytes,
+	var captain *repository.GroupMember
+	userByMember := make(map[uuid.UUID]uuid.UUID, len(activeMembers))
+	for _, m := range activeMembers {
+		userByMember[m.ID] = m.UserID
+		if m.Role == "captain" {
+			captain = m
+		}
 	}
-	notifications := []*repository.NotificationParam{notif}
 
+	notifications := make([]*repository.NotificationParam, 0, len(activeMembers))
+
+	// Trưởng nhóm gửi đối soát hóa đơn của chính họ là đường đi hợp lệ (xem
+	// ReviewBill); khi đó tự bắn thông báo cho mình chỉ là nhiễu.
+	if captain != nil && captain.UserID != uuid.Nil && captain.ID != reviewer.ID {
+		notifications = append(notifications, &repository.NotificationParam{
+			ID:      uuid.Must(uuid.NewV7()),
+			UserID:  captain.UserID,
+			Type:    NotifyTypeBillReviewRequested,
+			Title:   "Hóa đơn chờ chốt sổ",
+			Body:    fmt.Sprintf("Hóa đơn %q vừa được gửi đối soát, đang chờ bạn chốt sổ.", merchant),
+			Payload: payloadBytes,
+		})
+	}
+
+	// Người bị gán món. Bỏ qua chủ nợ và người gửi đối soát vì họ vừa tự dựng hóa
+	// đơn, và bỏ qua trưởng nhóm vì thông báo "chờ chốt sổ" ở trên đã trỏ về đúng
+	// hóa đơn này — hai thông báo cho cùng một màn hình là nhiễu.
+	notified := make(map[uuid.UUID]bool, len(activeMembers))
+	for _, item := range bill.Items {
+		for _, assignment := range item.Assignments {
+			memberID := assignment.MemberID
+			if notified[memberID] || memberID == bill.CreditorMemberID || memberID == reviewer.ID {
+				continue
+			}
+			if captain != nil && memberID == captain.ID {
+				continue
+			}
+			userID, ok := userByMember[memberID]
+			if !ok || userID == uuid.Nil {
+				continue
+			}
+			notified[memberID] = true
+			notifications = append(notifications, &repository.NotificationParam{
+				ID:      uuid.Must(uuid.NewV7()),
+				UserID:  userID,
+				Type:    NotifyTypeNewBill,
+				Title:   "Hóa đơn mới có phần của bạn",
+				Body:    fmt.Sprintf("Bạn được gán món trong hóa đơn %q, đang chờ chốt sổ.", merchant),
+				Payload: payloadBytes,
+			})
+		}
+	}
+
+	if len(notifications) == 0 {
+		return nil, nil
+	}
 	if s.enqueuer == nil {
 		return notifications, nil
 	}
 	beforeCommit := func(txCtx context.Context, tx pgx.Tx) error {
-		if err := s.enqueuer.EnqueueNotificationTx(txCtx, tx, notif.ID.String()); err != nil {
-			return fmt.Errorf("enqueue review notification: %w", err)
+		for _, notif := range notifications {
+			if err := s.enqueuer.EnqueueNotificationTx(txCtx, tx, notif.ID.String()); err != nil {
+				return fmt.Errorf("enqueue review notification: %w", err)
+			}
 		}
 		return nil
 	}
