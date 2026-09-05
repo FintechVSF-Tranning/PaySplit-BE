@@ -666,7 +666,9 @@ func (r *postgresRepository) UpdateDraftBill(ctx context.Context, p repository.U
 }
 
 // ReviewBill chuyển trạng thái hóa đơn từ draft sang reviewed (Spec 3 AC-7).
-func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
+func (r *postgresRepository) ReviewBill(ctx context.Context, p repository.ReviewBillParams) (*domain.Bill, error) {
+	id, groupID, reviewerMemberID := p.BillID, p.GroupID, p.ReviewerMemberID
+
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin review bill tx: %w", err)
@@ -681,7 +683,7 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 	dbBill, err := q.ReviewBill(ctx, sqlc.ReviewBillParams{
 		ID:                 pgtype.UUID{Bytes: id, Valid: true},
 		GroupID:            pgtype.UUID{Bytes: groupID, Valid: true},
-		Version:            expectedVersion,
+		Version:            p.ExpectedVersion,
 		ReviewedByMemberID: pgtype.UUID{Bytes: reviewerMemberID, Valid: true},
 	})
 	if err != nil {
@@ -711,6 +713,27 @@ func (r *postgresRepository) ReviewBill(ctx context.Context, id, groupID uuid.UU
 		Description:   desc,
 		Metadata:      metaBytes,
 	})
+
+	// Thông báo "chờ chốt" cho trưởng nhóm nằm trong cùng transaction với lần đổi
+	// trạng thái, giống đường finalize, để không bao giờ lệch nhau.
+	for _, notif := range p.Notifications {
+		if _, err := q.CreateNotification(ctx, sqlc.CreateNotificationParams{
+			ID:      pgtype.UUID{Bytes: notif.ID, Valid: true},
+			UserID:  pgtype.UUID{Bytes: notif.UserID, Valid: true},
+			Type:    notif.Type,
+			Title:   notif.Title,
+			Body:    notif.Body,
+			Payload: notif.Payload,
+		}); err != nil {
+			return nil, fmt.Errorf("create review notification for user %s: %w", notif.UserID, err)
+		}
+	}
+
+	if p.BeforeCommit != nil {
+		if err := p.BeforeCommit(ctx, tx); err != nil {
+			return nil, fmt.Errorf("before commit review hook: %w", err)
+		}
+	}
 
 	if err := r.notifyBillInvalidate(ctx, tx, groupID, id, dbBill.Version, "bill.reviewed"); err != nil {
 		return nil, err

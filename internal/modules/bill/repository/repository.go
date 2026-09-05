@@ -100,6 +100,18 @@ type FinalizeBillParams struct {
 	BeforeCommit    func(ctx context.Context, tx pgx.Tx) error
 }
 
+// ReviewBillParams chứa dữ liệu chuyển hóa đơn nháp sang trạng thái đã đối soát.
+// Notifications và BeforeCommit chạy trong cùng transaction với lần đổi trạng thái,
+// nên không thể có chuyện thông báo "chờ chốt" đã gửi mà review lại bị rollback.
+type ReviewBillParams struct {
+	BillID           uuid.UUID
+	GroupID          uuid.UUID
+	ExpectedVersion  int32
+	ReviewerMemberID uuid.UUID
+	Notifications    []*NotificationParam
+	BeforeCommit     func(ctx context.Context, tx pgx.Tx) error
+}
+
 // VoidBillParams chứa dữ liệu để hủy bỏ một hóa đơn đã finalized.
 type VoidBillParams struct {
 	BillID          uuid.UUID
@@ -220,7 +232,7 @@ type Repository interface {
 	UpdateDraftBill(ctx context.Context, params UpdateDraftParams) (*domain.Bill, error)
 
 	// ReviewBill chuyển trạng thái hóa đơn từ draft sang reviewed (Spec 3 AC-7).
-	ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error)
+	ReviewBill(ctx context.Context, p ReviewBillParams) (*domain.Bill, error)
 
 	// FinalizeBill chuyển trạng thái hóa đơn sang finalized, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).
 	FinalizeBill(ctx context.Context, params FinalizeBillParams) (*domain.Bill, error)

@@ -608,7 +608,12 @@ func TestIntegration_ReviewAndFinalizeBill(t *testing.T) {
 	}
 
 	// 1. Review Bill
-	reviewed, err := repo.ReviewBill(ctx, billID, groupID, 1, creditorID)
+	reviewed, err := repo.ReviewBill(ctx, repository.ReviewBillParams{
+		BillID:           billID,
+		GroupID:          groupID,
+		ExpectedVersion:  1,
+		ReviewerMemberID: creditorID,
+	})
 	if err != nil {
 		t.Fatalf("ReviewBill() error = %v", err)
 	}

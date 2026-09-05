@@ -991,7 +991,79 @@ func (s *Service) ReviewBill(ctx context.Context, callerUserID, billID, groupID 
 		return nil, blockersToError(blockers)
 	}
 
-	return s.repo.ReviewBill(ctx, billID, groupID, expectedVersion, member.ID)
+	// "Gửi đối soát" là hành động của người tạo hóa đơn, nhưng chỉ trưởng nhóm mới
+	// chốt sổ được. Không báo cho trưởng nhóm thì hóa đơn nằm im ở trạng thái
+	// reviewed cho tới khi họ tình cờ mở app.
+	notifications, beforeCommit := s.buildReviewNotification(bill, groupID, member, activeMembers)
+
+	return s.repo.ReviewBill(ctx, repository.ReviewBillParams{
+		BillID:           billID,
+		GroupID:          groupID,
+		ExpectedVersion:  expectedVersion,
+		ReviewerMemberID: member.ID,
+		Notifications:    notifications,
+		BeforeCommit:     beforeCommit,
+	})
+}
+
+// NotifyTypeBillReviewRequested báo cho trưởng nhóm rằng có hóa đơn vừa được gửi
+// đối soát và đang chờ chốt sổ.
+const NotifyTypeBillReviewRequested = "bill_review_requested"
+
+// buildReviewNotification dựng thông báo "chờ chốt sổ" gửi cho trưởng nhóm cùng
+// hook enqueue push trong transaction review.
+//
+// Trả về nil khi nhóm không còn trưởng nhóm đang hoạt động, hoặc khi chính trưởng
+// nhóm là người gửi đối soát — tự bắn thông báo cho mình chỉ là nhiễu, và trưởng
+// nhóm gửi đối soát hóa đơn của chính họ là đường đi hợp lệ (xem ReviewBill).
+func (s *Service) buildReviewNotification(
+	bill *domain.Bill,
+	groupID uuid.UUID,
+	reviewer *repository.GroupMember,
+	activeMembers []*repository.GroupMember,
+) ([]*repository.NotificationParam, func(ctx context.Context, tx pgx.Tx) error) {
+	var captain *repository.GroupMember
+	for _, m := range activeMembers {
+		if m.Role == "captain" {
+			captain = m
+			break
+		}
+	}
+	if captain == nil || captain.UserID == uuid.Nil || captain.ID == reviewer.ID {
+		return nil, nil
+	}
+
+	merchant := "Hóa đơn"
+	if bill.MerchantName != nil && strings.TrimSpace(*bill.MerchantName) != "" {
+		merchant = strings.TrimSpace(*bill.MerchantName)
+	}
+
+	payloadBytes, _ := json.Marshal(map[string]string{
+		"bill_id":  bill.ID.String(),
+		"group_id": groupID.String(),
+		"total":    strconv.FormatInt(bill.Total, 10),
+	})
+
+	notif := &repository.NotificationParam{
+		ID:      uuid.Must(uuid.NewV7()),
+		UserID:  captain.UserID,
+		Type:    NotifyTypeBillReviewRequested,
+		Title:   "Hóa đơn chờ chốt sổ",
+		Body:    fmt.Sprintf("Hóa đơn %q vừa được gửi đối soát, đang chờ bạn chốt sổ.", merchant),
+		Payload: payloadBytes,
+	}
+	notifications := []*repository.NotificationParam{notif}
+
+	if s.enqueuer == nil {
+		return notifications, nil
+	}
+	beforeCommit := func(txCtx context.Context, tx pgx.Tx) error {
+		if err := s.enqueuer.EnqueueNotificationTx(txCtx, tx, notif.ID.String()); err != nil {
+			return fmt.Errorf("enqueue review notification: %w", err)
+		}
+		return nil
+	}
+	return notifications, beforeCommit
 }
 
 // FinalizeBill chạy phân bổ chia sàn, lưu snapshot bill_shares và sinh debts (Spec 3 AC-9).

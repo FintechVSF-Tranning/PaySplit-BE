@@ -188,13 +188,14 @@ func matchesHandlerStatusFilter(status domain.BillStatus, statuses []string) boo
 	return false
 }
 
-func (m *mockHandlerRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
+func (m *mockHandlerRepo) ReviewBill(ctx context.Context, p repository.ReviewBillParams) (*domain.Bill, error) {
 	if m.bill != nil {
 		m.bill.Status = domain.BillStatusReviewed
-		m.bill.Version = expectedVersion + 1
+		m.bill.Version = p.ExpectedVersion + 1
 		now := time.Now()
+		reviewer := p.ReviewerMemberID
 		m.bill.ReviewedAt = &now
-		m.bill.ReviewedByMemberID = &reviewerMemberID
+		m.bill.ReviewedByMemberID = &reviewer
 		return m.bill, nil
 	}
 	return nil, domain.ErrBillNotFound

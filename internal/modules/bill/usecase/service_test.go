@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -52,6 +53,9 @@ type mockServiceRepo struct {
 
 	// lastListStatuses ghi lại bộ lọc trạng thái mà usecase truyền xuống repo.
 	lastListStatuses []string
+
+	// reviewNotifications ghi lại thông báo mà usecase gửi kèm lần review.
+	reviewNotifications []*repository.NotificationParam
 
 	// Spec 0008 create gate controls.
 	submissionLockedAt *time.Time
@@ -225,12 +229,19 @@ func (m *mockServiceRepo) UpdateDraftBill(ctx context.Context, params repository
 	return m.updatedBill, nil
 }
 
-func (m *mockServiceRepo) ReviewBill(ctx context.Context, id, groupID uuid.UUID, expectedVersion int32, reviewerMemberID uuid.UUID) (*domain.Bill, error) {
+func (m *mockServiceRepo) ReviewBill(ctx context.Context, p repository.ReviewBillParams) (*domain.Bill, error) {
+	if p.BeforeCommit != nil {
+		if err := p.BeforeCommit(ctx, nil); err != nil {
+			return nil, err
+		}
+	}
+	m.reviewNotifications = p.Notifications
 	m.bill.Status = domain.BillStatusReviewed
-	m.bill.Version = expectedVersion + 1
+	m.bill.Version = p.ExpectedVersion + 1
 	now := time.Now()
+	reviewer := p.ReviewerMemberID
 	m.bill.ReviewedAt = &now
-	m.bill.ReviewedByMemberID = &reviewerMemberID
+	m.bill.ReviewedByMemberID = &reviewer
 	return m.bill, nil
 }
 
@@ -497,6 +508,119 @@ func TestReviewAndFinalizeBill_Success(t *testing.T) {
 	}
 	if len(finalized.Shares) != 2 {
 		t.Errorf("expected 2 shares, got %d", len(finalized.Shares))
+	}
+}
+
+// reviewFixture dựng một hóa đơn nháp hợp lệ do creditor (không phải trưởng nhóm)
+// tạo, kèm một trưởng nhóm đang hoạt động — đúng bối cảnh nút "Gửi đối soát".
+func reviewFixture() (repo *mockServiceRepo, creditorUserID, captainUserID, billID, groupID uuid.UUID) {
+	groupID = uuid.New()
+	billID = uuid.New()
+	creditorUserID = uuid.New()
+	captainUserID = uuid.New()
+	creditorMemberID := uuid.New()
+	captainMemberID := uuid.New()
+
+	merchant := "VIM Van Quan"
+	repo = &mockServiceRepo{
+		member: &repository.GroupMember{
+			ID:      creditorMemberID,
+			GroupID: groupID,
+			UserID:  creditorUserID,
+			Role:    "member",
+			Status:  "active",
+		},
+		activeMembers: []*repository.GroupMember{
+			{ID: creditorMemberID, GroupID: groupID, UserID: creditorUserID, Role: "member", Status: "active"},
+			{ID: captainMemberID, GroupID: groupID, UserID: captainUserID, Role: "captain", Status: "active"},
+		},
+		bill: &domain.Bill{
+			ID:               billID,
+			GroupID:          groupID,
+			CreditorMemberID: creditorMemberID,
+			Status:           domain.BillStatusDraft,
+			MerchantName:     &merchant,
+			Subtotal:         100000,
+			Total:            100000,
+			Version:          1,
+			Items: []*domain.BillItem{
+				{
+					ID:        uuid.New(),
+					LineTotal: 100000,
+					Assignments: []*domain.BillItemAssignment{
+						{MemberID: creditorMemberID, Weight: "1"},
+						{MemberID: captainMemberID, Weight: "1"},
+					},
+				},
+			},
+		},
+	}
+	return repo, creditorUserID, captainUserID, billID, groupID
+}
+
+func TestReviewBill_NotifiesCaptain(t *testing.T) {
+	repo, creditorUserID, captainUserID, billID, groupID := reviewFixture()
+	enqueuer := &mockEnqueuer{}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	if _, err := service.ReviewBill(context.Background(), creditorUserID, billID, groupID, 1); err != nil {
+		t.Fatalf("ReviewBill() error = %v", err)
+	}
+
+	if len(repo.reviewNotifications) != 1 {
+		t.Fatalf("expected 1 notification for captain, got %d", len(repo.reviewNotifications))
+	}
+	notif := repo.reviewNotifications[0]
+	if notif.UserID != captainUserID {
+		t.Errorf("notification user = %s, want captain %s", notif.UserID, captainUserID)
+	}
+	if notif.Type != usecase.NotifyTypeBillReviewRequested {
+		t.Errorf("notification type = %q, want %q", notif.Type, usecase.NotifyTypeBillReviewRequested)
+	}
+	if !strings.Contains(notif.Body, "VIM Van Quan") {
+		t.Errorf("notification body %q should name the merchant", notif.Body)
+	}
+	// Payload phải đủ để notification_route_resolver mở thẳng màn chi tiết bill.
+	var payload map[string]string
+	if err := json.Unmarshal(notif.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["bill_id"] != billID.String() || payload["group_id"] != groupID.String() {
+		t.Errorf("payload = %v, want bill_id=%s group_id=%s", payload, billID, groupID)
+	}
+	if enqueuer.enqueuedCount != 1 {
+		t.Errorf("enqueued %d push jobs, want 1", enqueuer.enqueuedCount)
+	}
+}
+
+func TestReviewBill_CaptainReviewsOwnBill_SkipsNotification(t *testing.T) {
+	repo, _, captainUserID, billID, groupID := reviewFixture()
+	// Trưởng nhóm tự gửi đối soát: không có ai khác cần được báo.
+	repo.member = repo.activeMembers[1]
+	enqueuer := &mockEnqueuer{}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	if _, err := service.ReviewBill(context.Background(), captainUserID, billID, groupID, 1); err != nil {
+		t.Fatalf("ReviewBill() error = %v", err)
+	}
+
+	if len(repo.reviewNotifications) != 0 {
+		t.Errorf("expected no self-notification, got %d", len(repo.reviewNotifications))
+	}
+	if enqueuer.enqueuedCount != 0 {
+		t.Errorf("enqueued %d push jobs, want 0", enqueuer.enqueuedCount)
+	}
+}
+
+func TestReviewBill_EnqueueFailure_FailsReview(t *testing.T) {
+	// Thông báo và việc đổi trạng thái nằm chung transaction: đẩy job hỏng thì
+	// review phải hỏng theo, không được để bill "reviewed" mà chẳng ai hay.
+	repo, creditorUserID, _, billID, groupID := reviewFixture()
+	enqueuer := &mockEnqueuer{errToReturn: errors.New("queue down")}
+	service := usecase.NewService(repo, &mockOCRProvider{}, &mockStorage{}, &mockProcessor{}, enqueuer)
+
+	if _, err := service.ReviewBill(context.Background(), creditorUserID, billID, groupID, 1); err == nil {
+		t.Fatal("ReviewBill() expected error when notification enqueue fails, got nil")
 	}
 }
 
