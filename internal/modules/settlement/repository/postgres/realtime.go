@@ -17,7 +17,25 @@ func SetRealtimePublisher(repo repository.Repository, events *realtime.Publisher
 	}
 }
 
+// activeUserIDs đọc audience của nhóm, có nhớ kết quả trong phạm vi một
+// transaction.
+//
+// Một lượt xác nhận thanh toán gọi notifyAll 3 + N lần (N là số hóa đơn liên
+// quan), và trước đây mỗi lần lại chạy đúng truy vấn này. Danh sách thành viên
+// không thể đổi giữa chừng vì transaction đang giữ khóa, nên đọc một lần là đủ.
 func (r *postgresRepository) activeUserIDs(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) ([]uuid.UUID, error) {
+	if cached, ok := audienceFromContext(ctx, groupID); ok {
+		return cached, nil
+	}
+	ids, err := r.readActiveUserIDs(ctx, tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	rememberAudience(ctx, groupID, ids)
+	return ids, nil
+}
+
+func (r *postgresRepository) readActiveUserIDs(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := tx.Query(ctx, `SELECT user_id FROM group_members WHERE group_id=$1 AND status='active'`, groupID)
 	if err != nil {
 		return nil, err
@@ -92,4 +110,37 @@ func (r *postgresRepository) notifyAll(ctx context.Context, tx pgx.Tx, groupID u
 		ResourceID: resourceID,
 		Type:       typ,
 	})
+}
+
+// audienceCacheKey là khóa context mang bộ nhớ audience của một transaction.
+type audienceCacheKey struct{}
+
+type audienceCache struct {
+	byGroup map[uuid.UUID][]uuid.UUID
+}
+
+// WithAudienceCache gắn bộ nhớ audience vào ctx cho trọn một transaction.
+// Không gắn thì mọi thứ vẫn chạy đúng, chỉ là mỗi lần notify lại một truy vấn.
+func WithAudienceCache(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(audienceCacheKey{}).(*audienceCache); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, audienceCacheKey{}, &audienceCache{
+		byGroup: make(map[uuid.UUID][]uuid.UUID, 1),
+	})
+}
+
+func audienceFromContext(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, bool) {
+	cache, ok := ctx.Value(audienceCacheKey{}).(*audienceCache)
+	if !ok {
+		return nil, false
+	}
+	ids, ok := cache.byGroup[groupID]
+	return ids, ok
+}
+
+func rememberAudience(ctx context.Context, groupID uuid.UUID, ids []uuid.UUID) {
+	if cache, ok := ctx.Value(audienceCacheKey{}).(*audienceCache); ok {
+		cache.byGroup[groupID] = ids
+	}
 }

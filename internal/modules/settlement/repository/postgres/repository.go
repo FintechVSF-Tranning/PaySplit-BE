@@ -346,6 +346,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 	if err != nil {
 		return nil, false, domain.ErrCreditorNotFound
 	}
+	ctx = WithAudienceCache(ctx)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin create payment: %w", err)
@@ -593,6 +594,7 @@ func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUs
 	if _, e = r.activeMembership(ctx, groupID, callerUserID); e != nil {
 		return "", nil, e
 	}
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return "", nil, e
@@ -897,6 +899,7 @@ func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.Subm
 	if e != nil {
 		return nil, domain.ErrPaymentNotFound
 	}
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return nil, e
@@ -1057,6 +1060,7 @@ func (r *postgresRepository) finishPayment(ctx context.Context, in repository.Pa
 	if e != nil {
 		return nil, nil, domain.ErrPaymentNotFound
 	}
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return nil, nil, e
@@ -1247,6 +1251,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 	if e != nil {
 		return nil, domain.ErrDebtNotFound
 	}
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return nil, e
@@ -1354,6 +1359,7 @@ func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.Remin
 }
 
 func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, staleBefore time.Time, maxCount int, before repository.BeforeCommit) error {
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return e
@@ -1410,6 +1416,7 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 	return tx.Commit(ctx)
 }
 func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submittedBefore time.Time, before repository.BeforeCommit) error {
+	ctx = WithAudienceCache(ctx)
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return e
@@ -1475,6 +1482,7 @@ func (r *postgresRepository) DeleteExpiredIdempotency(ctx context.Context) error
 }
 
 func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObject func(context.Context, string) error, recordFailure func(string)) error {
+	ctx = WithAudienceCache(ctx)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
