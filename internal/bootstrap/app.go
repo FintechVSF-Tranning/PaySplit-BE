@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,7 +184,11 @@ func New(ctx context.Context) (*App, error) {
 	qrGenerator := vietqr.New(cfg.Settlement.VietQRServiceBaseURL, cfg.Settlement.VietQRTemplate)
 	settlementRepo := settlementpostgres.NewWithPayments(db, func(code string) (settlementpostgres.BankInfo, bool) {
 		bank, ok := bankDirectory.Get(code)
-		return settlementpostgres.BankInfo{Code: bank.Code, Name: bank.Name, BIN: bank.BIN, Supported: bank.Supported}, ok
+		name := strings.TrimSpace(bank.ShortName)
+		if name == "" {
+			name = strings.TrimSpace(bank.Name)
+		}
+		return settlementpostgres.BankInfo{Code: bank.Code, Name: name, BIN: bank.BIN, Supported: bank.Supported}, ok
 	}, qrGenerator)
 	settlementpostgres.SetRealtimePublisher(settlementRepo, userEvents)
 	settlementService := settlementusecase.NewService(settlementRepo)
