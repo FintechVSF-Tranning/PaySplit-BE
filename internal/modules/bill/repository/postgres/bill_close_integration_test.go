@@ -586,3 +586,37 @@ func TestIntegration_LockVersusCreateRace_AC2_AC7(t *testing.T) {
 		t.Fatalf("%d bills committed AFTER the lock won, want 0 (%d before are valid)", createdAfterLock, createdBeforeLock)
 	}
 }
+
+func TestIntegration_UnlockSubmissions_ReopensGroupAndRecordsActivityOnce(t *testing.T) {
+	pool := testPool(t)
+	repo := postgres.New(pool)
+	groupID, captainUserID, _, memberID := setupCloseTestGroup(t, pool)
+	ctx := context.Background()
+
+	if _, err := repo.LockSubmissions(ctx, groupID, captainUserID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UnlockSubmissions(ctx, groupID, userIDOfMember(t, pool, memberID)); !errors.Is(err, billdomain.ErrCaptainRequired) {
+		t.Fatalf("member unlock: got %v, want captain required", err)
+	}
+	lockedAt, err := repo.GetGroupSubmissionLock(ctx, groupID)
+	if err != nil || lockedAt == nil {
+		t.Fatalf("group must remain locked after rejected unlock: %v", err)
+	}
+	for range 2 {
+		if err := repo.UnlockSubmissions(ctx, groupID, captainUserID); err != nil {
+			t.Fatalf("captain unlock: %v", err)
+		}
+	}
+	lockedAt, err = repo.GetGroupSubmissionLock(ctx, groupID)
+	if err != nil || lockedAt != nil {
+		t.Fatalf("group must allow bill submissions again: lockedAt=%v, err=%v", lockedAt, err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM group_activities WHERE group_id=$1 AND action_type='bill_submission_unlocked'`, groupID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("unlock activity count = %d, want 1", count)
+	}
+}
