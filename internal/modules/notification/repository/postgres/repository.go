@@ -187,10 +187,7 @@ func (r *postgresRepository) GetActiveFCMTokenByUserID(ctx context.Context, user
 		}
 		return "", fmt.Errorf("get active FCM token: %w", err)
 	}
-	if res.Valid {
-		return res.String, nil
-	}
-	return "", nil
+	return res, nil
 }
 
 func (r *postgresRepository) ClearFCMToken(ctx context.Context, userID, fcmToken string) error {
@@ -200,7 +197,7 @@ func (r *postgresRepository) ClearFCMToken(ctx context.Context, userID, fcmToken
 	}
 
 	err = dbgen.New(r.db).ClearFCMToken(ctx, dbgen.ClearFCMTokenParams{
-		FcmToken: pgtype.Text{String: fcmToken, Valid: fcmToken != ""},
+		FcmToken: fcmToken,
 		UserID:   pgUUID(uid),
 	})
 	if err != nil {

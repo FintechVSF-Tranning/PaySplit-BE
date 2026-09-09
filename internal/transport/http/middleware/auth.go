@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"paysplit-backend/internal/modules/auth/domain"
+	"paysplit-backend/internal/platform/session"
 	"paysplit-backend/internal/transport/http/helpers"
 )
 
@@ -19,48 +19,48 @@ const (
 	sessionIDContextKey contextKey = "authenticated-session-id"
 )
 
-type TokenVerifier interface {
-	Verify(token string) (userID, role, sessionID string, err error)
+// SessionStore là nguồn phán quyết duy nhất cho việc xác thực. Sau khi bỏ JWT,
+// không còn gì verify được tại chỗ: mọi request đều phải tra kho phiên.
+type SessionStore interface {
+	Get(ctx context.Context, raw string, now time.Time) (*session.Session, error)
 }
 
-type SessionValidator interface {
-	ValidateSession(context.Context, string, string, time.Time) (*domain.SessionIdentity, error)
-}
-
-func Auth(verifier TokenVerifier, sessions SessionValidator) func(http.Handler) http.Handler {
-	return authenticate(verifier, sessions, true)
-}
-
-func TokenAuth(verifier TokenVerifier) func(http.Handler) http.Handler {
-	return authenticate(verifier, nil, false)
-}
-
-func authenticate(verifier TokenVerifier, sessions SessionValidator, requireLive bool) func(http.Handler) http.Handler {
-	if verifier == nil || (requireLive && sessions == nil) {
-		panic("middleware: auth dependencies must not be nil")
+// Auth chặn mọi request không kèm credential còn hiệu lực.
+//
+// Không còn biến thể "chỉ verify chữ ký, không tra kho" như TokenAuth trước đây:
+// credential giờ là chuỗi đục, không mang thông tin nào để kiểm ngoại tuyến.
+func Auth(sessions SessionStore) func(http.Handler) http.Handler {
+	if sessions == nil {
+		panic("middleware: session store must not be nil")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			raw, err := bearerToken(r.Header.Get("Authorization"))
+			raw, err := BearerToken(r.Header.Get("Authorization"))
 			if err != nil {
 				writeAuthError(w)
 				return
 			}
-			userID, role, sessionID, err := verifier.Verify(raw)
+			sess, err := sessions.Get(r.Context(), raw, time.Now())
 			if err != nil {
-				writeAuthError(w)
-				return
-			}
-			if requireLive {
-				identity, err := sessions.ValidateSession(r.Context(), userID, sessionID, time.Now())
-				if err != nil || identity.Role != role {
+				// Chỉ credential không tồn tại mới là lỗi xác thực. Lỗi mạng hay
+				// timeout của kho phiên là lỗi HẠ TẦNG, và gộp chung thành 401 sẽ
+				// bảo ứng dụng rằng phiên đã chết: client xoá credential và người
+				// dùng phải đăng nhập lại bằng tay, dù không phiên nào bị thu hồi.
+				// Một cú chớp vài chục giây của Redis khi đó đăng xuất vĩnh viễn
+				// toàn bộ người dùng.
+				if errors.Is(err, session.ErrNotFound) {
 					writeAuthError(w)
 					return
 				}
+				writeSessionStoreUnavailable(w)
+				return
 			}
-			ctx := context.WithValue(r.Context(), userIDContextKey, userID)
-			ctx = context.WithValue(ctx, userRoleContextKey, role)
-			ctx = context.WithValue(ctx, sessionIDContextKey, sessionID)
+			// Đặt SID (UUID, khớp sessions.id) vào context, KHÔNG BAO GIỜ đặt
+			// credential: tầng SSE parse giá trị này thành UUID và mọi bản ghi
+			// audit đều tham chiếu tới nó.
+			ctx := context.WithValue(r.Context(), userIDContextKey, sess.UserID)
+			ctx = context.WithValue(ctx, userRoleContextKey, sess.Role)
+			ctx = context.WithValue(ctx, sessionIDContextKey, sess.SID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -68,6 +68,13 @@ func authenticate(verifier TokenVerifier, sessions SessionValidator, requireLive
 
 func writeAuthError(w http.ResponseWriter) {
 	_ = helpers.WriteAPIError(w, http.StatusUnauthorized, "AUTHENTICATION_REQUIRED", "authentication required", nil)
+}
+
+// writeSessionStoreUnavailable báo kho phiên không truy cập được. Mã 503 nói với
+// client rằng credential vẫn còn giá trị và nên thử lại, khác hẳn 401 vốn có
+// nghĩa "phiên đã chết, xoá credential đi".
+func writeSessionStoreUnavailable(w http.ResponseWriter) {
+	_ = helpers.WriteAPIError(w, http.StatusServiceUnavailable, "SESSION_STORE_UNAVAILABLE", "session store is unavailable", nil)
 }
 
 func UserID(ctx context.Context) (string, bool) {
@@ -112,7 +119,10 @@ func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	}
 }
 
-func bearerToken(header string) (string, error) {
+// BearerToken tách credential khỏi header Authorization. Được export để handler
+// đăng xuất — route duy nhất không đi qua Auth — dùng chung đúng một bộ phân tích;
+// hai bộ parse bearer khác nhau trong cùng một hệ thống là lỗi auth kinh điển.
+func BearerToken(header string) (string, error) {
 	parts := strings.Fields(header)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
 		return "", errors.New("invalid authorization header")

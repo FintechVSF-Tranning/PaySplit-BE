@@ -17,14 +17,22 @@ import (
 	"paysplit-backend/web"
 )
 
-// DBPingChecker kiểm tra kết nối DB cho readiness probe.
+// DBPingChecker kiểm tra kết nối tới một dependency cho readiness probe.
 type DBPingChecker interface {
 	Ping(ctx context.Context) error
 }
 
+// Dependency gắn tên vào một probe để readiness nói rõ THÀNH PHẦN NÀO hỏng.
+// Không có tên thì "degraded" là một tín hiệu vô dụng khi có nhiều dependency:
+// người trực không biết nên nhìn Postgres hay Redis.
+type Dependency struct {
+	Name    string
+	Checker DBPingChecker
+}
+
 // New tạo router gốc của ứng dụng, cài đặt middleware dùng chung và trả về
 // chi.Router để bootstrap có thể đăng ký route của từng module trước khi chạy server.
-func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbChecker DBPingChecker) chi.Router {
+func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, deps ...Dependency) chi.Router {
 	router := chi.NewRouter()
 
 	// RequestID thêm mã định danh vào context để theo dõi request xuyên suốt hệ thống.
@@ -44,7 +52,7 @@ func New(appConfig config.AppConfig, metricsConfig config.MetricsConfig, dbCheck
 	router.Get("/", root)
 	router.Get("/health", health)
 	router.Get("/health/live", healthLive)
-	router.Get("/health/ready", healthReady(dbChecker))
+	router.Get("/health/ready", healthReady(deps))
 
 	router.Method(http.MethodGet, "/metrics", platformmetrics.MetricsHandler(metricsConfig.Enabled, metricsConfig.BearerToken))
 
@@ -87,25 +95,34 @@ func healthLive(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func healthReady(dbChecker DBPingChecker) http.HandlerFunc {
+func healthReady(deps []Dependency) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if dbChecker != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-			defer cancel()
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
 
-			if err := dbChecker.Ping(ctx); err != nil {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-					"status":   "degraded",
-					"database": "down",
-				})
-				return
+		// Probe hết mọi dependency chứ không dừng ở cái hỏng đầu tiên: khi cả
+		// Postgres lẫn Redis cùng chết, người trực cần thấy cả hai trong một lần
+		// gọi thay vì sửa xong cái này mới phát hiện cái kia.
+		body := map[string]string{"status": "ready"}
+		healthy := true
+		for _, dep := range deps {
+			if dep.Checker == nil || dep.Name == "" {
+				continue
 			}
+			if err := dep.Checker.Ping(ctx); err != nil {
+				body[dep.Name] = "down"
+				healthy = false
+				continue
+			}
+			body[dep.Name] = "ok"
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{
-			"status":   "ready",
-			"database": "ok",
-		})
+		if !healthy {
+			body["status"] = "degraded"
+			writeJSON(w, http.StatusServiceUnavailable, body)
+			return
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 

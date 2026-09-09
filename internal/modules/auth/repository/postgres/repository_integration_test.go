@@ -13,7 +13,10 @@ import (
 	"paysplit-backend/internal/modules/auth/repository"
 )
 
-func TestSessionReplacementRotationAndReplay(t *testing.T) {
+// Bất biến một-phiên-sống-mỗi-user vẫn do Postgres giữ (uq_sessions_one_active_per_user),
+// nên nó vẫn được ghim ở đây dù việc phán quyết credential đã chuyển sang Redis.
+// Phần xoay vòng refresh token đã biến mất cùng cơ chế cũ.
+func TestSecondSignInReplacesTheFirstSession(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -43,45 +46,37 @@ func TestSessionReplacementRotationAndReplay(t *testing.T) {
 	if user.Status != domain.StatusActive {
 		t.Fatalf("unexpected status %s", user.Status)
 	}
-	_, refreshOne, err := domain.NewOpaqueToken()
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	now := time.Now()
-	_, sessionOne, err := repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: "018f0000-0000-7000-8000-000000000001", DeviceName: "first", RefreshTokenHash: refreshOne, Now: now, ExpiresAt: now.Add(7 * 24 * time.Hour)})
+	_, sessionOne, err := repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: "018f0000-0000-7000-8000-000000000001", DeviceName: "first", Now: now, ExpiresAt: now.Add(30 * 24 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, refreshTwo, err := domain.NewOpaqueToken()
+	_, sessionTwo, err := repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: "018f0000-0000-7000-8000-000000000002", DeviceName: "second", Now: now.Add(time.Second), ExpiresAt: now.Add(30 * 24 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, sessionTwo, err := repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: "018f0000-0000-7000-8000-000000000002", DeviceName: "second", RefreshTokenHash: refreshTwo, Now: now.Add(time.Second), ExpiresAt: now.Add(7 * 24 * time.Hour)})
-	if err != nil {
+
+	var reason *string
+	if err = pool.QueryRow(ctx, `SELECT revoked_reason FROM sessions WHERE id=$1`, sessionOne.ID).Scan(&reason); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.ValidateSession(ctx, user.ID, sessionOne.ID, time.Now()); !errors.Is(err, domain.ErrSessionRevoked) {
-		t.Fatalf("first session remains live: %v", err)
+	if reason == nil || *reason != "replaced_by_sign_in" {
+		t.Fatalf("first session revoked_reason = %v, want replaced_by_sign_in", reason)
 	}
-	if _, err = repo.ValidateSession(ctx, user.ID, sessionTwo.ID, time.Now()); err != nil {
+	var liveCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL`, user.ID).Scan(&liveCount); err != nil {
 		t.Fatal(err)
 	}
-	_, replacementHash, err := domain.NewOpaqueToken()
-	if err != nil {
+	if liveCount != 1 {
+		t.Fatalf("live session rows = %d, want exactly 1", liveCount)
+	}
+	var liveID string
+	if err = pool.QueryRow(ctx, `SELECT id FROM sessions WHERE user_id=$1 AND revoked_at IS NULL`, user.ID).Scan(&liveID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = repo.RotateRefresh(ctx, refreshTwo, replacementHash, sessionTwo.DeviceID, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	_, anotherHash, err := domain.NewOpaqueToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = repo.RotateRefresh(ctx, refreshTwo, anotherHash, sessionTwo.DeviceID, time.Now()); !errors.Is(err, domain.ErrSessionRevoked) {
-		t.Fatalf("replay did not revoke session: %v", err)
-	}
-	if _, err = repo.ValidateSession(ctx, user.ID, sessionTwo.ID, time.Now()); !errors.Is(err, domain.ErrSessionRevoked) {
-		t.Fatalf("replayed session remains live: %v", err)
+	if liveID != sessionTwo.ID {
+		t.Fatalf("live session = %s, want the newest one %s", liveID, sessionTwo.ID)
 	}
 }
 
@@ -191,12 +186,12 @@ func TestOTPMaxAttemptsAndResetPassword(t *testing.T) {
 	}
 
 	// Reset with correct OTP
-	if err = repo.ResetPassword(ctx, email, domain.HashToken(resetOTP), "new-password-hash", time.Now()); err != nil {
+	if _, _, err = repo.ResetPassword(ctx, email, domain.HashToken(resetOTP), "new-password-hash", time.Now()); err != nil {
 		t.Fatalf("failed to reset password: %v", err)
 	}
 
 	// Reusing same OTP must fail
-	if err = repo.ResetPassword(ctx, email, domain.HashToken(resetOTP), "another-hash", time.Now()); !errors.Is(err, domain.ErrInvalidOrExpiredToken) {
+	if _, _, err = repo.ResetPassword(ctx, email, domain.HashToken(resetOTP), "another-hash", time.Now()); !errors.Is(err, domain.ErrInvalidOrExpiredToken) {
 		t.Fatalf("expected ErrInvalidOrExpiredToken on reused reset OTP, got %v", err)
 	}
 }

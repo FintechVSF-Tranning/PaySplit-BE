@@ -11,11 +11,17 @@ import (
 )
 
 type Querier interface {
+	// Gọi khi Firebase báo token không còn hợp lệ (người dùng gỡ app). Xoá hẳn hàng
+	// thay vì set NULL: hàng không có token thì không còn ý nghĩa gì, và cột
+	// fcm_token là NOT NULL.
 	ClearFCMToken(ctx context.Context, arg ClearFCMTokenParams) error
 	CountNotificationsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, userID pgtype.UUID) (int64, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
-	GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (pgtype.Text, error)
+	// Địa chỉ push thuộc về thiết bị, không thuộc về phiên đăng nhập: không lọc theo
+	// trạng thái phiên ở đây, nếu không thì đúng nhóm người dùng lâu không mở app —
+	// nhóm cần nhắc nợ nhất — sẽ không bao giờ nhận được thông báo.
+	GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (string, error)
 	GetNotificationByID(ctx context.Context, id pgtype.UUID) (Notification, error)
 	ListNotificationsByUserID(ctx context.Context, arg ListNotificationsByUserIDParams) ([]Notification, error)
 	MarkAllNotificationsAsRead(ctx context.Context, userID pgtype.UUID) error

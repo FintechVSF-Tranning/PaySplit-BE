@@ -29,6 +29,8 @@ type UpdateStatusInput struct {
 type Repository interface {
 	ListAccounts(ctx context.Context, filter ListAccountsFilter) ([]domain.AccountSummary, int64, error)
 	GetAccountDetail(ctx context.Context, userID string) (*domain.AccountDetail, error)
-	UpdateAccountStatusWithRevocation(ctx context.Context, input UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error)
+	// UpdateAccountStatusWithRevocation trả thêm SID của các phiên vừa thu hồi, để
+	// usecase xoá chúng khỏi Redis sau khi transaction commit.
+	UpdateAccountStatusWithRevocation(ctx context.Context, input UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, []string, error)
 	GetSystemOverview(ctx context.Context) (*domain.SystemOverview, error)
 }

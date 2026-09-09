@@ -14,12 +14,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	goredis "github.com/redis/go-redis/v9"
 	authhttp "paysplit-backend/internal/modules/auth/delivery/http"
 	authpostgres "paysplit-backend/internal/modules/auth/repository/postgres"
 	"paysplit-backend/internal/modules/auth/usecase"
-	"paysplit-backend/internal/platform/auth/jwt"
+
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/security/password"
+	"paysplit-backend/internal/platform/session"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
@@ -48,7 +50,7 @@ func (fakeStorage) Upload(_ context.Context, _ []byte, key string) (string, erro
 func (fakeStorage) Delete(context.Context, string) error                           { return nil }
 func (fakeStorage) URL(key string) string                                          { return "https://images.invalid/" + key }
 
-func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
+func TestAuthHTTPJourney(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -67,22 +69,34 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE email=$1`, email)
 	})
 	repo := authpostgres.New(pool)
-	tokenManager, err := jwt.NewAccessTokenManager("integration-secret-longer-than-thirty-two-bytes", "paysplit-test", 15*time.Minute)
+	// Kho phiên chạy trên Redis thật: sau khi bỏ JWT thì không còn cách nào xác
+	// thực mà không chạm nó, nên test này không mock được ranh giới đó nữa.
+	redisURL := os.Getenv("TEST_REDIS_URL")
+	if redisURL == "" {
+		t.Skip("TEST_REDIS_URL is not set")
+	}
+	redisOpts, err := goredis.ParseURL(redisURL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	redisClient := goredis.NewClient(redisOpts)
+	if err = redisClient.Ping(ctx).Err(); err != nil {
+		t.Skipf("redis unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = redisClient.Close() })
+	sessionStore := session.NewRedisStore(redisClient, 7*24*time.Hour, 30*24*time.Hour)
 	directory, err := banks.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	mailer := &fakeMailer{}
 	storage := fakeStorage{}
-	service := usecase.NewService(repo, password.New(), tokenManager, mailer, directory, fakeImages{}, storage, usecase.Options{VerificationTTL: 10 * time.Minute, ResetTTL: 10 * time.Minute, SessionTTL: 7 * 24 * time.Hour})
+	service := usecase.NewService(repo, password.New(), sessionStore, mailer, directory, fakeImages{}, storage, usecase.Options{VerificationTTL: 10 * time.Minute, ResetTTL: 10 * time.Minute, SessionTTL: 30 * 24 * time.Hour})
 	handler := authhttp.NewHandler(service, storage.URL)
 	router := chi.NewRouter()
 	router.Route("/api/v1", func(api chi.Router) {
-		api.Route("/auth", func(r chi.Router) { handler.RegisterAuthRoutes(r, authmw.TokenAuth(tokenManager)) })
-		api.Route("/users", func(r chi.Router) { handler.RegisterUserRoutes(r, authmw.Auth(tokenManager, repo), nil) })
+		api.Route("/auth", func(r chi.Router) { handler.RegisterAuthRoutes(r) })
+		api.Route("/users", func(r chi.Router) { handler.RegisterUserRoutes(r, authmw.Auth(sessionStore), nil) })
 	})
 	response := request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-up", `{"email":"`+email+`","phone_number":"0976543210","display_name":"HTTP Test","password":"StrongPass1"}`, "")
 	if response.Code != stdhttp.StatusCreated {
@@ -105,33 +119,48 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	}
 	deviceOne := "018f0000-0000-7000-8000-000000000011"
 	first := signIn(t, router, email, deviceOne)
-	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", first.AccessToken)
+	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", first.SessionID)
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("profile status %d body %s", response.Code, response.Body.String())
 	}
-	response = request(t, router, stdhttp.MethodPatch, "/api/v1/users/me", `{"bank_code":"VCB","bank_account_number":"123456789","bank_account_holder":"HTTP TEST"}`, first.AccessToken)
+	response = request(t, router, stdhttp.MethodPatch, "/api/v1/users/me", `{"bank_code":"VCB","bank_account_number":"123456789","bank_account_holder":"HTTP TEST"}`, first.SessionID)
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("profile patch status %d body %s", response.Code, response.Body.String())
 	}
 	deviceTwo := "018f0000-0000-7000-8000-000000000012"
 	second := signIn(t, router, email, deviceTwo)
-	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", first.AccessToken)
+	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", first.SessionID)
 	if response.Code != stdhttp.StatusUnauthorized {
 		t.Fatalf("old device remains active: %d", response.Code)
 	}
-	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/refresh", `{"refresh_token":"`+second.RefreshToken+`","device_id":"`+deviceTwo+`"}`, "")
+	// Endpoint làm mới đã bị gỡ khỏi API cùng với refresh token.
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/refresh", `{}`, "")
+	if response.Code != stdhttp.StatusNotFound {
+		t.Fatalf("refresh endpoint should be gone, got %d", response.Code)
+	}
+
+	// Phiên mới vẫn dùng được, và đăng xuất phải idempotent: lần thứ hai bằng
+	// đúng credential đã chết vẫn trả 204, nếu không nút Đăng xuất sẽ báo lỗi
+	// đúng lúc người dùng cần nó nhất.
+	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", second.SessionID)
 	if response.Code != stdhttp.StatusOK {
-		t.Fatalf("refresh status %d body %s", response.Code, response.Body.String())
+		t.Fatalf("second device profile status %d body %s", response.Code, response.Body.String())
 	}
-	rotated := decodeData[tokenBody](t, response.Body.Bytes())
-	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/refresh", `{"refresh_token":"`+second.RefreshToken+`","device_id":"`+deviceTwo+`"}`, "")
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-out", "", second.SessionID)
+	if response.Code != stdhttp.StatusNoContent {
+		t.Fatalf("sign out status %d body %s", response.Code, response.Body.String())
+	}
+	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-out", "", second.SessionID)
+	if response.Code != stdhttp.StatusNoContent {
+		t.Fatalf("second sign out must stay idempotent, got %d", response.Code)
+	}
+	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", second.SessionID)
 	if response.Code != stdhttp.StatusUnauthorized {
-		t.Fatalf("refresh replay status %d body %s", response.Code, response.Body.String())
+		t.Fatalf("signed-out credential still works: %d", response.Code)
 	}
-	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", rotated.AccessToken)
-	if response.Code != stdhttp.StatusUnauthorized {
-		t.Fatalf("replay did not revoke session: %d", response.Code)
-	}
+
+	// Đăng nhập lại để có phiên sống cho phần đặt lại mật khẩu bên dưới.
+	third := signIn(t, router, email, deviceTwo)
 
 	// Forgot password & reset password journey
 	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/forgot-password", `{"email":"`+email+`"}`, "")
@@ -148,6 +177,13 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 		t.Fatalf("reset password status %d body %s", response.Code, response.Body.String())
 	}
 
+	// Đặt lại mật khẩu phải giết phiên đang sống — và đây là kiểm chứng thật sự,
+	// vì việc thu hồi giờ nằm trên Redis chứ không phải cột revoked_at.
+	response = request(t, router, stdhttp.MethodGet, "/api/v1/users/me", "", third.SessionID)
+	if response.Code != stdhttp.StatusUnauthorized {
+		t.Fatalf("password reset did not kill the live session: %d", response.Code)
+	}
+
 	// Sign in with new password
 	deviceThree := "018f0000-0000-7000-8000-000000000013"
 	response = request(t, router, stdhttp.MethodPost, "/api/v1/auth/sign-in", `{"email":"`+email+`","password":"NewStrongPass2","device_id":"`+deviceThree+`","device_name":"third"}`, "")
@@ -156,9 +192,8 @@ func TestAuthHTTPJourneyAndRefreshReplay(t *testing.T) {
 	}
 }
 
-type tokenBody struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+type sessionBody struct {
+	SessionID string `json:"session_id"`
 }
 
 // envelope[T] bóc trường "data" khỏi vỏ bọc success chuẩn của API.
@@ -179,15 +214,15 @@ func decodeData[T any](t *testing.T, body []byte) T {
 	return env.Data
 }
 
-func signIn(t *testing.T, handler stdhttp.Handler, email, device string) tokenBody {
+func signIn(t *testing.T, handler stdhttp.Handler, email, device string) sessionBody {
 	t.Helper()
 	response := request(t, handler, stdhttp.MethodPost, "/api/v1/auth/sign-in", `{"email":"`+email+`","password":"StrongPass1","device_id":"`+device+`","device_name":"integration"}`, "")
 	if response.Code != stdhttp.StatusOK {
 		t.Fatalf("sign in status %d body %s", response.Code, response.Body.String())
 	}
-	body := decodeData[tokenBody](t, response.Body.Bytes())
-	if body.AccessToken == "" || body.RefreshToken == "" {
-		t.Fatal("missing token pair")
+	body := decodeData[sessionBody](t, response.Body.Bytes())
+	if body.SessionID == "" {
+		t.Fatal("missing session id")
 	}
 	return body
 }

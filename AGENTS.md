@@ -32,13 +32,12 @@ PaySplit-BE/
 │   ├── config/                   # Environment configuration loader & validation
 │   ├── modules/                  # Business modules (Clean Architecture per module)
 │   │   ├── admin/                # System administration, telemetry & analytics
-│   │   ├── auth/                 # Identity, sessions, JWT, OTP, password reset
+│   │   ├── auth/                 # Identity, sessions, OTP, password reset
 │   │   ├── bill/                 # Bill creation, itemization, OCR receipt integration
 │   │   ├── group/                # Group management, members, invites & timeline
 │   │   ├── notification/         # In-app notifications & Firebase push (FCM)
 │   │   └── settlement/           # Debt calculation, expense splitting & VietQR payments
 │   ├── platform/                 # Shared infrastructure adapters
-│   │   ├── auth/jwt/             # Access token manager (JWT with session ID)
 │   │   ├── banks/                # Embedded VietQR bank directory
 │   │   ├── database/             # PostgreSQL connection pool (pgxpool)
 │   │   ├── email/gmail/          # SMTP email adapter
@@ -47,6 +46,8 @@ PaySplit-BE/
 │   │   ├── notification/fcm/     # Firebase Cloud Messaging adapter
 │   │   ├── ocr/llamaextract/     # Receipt OCR parser adapter
 │   │   ├── queue/river/          # River Queue transactional job processor
+│   │   ├── redis/                # Redis connection pool (session store)
+│   │   ├── session/              # Opaque session store on Redis (Lua scripts)
 │   │   ├── security/password/    # Bcrypt password hashing
 │   │   ├── storage/cloudinary/   # Cloudinary asset storage
 │   │   └── vietqr/               # Dynamic VietQR payment payload generator
@@ -56,7 +57,7 @@ PaySplit-BE/
 │       └── router/               # Chi root router, public health check (/health)
 ├── Makefile                      # Standard project development and build tasks
 ├── sqlc.yaml                     # SQL-to-Go generation configuration
-└── docker-compose.yaml           # Local PostgreSQL 18 service
+└── docker-compose.yaml           # Local PostgreSQL 18 + Redis 8 services
 ```
 
 ### Layer Responsibilities & Isolation Rules
@@ -76,7 +77,7 @@ Local environment variables are managed via `.env` (copied from `.env.example`).
 
 ```bash
 # Infrastructure
-docker compose up -d postgres # Start local PostgreSQL 18 container
+docker compose up -d postgres redis # Start local PostgreSQL 18 + Redis 8 containers
 cp .env.example .env          # Prepare local environment variables
 
 # Running & Building
@@ -98,7 +99,7 @@ go test ./internal/config/... # Run tests for a specific package
 go test -run TestLoad ./internal/config # Run a specific unit test
 ```
 
-> **Integration Tests:** Repository- and handler-level integration tests (`*_integration_test.go`) connect to a real database and are automatically skipped unless `TEST_DATABASE_URL` is configured in the environment.
+> **Integration Tests:** Repository- and handler-level integration tests (`*_integration_test.go`) connect to real infrastructure and are automatically skipped unless `TEST_DATABASE_URL` (and, for session/auth tests, `TEST_REDIS_URL`) is configured. A green `make test` with those unset means the integration suite never ran — set both in `.env`, which the Makefile exports.
 
 ---
 
@@ -128,11 +129,16 @@ go test -run TestLoad ./internal/config # Run a specific unit test
 
 ## Security & Authentication Details
 
-- **Access Token**: Stateless JWT with a 15-minute TTL containing user ID and session ID (`sid`).
-- **Session Tracking**: Backed by PostgreSQL (`user_sessions`). Each user has one active session at a time.
-- **Refresh Token Rotation**: 7-day absolute TTL. Rotating tokens on every refresh with reuse detection. Any detected reuse immediately invalidates the entire session family.
+- **Credential**: A single opaque session ID (32 bytes CSPRNG, base64url) issued by `POST /api/v1/auth/sign-in` and sent as `Authorization: Bearer <session_id>`. It is **not a JWT**: it carries no claims and only the server can resolve it. There is no access/refresh pair and no refresh endpoint.
+- **Session Store**: Redis is the sole authority on whether a credential is live (`internal/platform/session`). Keys are the SHA-256 **hash** of the credential, so a Redis dump cannot be replayed. Two keys per session: `session:<hash>` (HASH holding `sid`, `user_id`, `role`, `absolute_exp`) and `user_session:<user_id>` (reverse index used to revoke by user).
+- **Session lifetime**: sliding idle TTL (`SESSION_IDLE_TTL_HOURS`, default 7 days) refreshed on every authenticated request, capped by a hard absolute TTL (`SESSION_ABSOLUTE_TTL_HOURS`, default 30 days). All multi-key operations run as Lua scripts so they are atomic.
+- **Session record**: the Postgres `sessions` table is kept as an **audit/metadata record only** — device, issue time, revocation reason. Nothing reads it to decide whether a request is authorised. `uq_sessions_one_active_per_user` still enforces one live session per user.
+- **Revocation**: instant via `DEL`. Ordering between Redis and Postgres differs per flow and is documented at each call site — sign-out writes Redis first (fails closed), while sign-in, password reset and admin suspension commit Postgres first. Password reset must not touch Redis before the OTP is verified, or a wrong OTP becomes an unauthenticated logout DoS.
+- **Force logout**: revocation emits `session.ended` over `pg_notify` inside the same transaction, closing any open SSE stream (`internal/platform/realtime`).
+- **Suspension backstop**: the auth middleware no longer reads `users.status`, so a `DEL` on Redis is the only thing that enforces an admin lock. Every admin revocation also enqueues a `session_redis_purge` River job inside the same transaction (`internal/modules/auth/jobs/session_purge.go`) so a dropped Redis write converges instead of leaving a locked account usable.
 - **Passwords**: Hashed with `bcrypt` at cost 12.
-- **Background Cleanup**: Expired sessions and unverified OTPs are pruned periodically by background workers in `internal/modules/auth/jobs/`.
+- **Push tokens**: FCM registration tokens live in `device_tokens` keyed by `(user_id, device_id)`, not on the session row — they describe a device and must outlive the session.
+- **Background Cleanup**: Expired session audit rows and unverified OTPs are pruned periodically by background workers in `internal/modules/auth/jobs/`. Live sessions are cleaned up by Redis TTL, not by a worker.
 
 ---
 

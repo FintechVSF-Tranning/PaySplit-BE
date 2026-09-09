@@ -35,8 +35,24 @@ func auditActionForStatus(status string) string {
 }
 
 type postgresRepository struct {
-	pool   *pgxpool.Pool
-	events *realtime.Publisher
+	pool         *pgxpool.Pool
+	events       *realtime.Publisher
+	sessionPurge SessionPurgeEnqueuer
+}
+
+// SessionPurgeEnqueuer đặt job dọn phiên Redis vào hàng đợi trong cùng transaction
+// thu hồi. Khai báo interface tại đây thay vì import trực tiếp module auth để giữ
+// hai module độc lập; bootstrap tiêm implementation thật.
+type SessionPurgeEnqueuer interface {
+	EnqueueTx(ctx context.Context, tx pgx.Tx, userID string, sids []string) error
+}
+
+// SetSessionPurgeEnqueuer nối backstop Redis vào repo. Theo đúng khuôn
+// SetRealtimePublisher bên dưới: bootstrap là nơi duy nhất gọi.
+func SetSessionPurgeEnqueuer(repo repository.Repository, enqueuer SessionPurgeEnqueuer) {
+	if r, ok := repo.(*postgresRepository); ok {
+		r.sessionPurge = enqueuer
+	}
 }
 
 // New khởi tạo adapter PostgreSQL cho module Admin.
@@ -231,19 +247,21 @@ func (r *postgresRepository) GetAccountDetail(ctx context.Context, userID string
 	return detail, nil
 }
 
-func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+// UpdateAccountStatusWithRevocation trả thêm SID của các phiên vừa thu hồi, để
+// tầng usecase xoá chúng khỏi Redis — nguồn phán quyết thật sự — sau khi commit.
+func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, []string, error) {
 	targetUID, err := uuid.Parse(input.TargetUserID)
 	if err != nil {
-		return nil, nil, domain.ErrInvalidInput
+		return nil, nil, nil, domain.ErrInvalidInput
 	}
 	adminUID, err := uuid.Parse(input.AdminID)
 	if err != nil {
-		return nil, nil, domain.ErrInvalidInput
+		return nil, nil, nil, domain.ErrInvalidInput
 	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin transaction: %w", err)
+		return nil, nil, nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -251,9 +269,9 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 	targetUser, err := q.GetAccountByID(ctx, toPgUUID(targetUID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil, domain.ErrAccountNotFound
+			return nil, nil, nil, domain.ErrAccountNotFound
 		}
-		return nil, nil, fmt.Errorf("get target account: %w", err)
+		return nil, nil, nil, fmt.Errorf("get target account: %w", err)
 	}
 
 	// Self/admin protection and the pending_verification guard are checked here, inside the same
@@ -265,7 +283,7 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 
 	// Tự bảo vệ: admin không được tự thay đổi trạng thái của chính mình
 	if targetUID == adminUID {
-		return nil, nil, domain.ErrCannotModifySelf
+		return nil, nil, nil, domain.ErrCannotModifySelf
 	}
 
 	targetRole := fmt.Sprint(targetUser.Role)
@@ -273,12 +291,12 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 
 	// Bảo vệ quyền admin: không được suspend/lock admin khác
 	if targetRole == "admin" && (input.NewStatus == "suspended" || input.NewStatus == "locked") {
-		return nil, nil, domain.ErrCannotModifyAdmin
+		return nil, nil, nil, domain.ErrCannotModifyAdmin
 	}
 
 	// Không cho phép chuyển đổi từ pending_verification sang active/suspended/locked qua API status
 	if targetStatus == "pending_verification" {
-		return nil, nil, domain.ErrInvalidStatusTransition
+		return nil, nil, nil, domain.ErrInvalidStatusTransition
 	}
 
 	updatedUserRow, err := q.UpdateUserStatus(ctx, dbgen.UpdateUserStatusParams{
@@ -286,34 +304,47 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		Status: input.NewStatus,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("update user status: %w", err)
+		return nil, nil, nil, fmt.Errorf("update user status: %w", err)
 	}
 
-	// Nếu chuyển sang suspended hoặc locked thì thu hồi toàn bộ session và refresh token
+	// revokedSIDs rỗng khi tài khoản được mở lại (reactivate): không có phiên nào
+	// bị thu hồi thì cũng không có gì để xoá trên Redis.
+	var revokedSIDs []string
+	// Nếu chuyển sang suspended hoặc locked thì thu hồi toàn bộ session
 	if input.NewStatus == "suspended" || input.NewStatus == "locked" {
 		rows, err := tx.Query(ctx, `UPDATE sessions SET revoked_at=now(), revoked_reason=$2 WHERE user_id=$1 AND revoked_at IS NULL RETURNING id`, targetUID, "admin_"+input.NewStatus)
 		if err != nil {
-			return nil, nil, fmt.Errorf("revoke sessions: %w", err)
+			return nil, nil, nil, fmt.Errorf("revoke sessions: %w", err)
 		}
 		var revokedIDs []uuid.UUID
 		for rows.Next() {
 			var id uuid.UUID
 			if err = rows.Scan(&id); err != nil {
 				rows.Close()
-				return nil, nil, fmt.Errorf("scan revoked session: %w", err)
+				return nil, nil, nil, fmt.Errorf("scan revoked session: %w", err)
 			}
 			revokedIDs = append(revokedIDs, id)
 		}
 		if err = rows.Err(); err != nil {
 			rows.Close()
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		rows.Close()
-		if err := q.RevokeRefreshTokensByUserID(ctx, toPgUUID(targetUID)); err != nil {
-			return nil, nil, fmt.Errorf("revoke refresh tokens: %w", err)
-		}
 		if err = r.events.NotifySessionEnded(ctx, tx, revokedIDs); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
+		}
+		for _, id := range revokedIDs {
+			revokedSIDs = append(revokedSIDs, id.String())
+		}
+		// Backstop bền vững: enqueue TRONG transaction này nên job chỉ tồn tại khi
+		// commit thành công. Nếu lệnh xoá Redis trực tiếp ở tầng usecase lỡ, job sẽ
+		// hội tụ — nếu không, tài khoản bị khoá vẫn gọi được API tới hết TTL phiên.
+		// Kiểm nil trên INTERFACE, không phải trên con trỏ bên trong: repo dựng qua
+		// New() có sessionPurge là interface nil, và gọi method trên đó sẽ panic.
+		if r.sessionPurge != nil {
+			if err = r.sessionPurge.EnqueueTx(ctx, tx, targetUID.String(), revokedSIDs); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 	}
 
@@ -325,22 +356,22 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		Action:       auditActionForStatus(input.NewStatus),
 		Reason:       input.Reason,
 	}); err != nil {
-		return nil, nil, fmt.Errorf("create admin audit log: %w", err)
+		return nil, nil, nil, fmt.Errorf("create admin audit log: %w", err)
 	}
 
 	// Kiểm tra nghĩa vụ tài chính chưa tất toán để gửi cảnh báo
 	debtsRow, err := q.GetOutstandingDebtsByUserID(ctx, toPgUUID(targetUID))
 	if err != nil {
-		return nil, nil, fmt.Errorf("get outstanding debts: %w", err)
+		return nil, nil, nil, fmt.Errorf("get outstanding debts: %w", err)
 	}
 
 	creditsRow, err := q.GetOutstandingCreditsByUserID(ctx, toPgUUID(targetUID))
 	if err != nil {
-		return nil, nil, fmt.Errorf("get outstanding credits: %w", err)
+		return nil, nil, nil, fmt.Errorf("get outstanding credits: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("commit status update: %w", err)
+		return nil, nil, nil, fmt.Errorf("commit status update: %w", err)
 	}
 
 	var avatarKey *string
@@ -372,7 +403,7 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		UnsettledCreditsCount: creditsRow.OutstandingCreditsCount,
 	}
 
-	return safeUser, warning, nil
+	return safeUser, warning, revokedSIDs, nil
 }
 
 func (r *postgresRepository) GetSystemOverview(ctx context.Context) (*domain.SystemOverview, error) {

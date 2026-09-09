@@ -69,17 +69,11 @@ func seedTestSession(t *testing.T, pool *pgxpool.Pool, userID string) (sessionID
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokenHash := make([]byte, 32)
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO session_refresh_tokens (session_id, token_hash, issued_at, expires_at)
-		VALUES ($1, $2, $3, $4)`, sessionID, tokenHash, now, now.Add(7*24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
 	return sessionID
 }
 
 // TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit covers AC-4: transitioning
-// an account to suspended must update users.status, revoke all active sessions and refresh tokens,
+// an account to suspended must update users.status, revoke all active sessions,
 // and record the mutation in admin_audit_logs, all within one transaction.
 func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t *testing.T) {
 	pool := openTestPool(t)
@@ -91,7 +85,7 @@ func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t 
 	sessionID := seedTestSession(t, pool, targetID)
 
 	repo := New(pool)
-	safeUser, warning, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	safeUser, warning, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID,
 		AdminID:      adminID,
 		NewStatus:    "suspended",
@@ -127,14 +121,6 @@ func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t 
 		t.Fatalf("expected revoked_reason admin_suspended, got %v", revokedReason)
 	}
 
-	var refreshRevokedAt *time.Time
-	if err := pool.QueryRow(ctx, `SELECT revoked_at FROM session_refresh_tokens WHERE session_id=$1`, sessionID).Scan(&refreshRevokedAt); err != nil {
-		t.Fatal(err)
-	}
-	if refreshRevokedAt == nil {
-		t.Fatal("expected refresh token to be revoked, revoked_at is null")
-	}
-
 	var action, reason string
 	if err := pool.QueryRow(ctx, `SELECT action, reason FROM admin_audit_logs WHERE target_user_id=$1 AND admin_id=$2`, targetID, adminID).Scan(&action, &reason); err != nil {
 		t.Fatal(err)
@@ -160,7 +146,7 @@ func TestUpdateAccountStatusWithRevocation_LockAndReactivateMapToValidEnumAction
 
 	repo := New(pool)
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID, AdminID: adminID, NewStatus: "locked", Reason: "policy",
 	}); err != nil {
 		t.Fatalf("lock transition failed: %v", err)
@@ -173,7 +159,7 @@ func TestUpdateAccountStatusWithRevocation_LockAndReactivateMapToValidEnumAction
 		t.Fatalf("expected audit action 'lock', got %q", lockAction)
 	}
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID, AdminID: adminID, NewStatus: "active", Reason: "restored",
 	}); err != nil {
 		t.Fatalf("reactivate transition failed: %v", err)
@@ -198,13 +184,13 @@ func TestUpdateAccountStatusWithRevocation_SelfAndAdminProtection(t *testing.T) 
 
 	repo := New(pool)
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: adminID, AdminID: adminID, NewStatus: "locked", Reason: "test",
 	}); !errors.Is(err, domain.ErrCannotModifySelf) {
 		t.Fatalf("expected ErrCannotModifySelf, got %v", err)
 	}
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: otherAdminID, AdminID: adminID, NewStatus: "suspended", Reason: "test",
 	}); !errors.Is(err, domain.ErrCannotModifyAdmin) {
 		t.Fatalf("expected ErrCannotModifyAdmin, got %v", err)

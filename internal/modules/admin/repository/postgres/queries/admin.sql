@@ -117,15 +117,10 @@ RETURNING
     created_at,
     updated_at;
 
--- name: RevokeSessionsByUserID :exec
-UPDATE sessions
-SET revoked_at = now(), revoked_reason = @revoked_reason
-WHERE user_id = @user_id AND revoked_at IS NULL;
-
--- name: RevokeRefreshTokensByUserID :exec
-UPDATE session_refresh_tokens
-SET revoked_at = now()
-WHERE session_id IN (SELECT id FROM sessions WHERE user_id = @user_id) AND revoked_at IS NULL;
+-- RevokeSessionsByUserID và RevokeRefreshTokensByUserID đã được gỡ bỏ.
+-- Việc thu hồi phiên nằm ở UpdateAccountStatusWithRevocation, viết tay bằng raw SQL
+-- vì nó cần RETURNING id để vừa phát pg_notify vừa xếp job dọn Redis trong cùng
+-- transaction. Refresh token không còn tồn tại (spec 0011).
 
 -- name: CreateAdminAuditLog :one
 INSERT INTO admin_audit_logs (admin_id, target_user_id, action, reason)

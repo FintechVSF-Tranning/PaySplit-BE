@@ -96,41 +96,16 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "429": {$ref: "#/components/responses/RateLimited"}
-  /api/v1/auth/refresh:
-    post:
-      operationId: refresh
-      tags: [Auth]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refresh_token, device_id]
-              additionalProperties: false
-              properties:
-                refresh_token: {type: string, maxLength: 128}
-                device_id: {type: string, format: uuid}
-      responses:
-        "200":
-          description: Token pair rotated
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/SuccessEnvelope"
-                  - type: object
-                    properties:
-                      data: {$ref: "#/components/schemas/TokenPair"}
-        "401": {$ref: "#/components/responses/Unauthorized"}
   /api/v1/auth/sign-out:
     post:
       operationId: signOut
       tags: [Auth]
-      security: [{bearerAuth: []}]
+      # Cố ý KHÔNG khai báo security: session ID đục không kiểm ngoại tuyến được,
+      # nên nếu bắt route này qua middleware xác thực thì một phiên đã bị thu hồi
+      # sẽ nhận 401 và đăng xuất mất tính idempotent. Handler tự đọc bearer và
+      # luôn trả 204 — kể cả khi header thiếu, hỏng, hoặc phiên đã chết.
       responses:
-        "204": {description: Session revoked}
-        "401": {$ref: "#/components/responses/Unauthorized"}
+        "204": {description: Session revoked, or already gone}
   /api/v1/auth/forgot-password:
     post:
       operationId: forgotPassword
@@ -1958,7 +1933,7 @@ paths:
 
 components:
   securitySchemes:
-    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: Opaque, description: "Session ID đục do POST /api/v1/auth/sign-in cấp. Không phải JWT: chuỗi này không mang thông tin nào và chỉ có server tra được.\n\nMọi endpoint có bảo vệ đều có thể trả 401 AUTHENTICATION_REQUIRED hoặc 503 SESSION_STORE_UNAVAILABLE, và client PHẢI phân biệt hai mã này: 401 nghĩa là phiên đã chết, hãy xóa credential và đăng nhập lại; 503 nghĩa là kho phiên tạm thời không truy cập được, credential VẪN CÒN GIÁ TRỊ, hãy giữ nguyên và thử lại. Xóa credential khi gặp 503 sẽ biến một cú chớp vài chục giây của Redis thành một lần đăng xuất vĩnh viễn của toàn bộ người dùng."}
   parameters:
     GroupId: {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
     PaymentId: {name: paymentId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -1991,7 +1966,10 @@ components:
       description: Validation or invalid token error
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     Unauthorized:
-      description: Authentication or session error
+      description: "Authentication or session error. Phiên đã chết: client xóa credential và đăng nhập lại."
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    SessionStoreUnavailable:
+      description: "Kho phiên (Redis) không truy cập được. Đây là lỗi hạ tầng, KHÔNG phải lỗi xác thực: credential vẫn còn giá trị và client phải giữ nguyên rồi thử lại, tuyệt đối không xóa."
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     Forbidden:
       description: Account is not eligible
@@ -2238,18 +2216,21 @@ components:
         user: {$ref: "#/components/schemas/User"}
         verification_email_sent: {type: boolean}
         verification_expires_at: {type: string, format: date-time}
-    TokenPair:
+    Session:
       type: object
-      required: [token_type, access_token, access_token_expires_at, refresh_token, refresh_token_expires_at]
+      required: [token_type, session_id, expires_at]
       properties:
         token_type: {type: string, enum: [Bearer]}
-        access_token: {type: string}
-        access_token_expires_at: {type: string, format: date-time}
-        refresh_token: {type: string}
-        refresh_token_expires_at: {type: string, format: date-time}
+        # Chuỗi đục 43 ký tự base64url, gửi kèm mọi request qua header
+        # `Authorization: Bearer <session_id>`. Không có endpoint làm mới: mỗi
+        # request có xác thực đều tự gia hạn phiên (TTL trượt 7 ngày).
+        session_id: {type: string}
+        # Trần cứng, mặc định 30 ngày kể từ lúc đăng nhập. Phiên chết ở mốc này
+        # dù người dùng hoạt động liên tục.
+        expires_at: {type: string, format: date-time}
     SignInResponse:
       allOf:
-        - {$ref: "#/components/schemas/TokenPair"}
+        - {$ref: "#/components/schemas/Session"}
         - type: object
           required: [user]
           properties: {user: {$ref: "#/components/schemas/User"}}

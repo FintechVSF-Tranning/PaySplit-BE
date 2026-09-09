@@ -20,6 +20,8 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 7   | Group bill close v1                  | Slice 7 | in-progress |
 | 8   | Connection efficient events          | Slice 8 | in-progress |
 | 9   | User realtime stream v1              | Slice 9 | in-progress |
+| 10  | Auth and account v2                  | Slice 10 | done        |
+| 11  | Session revocation hardening         | Slice 10 | planned     |
 
 ## Slice 1: Identity and account
 
@@ -232,6 +234,46 @@ Provide one authenticated SSE connection for each signed in Flutter session so H
 
 Spec [0009](../specs/0009-group-realtime-sync-v1/index.md) · code in `internal/platform/database/`, `internal/platform/realtime/`, `internal/modules/auth/`, `internal/modules/group/`, `internal/modules/bill/`, `internal/modules/settlement/`, `internal/platform/metrics/`, `internal/config/`, and `internal/bootstrap/`, with companion Flutter work in the PaySplit-FE repository under `lib/core/realtime/`, `lib/features/home/`, `lib/features/groups/`, and `lib/features/bills/`
 
+## Slice 10: Identity and account v2
+
+### 10. Auth and account v2 · done
+
+Succeed the session mechanism from Auth and account v1 by replacing JWT access tokens and refresh token rotation with a single opaque session ID stored in Redis, keeping `sessions` as an audit record and the realtime layer untouched. Registration, email verification, and password recovery from v1 are unchanged.
+
+**Done when:** all nineteen acceptance criteria in spec 0011 pass, a single opaque credential authenticates every request through Redis, revocation is immediate, the realtime force logout path is unchanged, and JWT plus refresh rotation are fully removed from the backend, the API spec, and the Flutter app.
+
+- [x] Design it (spec): `/architect auth and account v2`
+- [x] Build it: `/develop auth and account v2`
+  - [x] Device token table split and FCM liveness fix ahead of the session change (satisfies AC-18)
+  - [x] Redis infrastructure, named readiness dependencies, config validation, and safe bootstrap teardown (satisfies AC-14, AC-15)
+  - [x] Session store with four Lua scripts, two tier TTL model, and orphan free replacement (satisfies AC-2, AC-4 through AC-8)
+  - [x] Auth usecase cutover, per call site write ordering, single middleware variant, and admin purge backstop (satisfies AC-1, AC-3, AC-9 through AC-13, AC-16)
+  - [x] Legacy removal, OpenAPI update, and the Flutter single credential migration (satisfies AC-17, AC-19)
+- [x] Verify it: `/check verify auth and account v2`
+- [x] Test it: `/test auth and account v2`
+- [x] Review it (fresh model): `/check review auth and account v2`
+- [x] Document it: `/document auth and account v2`
+
+Spec [0011](../specs/0011-redis-session-auth/index.md) · code in `internal/platform/redis/`, `internal/platform/session/`, `internal/modules/auth/`, `internal/modules/admin/`, `internal/transport/http/middleware/`, `internal/config/`, and `internal/bootstrap/`, with companion Flutter work in the PaySplit-FE repository under `lib/core/network/` and `lib/core/realtime/`
+
+### 11. Session revocation hardening · planned · from spec 0011
+
+Close the four security and operational gaps that the spec 0011 review found in shipped code, so account suspension enforces reliably and a Redis blip does not sign every user out for good.
+
+**Done when:** a repeated account lock revokes the live session even when no `sessions` row matches, infrastructure errors return 503 instead of 401 and the app keeps the credential, an exhausted purge job raises an alert, and the Redis password plus eviction policy are enforced rather than assumed.
+
+- [ ] Build it: `/develop session revocation hardening`
+  - [ ] Unconditional per user revocation on the admin lock path, keeping sid matching for the retry path (spec 0011 Follow up 1)
+  - [ ] Split infrastructure failure from authentication failure in the middleware and the Flutter 401 rule (spec 0011 Follow up 2)
+  - [ ] Alert and metric on purge job exhaustion (spec 0011 Follow up 3)
+  - [ ] Enforce the Redis credential requirement and the `noeviction` policy at bootstrap (spec 0011 Follow up 4)
+- [ ] Verify it: `/check verify session revocation hardening`
+- [ ] Test it: `/test session revocation hardening`
+- [ ] Review it (fresh model): `/check review session revocation hardening`
+- [ ] Document it: `/document session revocation hardening`
+
+Spec [0011](../specs/0011-redis-session-auth/index.md) Risks 5 to 8 and Follow up 1 to 4 · code in `internal/modules/admin/`, `internal/transport/http/middleware/`, `internal/modules/auth/jobs/`, `internal/config/`, and `internal/platform/redis/`
+
 ## Deferred
 
 The remaining PaySplit capabilities stay in the PRD until a later scope pass enrolls them.
@@ -247,6 +289,14 @@ Choose a concrete per user active group limit before adding quota enforcement.
 ### Durable bill event log · deferred · from spec 0009
 
 Consider a replayable bill event log only if production measurements show that invalidation refetch traffic is material.
+
+### Active session count from Redis · deferred · from spec 0011
+
+Answer `active_sessions_count` from Redis, or relabel the field in `docs/openapi.yaml` so it is not read as a liveness count.
+
+### Credential rotation on password change · deferred · from spec 0011
+
+Decide whether changing a password should issue a new credential, so a stolen one does not survive the change.
 
 - **Phone verification and phone sign in**: versioned follow up from spec 0001, needs a decision
 - **Production PII encryption and transactional email**: production hardening follow up from spec 0001, needs a decision

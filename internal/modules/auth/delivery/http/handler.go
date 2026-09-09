@@ -84,24 +84,20 @@ func (h *Handler) SignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := h.userResponse(out.User)
-	writeJSON(w, http.StatusOK, tokenResponse{User: &u, TokenType: "Bearer", AccessToken: out.AccessToken, AccessTokenExpiresAt: out.AccessExpiresAt, RefreshToken: out.RefreshToken, RefreshTokenExpiresAt: out.RefreshExpiresAt})
+	writeJSON(w, http.StatusOK, sessionResponse{User: &u, TokenType: "Bearer", SessionID: out.SessionID, ExpiresAt: out.ExpiresAt})
 }
-func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
-	var req refreshRequest
-	if !read(w, r, &req) {
-		return
-	}
-	out, err := h.service.Refresh(r.Context(), req.RefreshToken, req.DeviceID)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, tokenResponse{TokenType: "Bearer", AccessToken: out.AccessToken, AccessTokenExpiresAt: out.AccessExpiresAt, RefreshToken: out.RefreshToken, RefreshTokenExpiresAt: out.RefreshExpiresAt})
-}
+
+// SignOut không đi qua middleware xác thực: credential đục không kiểm ngoại tuyến
+// được, nên nếu bắt nó qua Auth thì một phiên đã bị thu hồi sẽ nhận 401 và đăng
+// xuất mất tính idempotent. Handler tự đọc bearer và luôn trả 204 — kể cả khi
+// header thiếu, hỏng, hoặc credential không còn tồn tại.
 func (h *Handler) SignOut(w http.ResponseWriter, r *http.Request) {
-	userID, _ := authmw.UserID(r.Context())
-	sessionID, _ := authmw.SessionID(r.Context())
-	if err := h.service.SignOut(r.Context(), userID, sessionID); err != nil {
+	raw, err := authmw.BearerToken(r.Header.Get("Authorization"))
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := h.service.SignOut(r.Context(), raw); err != nil {
 		writeDomainError(w, err)
 		return
 	}

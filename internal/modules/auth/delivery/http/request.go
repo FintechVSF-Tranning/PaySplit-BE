@@ -22,10 +22,6 @@ type signInRequest struct {
 	DeviceName string `json:"device_name"`
 	FCMToken   string `json:"fcm_token,omitempty"`
 }
-type refreshRequest struct {
-	RefreshToken string `json:"refresh_token"`
-	DeviceID     string `json:"device_id"`
-}
 type resetPasswordRequest struct {
 	Email       string `json:"email"`
 	OTP         string `json:"otp"`

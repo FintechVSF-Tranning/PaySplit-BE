@@ -133,6 +133,15 @@ type Debt struct {
 	LastRemindedAt   pgtype.Timestamptz `json:"last_reminded_at"`
 }
 
+type DeviceToken struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	DeviceID  pgtype.UUID        `json:"device_id"`
+	FcmToken  string             `json:"fcm_token"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Group struct {
 	ID                     pgtype.UUID        `json:"id"`
 	Name                   string             `json:"name"`
@@ -306,17 +315,6 @@ type Session struct {
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt     pgtype.Timestamptz `json:"revoked_at"`
 	RevokedReason pgtype.Text        `json:"revoked_reason"`
-	FcmToken      pgtype.Text        `json:"fcm_token"`
-}
-
-type SessionRefreshToken struct {
-	ID        pgtype.UUID        `json:"id"`
-	SessionID pgtype.UUID        `json:"session_id"`
-	TokenHash []byte             `json:"token_hash"`
-	IssuedAt  pgtype.Timestamptz `json:"issued_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	UsedAt    pgtype.Timestamptz `json:"used_at"`
-	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
 }
 
 type User struct {

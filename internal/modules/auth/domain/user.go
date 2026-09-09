@@ -31,11 +31,12 @@ type User struct {
 	LoginBlockedUntil          *time.Time
 }
 
+// Session là bản ghi một lần đăng nhập. Địa chỉ push của thiết bị không nằm ở
+// đây mà ở bảng device_tokens: nó thuộc về thiết bị và phải sống lâu hơn phiên.
 type Session struct {
 	ID        string
 	UserID    string
 	DeviceID  string
-	FCMToken  *string
 	ExpiresAt time.Time
 }
 

@@ -40,7 +40,6 @@ import (
 	settlementjobs "paysplit-backend/internal/modules/settlement/jobs"
 	settlementpostgres "paysplit-backend/internal/modules/settlement/repository/postgres"
 	settlementusecase "paysplit-backend/internal/modules/settlement/usecase"
-	"paysplit-backend/internal/platform/auth/jwt"
 	"paysplit-backend/internal/platform/banks"
 	"paysplit-backend/internal/platform/database"
 	"paysplit-backend/internal/platform/email/gmail"
@@ -51,7 +50,9 @@ import (
 	"paysplit-backend/internal/platform/ocr/llamaextract"
 	riverpkg "paysplit-backend/internal/platform/queue/river"
 	"paysplit-backend/internal/platform/realtime"
+	redispkg "paysplit-backend/internal/platform/redis"
 	"paysplit-backend/internal/platform/security/password"
+	sessionstore "paysplit-backend/internal/platform/session"
 	avatarstorage "paysplit-backend/internal/platform/storage/cloudinary"
 	"paysplit-backend/internal/platform/vietqr"
 	transportmw "paysplit-backend/internal/transport/http/middleware"
@@ -64,6 +65,7 @@ type App struct {
 	server         *http.Server
 	db             *pgxpool.Pool
 	listenerPool   *pgxpool.Pool
+	redis          *redispkg.Client
 	riverClient    *river.Client[pgx.Tx]
 	closeSSE       func()
 	cancelWorkers  context.CancelFunc
@@ -93,12 +95,27 @@ func New(ctx context.Context) (*App, error) {
 	}
 	log.Printf("[Database] Connected to PostgreSQL pool (max_conns: %d, min_conns: %d)", cfg.Database.MaxConns, cfg.Database.MinConns)
 
-	// 3. Khởi tạo các adapter hạ tầng (Platform Layer)
-	tokens, err := jwt.NewAccessTokenManager(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.AccessTokenTTL)
+	// 2b. Mở kết nối Redis — nơi lưu phiên đăng nhập.
+	redisClient, err := redispkg.New(ctx, cfg.Redis)
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create JWT issuer: %w", err)
+		return nil, err
 	}
+	// New() không có danh sách closer chung: mỗi nhánh lỗi bên dưới tự gọi
+	// db.Close(). Thay vì thêm redisClient.Close() vào từng nhánh — dễ sót khi
+	// có nhánh mới — dùng một defer chạy trên mọi đường thoát sớm.
+	redisHandedOver := false
+	defer func() {
+		if !redisHandedOver {
+			_ = redisClient.Close()
+		}
+	}()
+	log.Printf("[Redis] Connected to session store (pool_size: %d, idle_ttl: %s, absolute_ttl: %s)", cfg.Redis.PoolSize, cfg.Redis.IdleTTL, cfg.Redis.AbsoluteTTL)
+
+	// 3. Khởi tạo các adapter hạ tầng (Platform Layer)
+	// Kho phiên là nguồn phán quyết cho toàn bộ việc xác thực; auth, admin và
+	// middleware đều dùng chung đúng một instance.
+	sessionStore := sessionstore.NewRedisStore(redisClient, cfg.Redis.IdleTTL, cfg.Redis.AbsoluteTTL)
 	authRepo := authpostgres.New(db)
 	userEvents := &realtime.Publisher{Enabled: cfg.Realtime.UserSSEEnabled}
 	authpostgres.SetRealtimePublisher(authRepo, userEvents)
@@ -126,7 +143,7 @@ func New(ctx context.Context) (*App, error) {
 	imageProcessor := avatarimage.NewProcessor(cfg.Avatar.ProcessingTimeout, cfg.Avatar.MaxConcurrentConversions)
 
 	// 4. Khởi tạo Module Auth
-	authService := authusecase.NewService(authRepo, password.New(), tokens, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Auth.RefreshTokenTTL})
+	authService := authusecase.NewService(authRepo, password.New(), sessionStore, mailer, bankDirectory, imageProcessor, avatarStore, authusecase.Options{VerificationTTL: cfg.Auth.EmailVerificationTTL, ResetTTL: cfg.Auth.PasswordResetTTL, SessionTTL: cfg.Redis.AbsoluteTTL})
 	authHandler := authhttp.NewHandler(authService, avatarStore.URL)
 
 	// 5. Khởi tạo Firebase Cloud Messaging (FCM)
@@ -168,6 +185,10 @@ func New(ctx context.Context) (*App, error) {
 		notificationJobNotifier = fcmClient
 	}
 	river.AddWorker(riverWorkers, notificationjobs.NewNotificationWorker(notificationRepo, notificationJobNotifier))
+	// Backstop cho việc thu hồi phiên: nếu lệnh xoá Redis trực tiếp lỡ, job này
+	// hội tụ. Không có nó, một tài khoản bị admin khoá vẫn gọi được API tới hết
+	// TTL phiên, vì middleware không còn đọc users.status nữa.
+	river.AddWorker(riverWorkers, authjobs.NewSessionPurgeWorker(sessionStore))
 
 	// Khởi tạo OCR Provider, Cloudinary Bill Storage, Receipt Processor và Bill Module
 	ocrClient := llamaextract.New(cfg.OCR)
@@ -293,18 +314,29 @@ func New(ctx context.Context) (*App, error) {
 	// 9. Khởi tạo Module Admin & Bank Directory Handler
 	adminRepo := adminpostgres.New(db)
 	adminpostgres.SetRealtimePublisher(adminRepo, userEvents)
-	adminService := adminusecase.NewService(adminRepo)
+	// Job dọn phiên được enqueue trong chính transaction khoá tài khoản, nên nó chỉ
+	// tồn tại khi transaction đó commit — cùng ngữ nghĩa pg_notify đang dựa vào.
+	adminpostgres.SetSessionPurgeEnqueuer(adminRepo, authjobs.NewSessionPurgeEnqueuer(riverClient))
+	// Đặt lại mật khẩu cũng cần backstop, vì cùng một lý do: nếu lệnh xoá Redis
+	// trực tiếp lỡ thì credential bị đánh cắp sống tới hết absolute TTL, mà đặt
+	// lại mật khẩu chính là thao tác nạn nhân dùng để giết nó.
+	authpostgres.SetSessionPurgeEnqueuer(authRepo, authjobs.NewSessionPurgeEnqueuer(riverClient))
+	adminService := adminusecase.NewService(adminRepo, sessionStore)
 	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
 	bankHandler := banks.NewHandler(bankDirectory)
 
 	platformmetrics.RegisterDBPool(db)
 
 	// 10. Xây dựng Router và đăng ký tất cả các Endpoint API
-	appRouter := router.New(cfg.App, cfg.Metrics, sharedListener)
-	liveAuth := transportmw.Auth(tokens, authRepo)
-	tokenAuth := transportmw.TokenAuth(tokens)
+	appRouter := router.New(cfg.App, cfg.Metrics,
+		router.Dependency{Name: "database", Checker: sharedListener},
+		// Redis nằm trên đường đi của mọi request có xác thực: instance không
+		// nói chuyện được với nó chỉ trả 401, nên phải rút khỏi load balancer.
+		router.Dependency{Name: "redis", Checker: redisClient},
+	)
+	liveAuth := transportmw.Auth(sessionStore)
 	appRouter.Route("/api/v1", func(api chi.Router) {
-		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r, tokenAuth) })
+		api.Route("/auth", func(r chi.Router) { authHandler.RegisterAuthRoutes(r) })
 		api.Route("/users", func(r chi.Router) { authHandler.RegisterUserRoutes(r, liveAuth, userSSEHandler) })
 		api.Route("/notifications", func(r chi.Router) { notificationHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/groups", func(r chi.Router) {
@@ -345,6 +377,7 @@ func New(ctx context.Context) (*App, error) {
 
 	app := &App{
 		db:             db,
+		redis:          redisClient,
 		listenerPool:   listenerPool,
 		riverClient:    riverClient,
 		closeSSE:       closeSSE,
@@ -368,6 +401,9 @@ func New(ctx context.Context) (*App, error) {
 
 	app.workers.Add(1)
 	go func() { defer app.workers.Done(); billjobs.PollQueueDepth(workerCtx, billRepo, 15*time.Second) }()
+
+	// App đã sở hữu client; Shutdown chịu trách nhiệm đóng từ đây.
+	redisHandedOver = true
 	return app, nil
 }
 
@@ -423,7 +459,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		workersErr = ctx.Err()
 	}
-	poolDone := make(chan struct{})
+	// Kết quả đóng Redis đi qua channel chứ không qua biến dùng chung: nhánh
+	// ctx.Done() bên dưới chạy song song với goroutine này, nên đọc một biến
+	// thường ở đó sẽ là data race.
+	poolDone := make(chan error, 1)
 	go func() {
 		if a.listenerPool != nil && a.listenerPool != a.db {
 			a.listenerPool.Close()
@@ -431,11 +470,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 		if a.db != nil {
 			a.db.Close()
 		}
-		close(poolDone)
+		var closeErr error
+		if a.redis != nil {
+			closeErr = a.redis.Close()
+		}
+		poolDone <- closeErr
 	}()
-	var poolErr error
+	var poolErr, redisErr error
 	select {
-	case <-poolDone:
+	case redisErr = <-poolDone:
 	case <-ctx.Done():
 		poolErr = ctx.Err()
 	}
@@ -445,6 +488,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 		wrapShutdownError("PostgreSQL listener", listenerErr),
 		wrapShutdownError("workers", workersErr),
 		wrapShutdownError("database pool", poolErr),
+		wrapShutdownError("Redis client", redisErr),
 	)
 }
 

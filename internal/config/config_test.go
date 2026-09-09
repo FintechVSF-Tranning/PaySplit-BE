@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadAuthDefaults(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "DB_APPLICATION_NAME": "paysplit-api", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "RIVER_FETCH_COOLDOWN_MS": "100", "RIVER_FETCH_POLL_INTERVAL_MS": "1000", "RIVER_POLL_ONLY": "false"}
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "DB_APPLICATION_NAME": "paysplit-api", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "RIVER_FETCH_COOLDOWN_MS": "100", "RIVER_FETCH_POLL_INTERVAL_MS": "1000", "RIVER_POLL_ONLY": "false"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -15,8 +15,12 @@ func TestLoadAuthDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.AccessTokenTTL != 15*time.Minute || cfg.Auth.RefreshTokenTTL != 7*24*time.Hour || cfg.Auth.EmailVerificationTTL != 10*time.Minute {
+	if cfg.Auth.EmailVerificationTTL != 10*time.Minute || cfg.Auth.PasswordResetTTL != 10*time.Minute {
 		t.Fatalf("unexpected auth TTLs: %+v", cfg.Auth)
+	}
+	// Vòng đời phiên giờ do Redis quyết định, không còn TTL access/refresh token.
+	if cfg.Redis.IdleTTL != 7*24*time.Hour || cfg.Redis.AbsoluteTTL != 30*24*time.Hour {
+		t.Fatalf("unexpected session TTLs: %+v", cfg.Redis)
 	}
 	if cfg.Database.ApplicationName != "paysplit-api" {
 		t.Fatalf("DB application name = %q, want paysplit-api", cfg.Database.ApplicationName)
@@ -27,7 +31,7 @@ func TestLoadAuthDefaults(t *testing.T) {
 }
 
 func TestLoadPrefersPlatformPortOverHTTPPort(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "HTTP_HOST": "0.0.0.0", "HTTP_PORT": "8080", "PORT": "36015", "HTTP_ADDRESS": ""}
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "HTTP_HOST": "0.0.0.0", "HTTP_PORT": "8080", "PORT": "36015", "HTTP_ADDRESS": ""}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -48,11 +52,11 @@ func TestValidateRejectsMissingGmail(t *testing.T) {
 		t.Fatal("expected missing Gmail configuration error")
 	}
 }
-func TestValidateRejectsWrongAccessTTL(t *testing.T) {
+func TestValidateRejectsWrongVerificationTTL(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.AccessTokenTTL = time.Hour
+	cfg.Auth.EmailVerificationTTL = time.Hour
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected access TTL validation error")
+		t.Fatal("expected verification TTL validation error")
 	}
 }
 
@@ -187,7 +191,7 @@ func TestValidateRejectsInvalidConnectionEfficientEventSettings(t *testing.T) {
 }
 
 func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "JWT_SECRET_KEY": "long-development-secret", "JWT_ACCESS_TOKEN_TTL_MINUTES": "15", "AUTH_REFRESH_TOKEN_TTL_HOURS": "168", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
+	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -255,17 +259,66 @@ func validConfig() *Config {
 	return &Config{
 		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
 		Database:   DatabaseConfig{URL: "postgres://local/test", ApplicationName: "paysplit-api", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
-		Auth:       AuthConfig{JWTSecret: "secret", JWTIssuer: "issuer", AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 7 * 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
+		Auth:       AuthConfig{EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
 		SMTP:       SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second},
 		Cloudinary: CloudinaryConfig{CloudName: "test", APIKey: "test", APISecret: "test"},
 		Avatar:     AvatarConfig{UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, MaxConcurrentConversions: 2},
 		Cleanup:    CleanupConfig{Interval: 24 * time.Hour, Retention: 30 * 24 * time.Hour, MediaWorkerInterval: time.Minute, MediaMaxAttempts: 10},
 		River:      RiverConfig{WorkerCount: 5, FetchCooldown: 100 * time.Millisecond, FetchPollInterval: time.Second},
+		Redis:      RedisConfig{URL: "redis://localhost:6380/0", PoolSize: 20, DialTimeout: 5 * time.Second, ReadTimeout: 2 * time.Second, IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: 30 * 24 * time.Hour},
 		Group:      GroupConfig{InviteBaseURL: "https://paysplit.app/join", MaxActiveMembers: 50},
 		OCR:        OCRConfig{Endpoint: "https://api.cloud.llamaindex.ai", ProviderTimeout: 8 * time.Second, MaxAttempts: 3, RetryBaseDelay: time.Second, ManualLimit: 5, ManualWindowHours: 24 * time.Hour, RawRetentionDays: 30 * 24 * time.Hour},
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
 		GroupSync:  GroupSyncConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute, EventRetention: 7 * 24 * time.Hour},
 		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3, StalledConfirmationAge: 48 * time.Hour},
+	}
+}
+
+func TestValidateRejectsMissingRedisURL(t *testing.T) {
+	cfg := validConfig()
+	cfg.Redis.URL = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected REDIS_URL validation error")
+	}
+}
+
+func TestValidateRejectsNonRedisScheme(t *testing.T) {
+	for _, raw := range []string{"postgres://localhost:5432/db", "http://localhost:6379", "redis://"} {
+		cfg := validConfig()
+		cfg.Redis.URL = raw
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() accepted REDIS_URL %q, want rejection", raw)
+		}
+	}
+}
+
+// TTL trượt được gia hạn mỗi request. Nếu nó vượt trần tuyệt đối thì trần mất tác
+// dụng và phiên sống vô hạn với người dùng mở app đều đặn — đúng thứ mà trần cứng
+// sinh ra để chặn.
+func TestValidateRejectsIdleTTLAboveAbsoluteTTL(t *testing.T) {
+	cfg := validConfig()
+	cfg.Redis.IdleTTL = 31 * 24 * time.Hour
+	cfg.Redis.AbsoluteTTL = 30 * 24 * time.Hour
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected idle TTL to be rejected when it exceeds the absolute TTL")
+	}
+}
+
+// Hàng audit trong `sessions` mang expires_at = now + AbsoluteTTL, còn worker dọn
+// rác xoá theo Retention. Retention ngắn hơn (AbsoluteTTL - IdleTTL) sẽ xoá mất bản
+// ghi của phiên vẫn đang sống trên Redis, và lỗi đó chỉ lộ ra sau nhiều tuần chạy.
+func TestValidateRejectsRetentionShorterThanSessionDrift(t *testing.T) {
+	cfg := validConfig()
+	cfg.Redis.IdleTTL = 7 * 24 * time.Hour
+	cfg.Redis.AbsoluteTTL = 30 * 24 * time.Hour
+	cfg.Cleanup.Retention = 22 * 24 * time.Hour // cần >= 23 ngày
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected retention shorter than the absolute-minus-idle drift to be rejected")
+	}
+
+	cfg.Cleanup.Retention = 23 * 24 * time.Hour
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("retention exactly covering the drift should be accepted, got %v", err)
 	}
 }

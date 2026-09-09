@@ -37,16 +37,28 @@ type UpdateAccountStatusInput struct {
 }
 
 // Service quản lý nghiệp vụ quản trị tài khoản và giám sát hệ thống.
+// SessionRevoker là cổng tới kho phiên Redis. Khai báo tại đây thay vì import
+// auth/usecase để hai module không phụ thuộc nhau; bootstrap tiêm cùng một
+// implementation cho cả hai.
+type SessionRevoker interface {
+	RevokeUserSIDs(ctx context.Context, userID string, sids []string) (bool, error)
+	// RevokeUser thu hồi vô điều kiện, không khớp SID. Đường khóa tài khoản phải
+	// dùng hàm này: danh sách SID đến từ Postgres nên nó chỉ chạm được những phiên
+	// mà Postgres còn tin là đang sống, trong khi Redis mới là nguồn phán quyết.
+	RevokeUser(ctx context.Context, userID string) (bool, error)
+}
+
 type Service struct {
-	repo repository.Repository
+	repo     repository.Repository
+	sessions SessionRevoker
 }
 
 // NewService khởi tạo usecase service cho module Admin.
-func NewService(repo repository.Repository) *Service {
-	if repo == nil {
-		panic("admin service repository must not be nil")
+func NewService(repo repository.Repository, sessions SessionRevoker) *Service {
+	if repo == nil || sessions == nil {
+		panic("admin service dependencies must not be nil")
 	}
-	return &Service{repo: repo}
+	return &Service{repo: repo, sessions: sessions}
 }
 
 // ListAccounts xử lý tìm kiếm, lọc và phân trang danh sách tài khoản theo đúng quy chuẩn AC-1.
@@ -164,12 +176,34 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, input UpdateAccountSt
 		reason = "Reactivated by admin"
 	}
 
-	return s.repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	// Postgres TRƯỚC, Redis SAU: không được để một tài khoản bị khoá trên Redis mà
+	// thiếu bản ghi admin_audit_logs bền vững, và transaction vẫn có thể hỏng ở
+	// bước ghi log hoặc cập nhật trạng thái.
+	user, warning, _, err := s.repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: input.TargetUserID,
 		AdminID:      input.AdminID,
 		NewStatus:    status,
 		Reason:       reason,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if status == "suspended" || status == "locked" {
+		// Đây là nơi việc khoá tài khoản thực sự có hiệu lực. Middleware không còn
+		// đọc users.status nữa, nên nếu lệnh này lỡ thì người bị khoá vẫn dùng app
+		// bình thường. Trả lỗi ra ngoài để admin thấy — trạng thái Postgres đã bền
+		// và job session_redis_purge đã nằm trong hàng đợi, nên nó sẽ hội tụ.
+		//
+		// Thu hồi VÔ ĐIỀU KIỆN, không gác theo len(revokedSIDs). Danh sách đó đến
+		// từ `UPDATE sessions ... WHERE revoked_at IS NULL RETURNING id`, nên nó
+		// rỗng ngay khi hàng audit đã revoked — kể cả lúc key Redis vẫn còn sống.
+		// Gác theo nó biến lệnh khoá lần hai thành lệnh rỗng, và đó chính là lần
+		// mà quản trị viên bấm khoá vì lần đầu đã lỡ.
+		if _, revokeErr := s.sessions.RevokeUser(ctx, input.TargetUserID); revokeErr != nil {
+			return nil, nil, revokeErr
+		}
+	}
+	return user, warning, nil
 }
 
 // GetSystemOverview thu thập toàn bộ số liệu thống kê quản trị và tài nguyên theo AC-7.

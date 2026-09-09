@@ -24,6 +24,7 @@ type Config struct {
 	Cleanup    CleanupConfig
 	Firebase   FirebaseConfig
 	River      RiverConfig
+	Redis      RedisConfig
 	Group      GroupConfig
 	OCR        OCRConfig
 	BillImage  BillImageConfig
@@ -86,12 +87,11 @@ func (c DatabaseConfig) UsesDedicatedListenerPool() bool {
 	return listener != "" && listener != strings.TrimSpace(c.URL)
 }
 
-// AuthConfig chứa các thiết lập cần thiết để phát hành access token.
+// AuthConfig chứa các thiết lập cho luồng xác thực qua email.
+//
+// Không còn khoá ký hay TTL access/refresh token: từ spec 0011, credential là một
+// session ID đục lưu trên Redis, và vòng đời của nó do RedisConfig quyết định.
 type AuthConfig struct {
-	JWTSecret            string
-	JWTIssuer            string
-	AccessTokenTTL       time.Duration
-	RefreshTokenTTL      time.Duration
 	EmailVerificationTTL time.Duration
 	PasswordResetTTL     time.Duration
 	EmailVerificationURL string
@@ -134,6 +134,20 @@ type RiverConfig struct {
 	FetchCooldown     time.Duration
 	PollOnly          bool
 	FetchPollInterval time.Duration
+}
+
+// RedisConfig chứa cấu hình kết nối tới Redis — nơi lưu phiên đăng nhập.
+//
+// Redis nằm trên đường đi của MỌI request có xác thực, nên nó là dependency bắt
+// buộc chứ không phải cache tuỳ chọn: mất Redis là mất khả năng xác thực. Vì vậy
+// URL không có giá trị mặc định và readiness probe phải ping nó.
+type RedisConfig struct {
+	URL         string
+	PoolSize    int
+	DialTimeout time.Duration
+	ReadTimeout time.Duration
+	IdleTTL     time.Duration
+	AbsoluteTTL time.Duration
 }
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
@@ -226,10 +240,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	accessTokenTTL, err := durationEnv("JWT_ACCESS_TOKEN_TTL_MINUTES", 15, time.Minute)
-	if err != nil {
-		return nil, err
-	}
 	// Ngưỡng tính theo IP, mà một IP có thể là cả một văn phòng sau NAT hoặc một
 	// máy đang đăng nhập nhiều tài khoản. Mỗi lần mở app đã tốn hơn chục request
 	// (hồ sơ, nhóm, hóa đơn, công nợ, thông báo), nên mức cũ 30/phút chặn nhầm
@@ -249,10 +259,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	refreshTTL, err := durationEnv("AUTH_REFRESH_TOKEN_TTL_HOURS", 168, time.Hour)
-	if err != nil {
-		return nil, err
-	}
 	verificationTTL, err := durationEnv("AUTH_EMAIL_VERIFICATION_TTL_MINUTES", 10, time.Minute)
 	if err != nil {
 		return nil, err
@@ -298,6 +304,26 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	fcmTimeout, err := durationEnv("FCM_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	redisPoolSize, err := intEnv("REDIS_POOL_SIZE", 20)
+	if err != nil {
+		return nil, err
+	}
+	redisDialTimeout, err := durationEnv("REDIS_DIAL_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	redisReadTimeout, err := durationEnv("REDIS_READ_TIMEOUT_SECONDS", 2, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	sessionIdleTTL, err := durationEnv("SESSION_IDLE_TTL_HOURS", 168, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	sessionAbsoluteTTL, err := durationEnv("SESSION_ABSOLUTE_TTL_HOURS", 720, time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -447,10 +473,6 @@ func Load() (*Config, error) {
 			HealthCheckPeriod: healthCheckPeriod,
 		},
 		Auth: AuthConfig{
-			JWTSecret:            os.Getenv("JWT_SECRET_KEY"),
-			JWTIssuer:            stringEnv("JWT_ISSUER", "paysplit-backend"),
-			AccessTokenTTL:       accessTokenTTL,
-			RefreshTokenTTL:      refreshTTL,
 			EmailVerificationTTL: verificationTTL,
 			PasswordResetTTL:     resetTTL,
 			EmailVerificationURL: os.Getenv("AUTH_EMAIL_VERIFICATION_URL"),
@@ -466,6 +488,14 @@ func Load() (*Config, error) {
 			FetchCooldown:     riverFetchCooldown,
 			PollOnly:          boolEnv("RIVER_POLL_ONLY", false),
 			FetchPollInterval: riverFetchPollInterval,
+		},
+		Redis: RedisConfig{
+			URL:         os.Getenv("REDIS_URL"),
+			PoolSize:    redisPoolSize,
+			DialTimeout: redisDialTimeout,
+			ReadTimeout: redisReadTimeout,
+			IdleTTL:     sessionIdleTTL,
+			AbsoluteTTL: sessionAbsoluteTTL,
 		},
 		Group: GroupConfig{
 			InviteBaseURL:    os.Getenv("APP_INVITE_BASE_URL"),
@@ -554,16 +584,7 @@ func (c *Config) Validate() error {
 	if c.Database.MaxConnLifetime <= 0 || c.Database.MaxConnIdleTime <= 0 || c.Database.HealthCheckPeriod <= 0 {
 		return errors.New("database duration settings must be positive")
 	}
-	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
-		return errors.New("JWT_SECRET_KEY must not be empty")
-	}
-	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
-		return errors.New("JWT_ISSUER must not be empty")
-	}
-	if c.Auth.AccessTokenTTL != 15*time.Minute {
-		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
-	}
-	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
+	if c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
 		return errors.New("auth TTL settings must match the v1 contract")
 	}
 	if strings.TrimSpace(c.Auth.EmailVerificationURL) == "" || strings.TrimSpace(c.Auth.PasswordResetURL) == "" {
@@ -595,6 +616,35 @@ func (c *Config) Validate() error {
 	}
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
+	}
+	if strings.TrimSpace(c.Redis.URL) == "" {
+		return errors.New("REDIS_URL must not be empty")
+	}
+	if redisURL, err := url.Parse(strings.TrimSpace(c.Redis.URL)); err != nil || (redisURL.Scheme != "redis" && redisURL.Scheme != "rediss") || redisURL.Host == "" {
+		return errors.New("REDIS_URL must be a redis:// or rediss:// URL with a host")
+	}
+	if c.Redis.PoolSize <= 0 {
+		return errors.New("REDIS_POOL_SIZE must be positive")
+	}
+	if c.Redis.DialTimeout <= 0 || c.Redis.ReadTimeout <= 0 {
+		return errors.New("REDIS_DIAL_TIMEOUT_SECONDS and REDIS_READ_TIMEOUT_SECONDS must be positive")
+	}
+	if c.Redis.IdleTTL <= 0 {
+		return errors.New("SESSION_IDLE_TTL_HOURS must be positive")
+	}
+	if c.Redis.AbsoluteTTL <= 0 {
+		return errors.New("SESSION_ABSOLUTE_TTL_HOURS must be positive")
+	}
+	// TTL trượt được gia hạn mỗi request; nếu nó vượt trần tuyệt đối thì trần
+	// không còn tác dụng và phiên sống mãi khi người dùng mở app đều đặn.
+	if c.Redis.IdleTTL > c.Redis.AbsoluteTTL {
+		return errors.New("SESSION_IDLE_TTL_HOURS must not exceed SESSION_ABSOLUTE_TTL_HOURS")
+	}
+	// Hàng audit trong `sessions` được đặt expires_at = now + AbsoluteTTL, và worker
+	// dọn rác xoá khi COALESCE(revoked_at, expires_at) < now - Retention. Retention
+	// ngắn hơn khoảng chênh này sẽ xoá mất bản ghi của phiên vẫn còn sống trên Redis.
+	if c.Cleanup.Retention < c.Redis.AbsoluteTTL-c.Redis.IdleTTL {
+		return errors.New("AUTH_RECORD_RETENTION_DAYS must cover SESSION_ABSOLUTE_TTL_HOURS minus SESSION_IDLE_TTL_HOURS so audit rows outlive live sessions")
 	}
 	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
 	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {

@@ -239,23 +239,22 @@ func TestPostgresRepository_GetAndClearActiveFCMToken(t *testing.T) {
 
 	user := createTestUser(t, ctx, pool, cleanup, "FCM Token User")
 
-	// No session yet -> empty token, no error
+	// No device registered yet -> empty token, no error
 	token, err := repo.GetActiveFCMTokenByUserID(ctx, user)
 	if err != nil {
 		t.Fatalf("get active fcm token: %v", err)
 	}
 	if token != "" {
-		t.Errorf("expected empty token for user without session, got %s", token)
+		t.Errorf("expected empty token for user without a registered device, got %s", token)
 	}
 
-	// Insert active session with fcm_token
 	fcmTok := "fcm-device-sample-token-12345"
 	_, err = pool.Exec(ctx, `
-		INSERT INTO sessions (user_id, device_id, fcm_token, issued_at, expires_at)
-		VALUES ($1, gen_random_uuid(), $2, now(), now() + interval '7 days')
+		INSERT INTO device_tokens (user_id, device_id, fcm_token)
+		VALUES ($1, gen_random_uuid(), $2)
 	`, user, fcmTok)
 	if err != nil {
-		t.Fatalf("insert session: %v", err)
+		t.Fatalf("insert device token: %v", err)
 	}
 
 	// Verify token retrieved
@@ -280,9 +279,10 @@ func TestPostgresRepository_GetAndClearActiveFCMToken(t *testing.T) {
 }
 
 // TestPostgresRepository_ClearFCMToken_ScopedToUser pins the fix for a token being cleared for
-// every session holding that value, not only the caller's user. Two different app installs can
+// every row holding that value, not only the caller's user. Two different app installs can
 // legitimately share the same FCM registration token (e.g. sign-out on user A, sign-in as user B
 // on the same phone), so clearing must be scoped to the user the worker is currently processing.
+// That is why device_tokens deliberately has no unique index on fcm_token alone.
 func TestPostgresRepository_ClearFCMToken_ScopedToUser(t *testing.T) {
 	pool := testPool(t)
 	cleanup := newCleanup(t, pool)
@@ -295,11 +295,11 @@ func TestPostgresRepository_ClearFCMToken_ScopedToUser(t *testing.T) {
 	sharedTok := "fcm-shared-device-token"
 	for _, uid := range []string{user1, user2} {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO sessions (user_id, device_id, fcm_token, issued_at, expires_at)
-			VALUES ($1, gen_random_uuid(), $2, now(), now() + interval '7 days')
+			INSERT INTO device_tokens (user_id, device_id, fcm_token)
+			VALUES ($1, gen_random_uuid(), $2)
 		`, uid, sharedTok)
 		if err != nil {
-			t.Fatalf("insert session: %v", err)
+			t.Fatalf("insert device token: %v", err)
 		}
 	}
 

@@ -47,6 +47,7 @@ func (q *Queries) CountActiveSessionsByUserID(ctx context.Context, userID pgtype
 }
 
 const createAdminAuditLog = `-- name: CreateAdminAuditLog :one
+
 INSERT INTO admin_audit_logs (admin_id, target_user_id, action, reason)
 VALUES ($1, $2, $3, $4)
 RETURNING id, admin_id, target_user_id, action, reason, created_at
@@ -59,6 +60,10 @@ type CreateAdminAuditLogParams struct {
 	Reason       string      `json:"reason"`
 }
 
+// RevokeSessionsByUserID và RevokeRefreshTokensByUserID đã được gỡ bỏ.
+// Việc thu hồi phiên nằm ở UpdateAccountStatusWithRevocation, viết tay bằng raw SQL
+// vì nó cần RETURNING id để vừa phát pg_notify vừa xếp job dọn Redis trong cùng
+// transaction. Refresh token không còn tồn tại (spec 0011).
 func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) (AdminAuditLog, error) {
 	row := q.db.QueryRow(ctx, createAdminAuditLog,
 		arg.AdminID,
@@ -502,33 +507,6 @@ func (q *Queries) ListRecentAuditLogsByTargetUserID(ctx context.Context, targetU
 		return nil, err
 	}
 	return items, nil
-}
-
-const revokeRefreshTokensByUserID = `-- name: RevokeRefreshTokensByUserID :exec
-UPDATE session_refresh_tokens
-SET revoked_at = now()
-WHERE session_id IN (SELECT id FROM sessions WHERE user_id = $1) AND revoked_at IS NULL
-`
-
-func (q *Queries) RevokeRefreshTokensByUserID(ctx context.Context, userID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, revokeRefreshTokensByUserID, userID)
-	return err
-}
-
-const revokeSessionsByUserID = `-- name: RevokeSessionsByUserID :exec
-UPDATE sessions
-SET revoked_at = now(), revoked_reason = $1
-WHERE user_id = $2 AND revoked_at IS NULL
-`
-
-type RevokeSessionsByUserIDParams struct {
-	RevokedReason pgtype.Text `json:"revoked_reason"`
-	UserID        pgtype.UUID `json:"user_id"`
-}
-
-func (q *Queries) RevokeSessionsByUserID(ctx context.Context, arg RevokeSessionsByUserIDParams) error {
-	_, err := q.db.Exec(ctx, revokeSessionsByUserID, arg.RevokedReason, arg.UserID)
-	return err
 }
 
 const updateUserStatus = `-- name: UpdateUserStatus :one
