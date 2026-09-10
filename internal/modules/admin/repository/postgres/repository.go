@@ -43,8 +43,12 @@ type postgresRepository struct {
 // SessionPurgeEnqueuer đặt job dọn phiên Redis vào hàng đợi trong cùng transaction
 // thu hồi. Khai báo interface tại đây thay vì import trực tiếp module auth để giữ
 // hai module độc lập; bootstrap tiêm implementation thật.
+//
+// Port chỉ phơi ra biến thể vô điều kiện, vì module admin chỉ có đúng một đường
+// thu hồi là khóa hoặc đình chỉ tài khoản, và ở đó khớp SID là sai (xem spec
+// 0012). Biến thể khớp SID vẫn tồn tại và vẫn là mặc định cho các module khác.
 type SessionPurgeEnqueuer interface {
-	EnqueueTx(ctx context.Context, tx pgx.Tx, userID string, sids []string) error
+	EnqueueUnconditionalTx(ctx context.Context, tx pgx.Tx, userID string) error
 }
 
 // SetSessionPurgeEnqueuer nối backstop Redis vào repo. Theo đúng khuôn
@@ -341,8 +345,14 @@ func (r *postgresRepository) UpdateAccountStatusWithRevocation(ctx context.Conte
 		// hội tụ — nếu không, tài khoản bị khoá vẫn gọi được API tới hết TTL phiên.
 		// Kiểm nil trên INTERFACE, không phải trên con trỏ bên trong: repo dựng qua
 		// New() có sessionPurge là interface nil, và gọi method trên đó sẽ panic.
+		//
+		// VÔ ĐIỀU KIỆN, không truyền revokedSIDs. Danh sách đó rỗng ngay khi hàng
+		// audit đã revoked từ lần khóa trước, và một job khớp SID với danh sách rỗng
+		// không được enqueue — đúng ca khóa lại lại là ca không có backstop nào.
+		// Job thu hồi theo user thay vì theo SID; an toàn vì tài khoản không `active`
+		// không tạo được phiên mới. Xem spec 0012.
 		if r.sessionPurge != nil {
-			if err = r.sessionPurge.EnqueueTx(ctx, tx, targetUID.String(), revokedSIDs); err != nil {
+			if err = r.sessionPurge.EnqueueUnconditionalTx(ctx, tx, targetUID.String()); err != nil {
 				return nil, nil, nil, err
 			}
 		}

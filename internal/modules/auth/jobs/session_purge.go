@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
+
+	platformmetrics "paysplit-backend/internal/platform/metrics"
 )
 
 // SessionPurgeArgs là backstop bền vững cho việc thu hồi phiên trên Redis.
@@ -24,6 +26,18 @@ import (
 type SessionPurgeArgs struct {
 	UserID string   `json:"user_id"`
 	SIDs   []string `json:"sids"`
+	// Unconditional cho phép job thu hồi theo user mà không khớp SID.
+	//
+	// Mặc định là false, và mặc định đó mới là luật chung: khớp SID là thứ chặn
+	// một lần chạy trễ giết nhầm phiên mà người dùng vừa tạo lại (spec 0011 AC-12).
+	//
+	// Chỉ đường khóa và đình chỉ tài khoản bật cờ này, vì ở đó lệnh
+	// `UPDATE sessions ... WHERE revoked_at IS NULL RETURNING id` khớp không hàng
+	// nào khi tài khoản đã revoked từ trước, nên không có SID nào để mang theo và
+	// backstop sẽ không tồn tại. Bật được là vì `CreateSession` từ chối mọi user
+	// có status khác `active`, nên ở đường này không có phiên mới nào để giết nhầm.
+	// Xem spec 0012.
+	Unconditional bool `json:"unconditional,omitempty"`
 }
 
 func (SessionPurgeArgs) Kind() string { return "session_redis_purge" }
@@ -38,6 +52,9 @@ func (SessionPurgeArgs) InsertOpts() river.InsertOpts {
 // SessionRevoker là cổng tới kho phiên Redis.
 type SessionRevoker interface {
 	RevokeUserSIDs(ctx context.Context, userID string, sids []string) (bool, error)
+	// RevokeUser thu hồi phiên đang sống của user mà không khớp SID. Chỉ dùng cho
+	// job mang Unconditional.
+	RevokeUser(ctx context.Context, userID string) (bool, error)
 }
 
 type SessionPurgeWorker struct {
@@ -53,11 +70,32 @@ func NewSessionPurgeWorker(sessions SessionRevoker) *SessionPurgeWorker {
 }
 
 func (w *SessionPurgeWorker) Work(ctx context.Context, job *river.Job[SessionPurgeArgs]) error {
-	if job.Args.UserID == "" || len(job.Args.SIDs) == 0 {
+	if job.Args.UserID == "" {
 		return nil
 	}
-	revoked, err := w.sessions.RevokeUserSIDs(ctx, job.Args.UserID, job.Args.SIDs)
+	// Job khớp SID mà không có SID nào thì không có việc gì để làm; gọi xuống kho
+	// phiên với danh sách rỗng có nguy cơ bị hiểu thành "xoá tất cả".
+	if !job.Args.Unconditional && len(job.Args.SIDs) == 0 {
+		return nil
+	}
+	var (
+		revoked bool
+		err     error
+	)
+	if job.Args.Unconditional {
+		revoked, err = w.sessions.RevokeUser(ctx, job.Args.UserID)
+	} else {
+		revoked, err = w.sessions.RevokeUserSIDs(ctx, job.Args.UserID, job.Args.SIDs)
+	}
 	if err != nil {
+		// Lượt thử cuối: sau khi trả lỗi lần này River loại bỏ job và im lặng.
+		// Backstop hỏng ở đây nghĩa là một tài khoản đã bị khoá trong Postgres
+		// vẫn còn phiên sống trên Redis và không còn cơ chế nào dọn nó — phải
+		// phát tín hiệu cho người vận hành thay vì để mất trong im lặng.
+		if job.Attempt >= job.MaxAttempts {
+			platformmetrics.SessionPurgeExhaustedTotal.Inc()
+			log.Printf("event=session_purge_exhausted user_id=%s sids=%d attempt=%d err=%v", job.Args.UserID, len(job.Args.SIDs), job.Attempt, err)
+		}
 		return fmt.Errorf("purge redis sessions: %w", err)
 	}
 	if revoked {
@@ -78,11 +116,27 @@ func NewSessionPurgeEnqueuer(client *river.Client[pgx.Tx]) *SessionPurgeEnqueuer
 }
 
 func (e *SessionPurgeEnqueuer) EnqueueTx(ctx context.Context, tx pgx.Tx, userID string, sids []string) error {
-	if e == nil || e.client == nil || userID == "" || len(sids) == 0 {
+	return e.enqueue(ctx, tx, SessionPurgeArgs{UserID: userID, SIDs: sids})
+}
+
+// EnqueueUnconditionalTx đặt job thu hồi theo user, không khớp SID.
+//
+// Tồn tại riêng vì EnqueueTx cố ý thoát sớm khi danh sách SID rỗng, và chính chỗ
+// thoát sớm đó làm lần khóa tài khoản thứ hai không để lại backstop nào: lệnh
+// UPDATE khớp không hàng nào nên không có SID để mang theo. Chỉ đường khóa và
+// đình chỉ được gọi hàm này. Xem spec 0012.
+func (e *SessionPurgeEnqueuer) EnqueueUnconditionalTx(ctx context.Context, tx pgx.Tx, userID string) error {
+	return e.enqueue(ctx, tx, SessionPurgeArgs{UserID: userID, Unconditional: true})
+}
+
+func (e *SessionPurgeEnqueuer) enqueue(ctx context.Context, tx pgx.Tx, args SessionPurgeArgs) error {
+	if e == nil || e.client == nil || args.UserID == "" {
 		return nil
 	}
-	_, err := e.client.InsertTx(ctx, tx, SessionPurgeArgs{UserID: userID, SIDs: sids}, nil)
-	if err != nil {
+	if !args.Unconditional && len(args.SIDs) == 0 {
+		return nil
+	}
+	if _, err := e.client.InsertTx(ctx, tx, args, nil); err != nil {
 		return fmt.Errorf("enqueue session purge: %w", err)
 	}
 	return nil

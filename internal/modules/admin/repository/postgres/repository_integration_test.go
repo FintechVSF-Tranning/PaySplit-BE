@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"paysplit-backend/internal/modules/admin/domain"
@@ -233,5 +234,109 @@ func TestGetSystemOverview_MediaCleanupCountsOnlyPendingJobs(t *testing.T) {
 	if delta != 1 {
 		t.Fatalf("expected pending_jobs_count to increase by 1 (only the still-pending job), got delta %d (before=%d, after=%d)",
 			delta, before.MediaCleanup.PendingJobsCount, after.MediaCleanup.PendingJobsCount)
+	}
+}
+
+// spyPurgeEnqueuer ghi lại từng lần backstop được đặt vào hàng đợi, để test thấy
+// được điều mà một mock repository không thấy: transaction thật có gọi enqueue hay
+// không, ở đúng những transition nào.
+type spyPurgeEnqueuer struct {
+	calls   int
+	userIDs []string
+}
+
+func (s *spyPurgeEnqueuer) EnqueueUnconditionalTx(_ context.Context, _ pgx.Tx, userID string) error {
+	s.calls++
+	s.userIDs = append(s.userIDs, userID)
+	return nil
+}
+
+// Đây là ca mà lỗ hổng nằm ở: khóa một tài khoản mà hàng `sessions` đã revoked từ
+// trước. Lệnh `UPDATE sessions ... WHERE revoked_at IS NULL RETURNING id` khớp
+// không hàng nào, nên trước bản sửa này danh sách SID rỗng làm enqueue thoát sớm
+// và KHÔNG job backstop nào tồn tại. Lệnh xoá Redis đồng bộ ở tầng usecase khi đó
+// là cơ chế duy nhất, không có gì retry phía sau nếu nó hỏng.
+//
+// Test dùng repository thật trên Postgres thật, vì mock repository ở tầng usecase
+// không phản ánh được hành vi thoát sớm này.
+//
+// covers: spec 0012 Requirements 1
+func TestUpdateAccountStatusWithRevocation_RepeatLockStillEnqueuesTheBackstop(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+
+	adminID := seedTestUser(t, pool, "admin.repeatlock.test@example.invalid", "+84900000021", "admin", "active")
+	targetID := seedTestUser(t, pool, "target.repeatlock.test@example.invalid", "+84900000022", "user", "active")
+	cleanupAuditLogsFor(t, pool, adminID, targetID)
+	seedTestSession(t, pool, targetID)
+
+	repo := New(pool)
+	spy := &spyPurgeEnqueuer{}
+	SetSessionPurgeEnqueuer(repo, spy)
+
+	lock := func(reason string) {
+		t.Helper()
+		if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+			TargetUserID: targetID,
+			AdminID:      adminID,
+			NewStatus:    "locked",
+			Reason:       reason,
+		}); err != nil {
+			t.Fatalf("khóa tài khoản lỗi: %v", err)
+		}
+	}
+
+	lock("lần khóa đầu")
+	if spy.calls != 1 {
+		t.Fatalf("sau lần khóa đầu, enqueue được gọi %d lần, want 1", spy.calls)
+	}
+
+	// Xác nhận đã ở đúng trạng thái lỗ hổng: không còn hàng sessions nào chưa revoke.
+	var live int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL`, targetID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Fatalf("còn %d hàng sessions chưa revoke; test không dựng được ca khóa lại", live)
+	}
+
+	lock("lần khóa thứ hai, không hàng sessions nào khớp")
+	if spy.calls != 2 {
+		t.Fatalf("sau lần khóa thứ hai, enqueue được gọi %d lần, want 2: khóa lại phải để lại backstop, nếu không lệnh Redis đồng bộ không có gì retry phía sau", spy.calls)
+	}
+	for _, got := range spy.userIDs {
+		if got != targetID {
+			t.Fatalf("enqueue nhận user_id %q, want %q", got, targetID)
+		}
+	}
+}
+
+// Mở lại tài khoản không phải là thu hồi, nên không được để lại job nào. Một job
+// thu hồi vô điều kiện chạy sau khi tài khoản đã mở lại sẽ giết đúng phiên mà
+// người dùng vừa đăng nhập.
+//
+// covers: spec 0012 Requirements 4
+func TestUpdateAccountStatusWithRevocation_ReactivateEnqueuesNothing(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+
+	adminID := seedTestUser(t, pool, "admin.reactivate.test@example.invalid", "+84900000023", "admin", "active")
+	targetID := seedTestUser(t, pool, "target.reactivate.test@example.invalid", "+84900000024", "user", "locked")
+	cleanupAuditLogsFor(t, pool, adminID, targetID)
+
+	repo := New(pool)
+	spy := &spyPurgeEnqueuer{}
+	SetSessionPurgeEnqueuer(repo, spy)
+
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+		TargetUserID: targetID,
+		AdminID:      adminID,
+		NewStatus:    "active",
+		Reason:       "mở lại",
+	}); err != nil {
+		t.Fatalf("mở lại tài khoản lỗi: %v", err)
+	}
+	if spy.calls != 0 {
+		t.Fatalf("enqueue được gọi %d lần khi mở lại tài khoản, want 0", spy.calls)
 	}
 }

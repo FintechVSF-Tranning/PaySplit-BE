@@ -13,11 +13,13 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	goredis "github.com/redis/go-redis/v9"
 
 	"paysplit-backend/internal/config"
 )
@@ -241,5 +243,57 @@ func TestPing_RespectsAContextThatIsAlreadyCancelled(t *testing.T) {
 	// Readiness probe có deadline; Ping phải bỏ cuộc theo context thay vì treo.
 	if err := client.Ping(ctx); err == nil {
 		t.Fatal("Ping với context đã huỷ trả nil, want lỗi")
+	}
+}
+
+// stubConfigGetter trả về đúng phản hồi mà một Redis thật sẽ trả cho CONFIG GET.
+type stubConfigGetter struct {
+	values map[string]string
+	err    error
+}
+
+func (s stubConfigGetter) ConfigGet(_ context.Context, _ string) *goredis.MapStringStringCmd {
+	return goredis.NewMapStringStringResult(s.values, s.err)
+}
+
+// Chính sách trục xuất là dành cho cache. Với kho phiên nó xoá phiên của người ít
+// hoạt động khi đầy bộ nhớ, tạo ra đăng xuất ngẫu nhiên không log và không tái
+// hiện được. Spec 0011 Follow up 4.
+func TestVerifyEvictionPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		stub    stubConfigGetter
+		wantErr bool
+	}{
+		{name: "noeviction được chấp nhận", stub: stubConfigGetter{values: map[string]string{"maxmemory-policy": "noeviction"}}},
+		{name: "hoa thường không quan trọng", stub: stubConfigGetter{values: map[string]string{"maxmemory-policy": "NoEviction"}}},
+		{name: "allkeys-lru bị từ chối", stub: stubConfigGetter{values: map[string]string{"maxmemory-policy": "allkeys-lru"}}, wantErr: true},
+		{name: "volatile-ttl bị từ chối", stub: stubConfigGetter{values: map[string]string{"maxmemory-policy": "volatile-ttl"}}, wantErr: true},
+		// Redis được quản lý thường chặn CONFIG GET. Ở đó không đọc được không
+		// đồng nghĩa cấu hình sai, nên chặn khởi động sẽ là dương tính giả.
+		{name: "không đọc được thì đi tiếp", stub: stubConfigGetter{err: errors.New("ERR unknown command `config`")}},
+		{name: "phản hồi thiếu key thì đi tiếp", stub: stubConfigGetter{values: map[string]string{}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := verifyEvictionPolicy(context.Background(), tt.stub)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("verifyEvictionPolicy = nil: một chính sách trục xuất được chấp nhận cho kho phiên")
+				}
+				if !strings.Contains(err.Error(), "noeviction") {
+					t.Fatalf("lỗi = %q, muốn nêu giá trị đúng cần đặt", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("verifyEvictionPolicy lỗi bất ngờ: %v", err)
+			}
+		})
 	}
 }

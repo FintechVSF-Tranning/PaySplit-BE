@@ -21,7 +21,7 @@ _These are recommendations to keep the build orderly. You decide when a feature 
 | 8   | Connection efficient events          | Slice 8 | in-progress |
 | 9   | User realtime stream v1              | Slice 9 | in-progress |
 | 10  | Auth and account v2                  | Slice 10 | done        |
-| 11  | Session revocation hardening         | Slice 10 | planned     |
+| 11  | Session revocation hardening         | Slice 10 | in-progress |
 
 ## Slice 1: Identity and account
 
@@ -256,23 +256,25 @@ Succeed the session mechanism from Auth and account v1 by replacing JWT access t
 
 Spec [0011](../specs/0011-redis-session-auth/index.md) · code in `internal/platform/redis/`, `internal/platform/session/`, `internal/modules/auth/`, `internal/modules/admin/`, `internal/transport/http/middleware/`, `internal/config/`, and `internal/bootstrap/`, with companion Flutter work in the PaySplit-FE repository under `lib/core/network/` and `lib/core/realtime/`
 
-### 11. Session revocation hardening · planned · from spec 0011
+### 11. Session revocation hardening · in-progress · from spec 0011
 
 Close the four security and operational gaps that the spec 0011 review found in shipped code, so account suspension enforces reliably and a Redis blip does not sign every user out for good.
 
 **Done when:** a repeated account lock revokes the live session even when no `sessions` row matches, infrastructure errors return 503 instead of 401 and the app keeps the credential, an exhausted purge job raises an alert, and the Redis password plus eviction policy are enforced rather than assumed.
 
-- [ ] Build it: `/develop session revocation hardening`
-  - [ ] Unconditional per user revocation on the admin lock path, keeping sid matching for the retry path (spec 0011 Follow up 1)
-  - [ ] Split infrastructure failure from authentication failure in the middleware and the Flutter 401 rule (spec 0011 Follow up 2)
-  - [ ] Alert and metric on purge job exhaustion (spec 0011 Follow up 3)
-  - [ ] Enforce the Redis credential requirement and the `noeviction` policy at bootstrap (spec 0011 Follow up 4)
-- [ ] Verify it: `/check verify session revocation hardening`
-- [ ] Test it: `/test session revocation hardening`
-- [ ] Review it (fresh model): `/check review session revocation hardening`
-- [ ] Document it: `/document session revocation hardening`
+- [x] Build it: `/develop session revocation hardening`
+  - [x] Unconditional per user revocation on the admin lock path, keeping sid matching for the retry path (spec 0011 Follow up 1)
+  - [x] Split infrastructure failure from authentication failure in the middleware and the Flutter 401 rule (spec 0011 Follow up 2)
+  - [x] Alert and metric on purge job exhaustion (spec 0011 Follow up 3)
+  - [x] Enforce the Redis credential requirement and the `noeviction` policy at bootstrap (spec 0011 Follow up 4)
+  - [x] Fail closed on an unset `APP_ENV` so the Redis credential rule cannot be skipped by omission (gap found by `/check verify`)
+  - [x] Enqueue the durable purge backstop on every lock and suspend, not only when a `sessions` row matched (Major finding from `/check review`; assumed decision, spec 0012)
+- [x] Verify it: `/check verify session revocation hardening`
+- [x] Test it: `/test session revocation hardening`
+- [x] Review it (fresh model): `/check review session revocation hardening`
+- [x] Document it: `/document session revocation hardening`
 
-Spec [0011](../specs/0011-redis-session-auth/index.md) Risks 5 to 8 and Follow up 1 to 4 · code in `internal/modules/admin/`, `internal/transport/http/middleware/`, `internal/modules/auth/jobs/`, `internal/config/`, and `internal/platform/redis/`
+Spec [0011](../specs/0011-redis-session-auth/index.md) Risks 5 to 8 and Follow up 1 to 4, plus assumed decision [0012](../specs/0012-lock-path-unconditional-purge.md) (owes ratification) · code in `internal/modules/admin/`, `internal/transport/http/middleware/`, `internal/modules/auth/jobs/`, `internal/platform/metrics/`, `internal/config/`, `internal/platform/redis/`, and `internal/bootstrap/`
 
 ## Deferred
 

@@ -86,7 +86,13 @@ func New(ctx context.Context) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	log.Printf("[Config] Loaded environment: %s (host: %s, port: %s)", cfg.App.Environment, cfg.App.Host, cfg.App.Port)
+	// APP_ENV chưa đặt là một trạng thái hợp lệ và có nghĩa là "không phải
+	// development", nên log phải nói thẳng chứ không in ra chuỗi rỗng khó hiểu.
+	environment := cfg.App.Environment
+	if environment == "" {
+		environment = "(unset, treated as not development)"
+	}
+	log.Printf("[Config] Loaded environment: %s (host: %s, port: %s)", environment, cfg.App.Host, cfg.App.Port)
 
 	// 2. Mở pool kết nối PostgreSQL dùng chung cho toàn bộ ứng dụng
 	db, err := database.NewPostgresPool(ctx, cfg.Database)

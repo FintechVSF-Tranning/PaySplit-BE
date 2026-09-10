@@ -207,3 +207,54 @@ func TestRecordSettlementWorkerRun_AC10IncrementsWorkerOutcome(t *testing.T) {
 		t.Fatalf("settlement worker counter=%v, want %v", got, before+1)
 	}
 }
+
+// Tên metric là hợp đồng với alert rule của người vận hành. Đổi tên nó sẽ làm
+// alert im lặng ngừng kêu, và đây là alert duy nhất báo rằng backstop thu hồi
+// phiên đã hỏng: một tài khoản bị khoá trong Postgres vẫn còn phiên sống trên
+// Redis. Test này khoá lại đúng chuỗi mà alert khớp vào.
+//
+// covers: spec 0011 Follow up 3
+func TestSessionPurgeExhaustedMetricIsExportedUnderItsAlertName(t *testing.T) {
+	const alertName = "paysplit_session_purge_exhausted_total"
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+
+	var found *dto.MetricFamily
+	for _, family := range families {
+		if family.GetName() == alertName {
+			found = family
+			break
+		}
+	}
+	if found == nil {
+		names := make([]string, 0, len(families))
+		for _, family := range families {
+			names = append(names, family.GetName())
+		}
+		t.Fatalf("metric %q không có mặt trên /metrics; alert của backstop sẽ không bao giờ kêu. Đang export: %v", alertName, names)
+	}
+	if found.GetType() != dto.MetricType_COUNTER {
+		t.Fatalf("%s có type %v, want COUNTER: alert dùng increase() nên nó phải đơn điệu tăng", alertName, found.GetType())
+	}
+	if len(found.GetMetric()) != 1 || len(found.GetMetric()[0].GetLabel()) != 0 {
+		t.Fatalf("%s phải là một series duy nhất không nhãn, alert không cần chia theo chiều nào cả", alertName)
+	}
+	if help := found.GetHelp(); help == "" {
+		t.Fatalf("%s thiếu HELP; người trực đêm đọc dòng đó để biết phải làm gì", alertName)
+	}
+}
+
+// Counter phải thực sự tăng khi được gọi. Một metric đăng ký đúng tên nhưng
+// không bao giờ nhúc nhích thì alert vẫn im lặng y như khi nó không tồn tại.
+//
+// covers: spec 0011 Follow up 3
+func TestSessionPurgeExhaustedTotal_Increments(t *testing.T) {
+	before := testutil.ToFloat64(metrics.SessionPurgeExhaustedTotal)
+	metrics.SessionPurgeExhaustedTotal.Inc()
+	if got := testutil.ToFloat64(metrics.SessionPurgeExhaustedTotal); got != before+1 {
+		t.Fatalf("counter = %v, want %v", got, before+1)
+	}
+}

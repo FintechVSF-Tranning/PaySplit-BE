@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadAuthDefaults(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "DB_APPLICATION_NAME": "paysplit-api", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "RIVER_FETCH_COOLDOWN_MS": "100", "RIVER_FETCH_POLL_INTERVAL_MS": "1000", "RIVER_POLL_ONLY": "false"}
+	values := map[string]string{"APP_ENV": "development", "HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "DB_APPLICATION_NAME": "paysplit-api", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "RIVER_FETCH_COOLDOWN_MS": "100", "RIVER_FETCH_POLL_INTERVAL_MS": "1000", "RIVER_POLL_ONLY": "false"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -31,7 +31,7 @@ func TestLoadAuthDefaults(t *testing.T) {
 }
 
 func TestLoadPrefersPlatformPortOverHTTPPort(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "HTTP_HOST": "0.0.0.0", "HTTP_PORT": "8080", "PORT": "36015", "HTTP_ADDRESS": ""}
+	values := map[string]string{"APP_ENV": "development", "HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join", "HTTP_HOST": "0.0.0.0", "HTTP_PORT": "8080", "PORT": "36015", "HTTP_ADDRESS": ""}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -191,7 +191,7 @@ func TestValidateRejectsInvalidConnectionEfficientEventSettings(t *testing.T) {
 }
 
 func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
-	values := map[string]string{"HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
+	values := map[string]string{"APP_ENV": "development", "HTTP_CORS_ALLOWED_ORIGINS": "http://localhost:3000", "DATABASE_URL": "postgres://local/test", "REDIS_URL": "redis://localhost:6380/0", "AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10", "AUTH_PASSWORD_RESET_TTL_MINUTES": "10", "AUTH_EMAIL_VERIFICATION_URL": "paysplit://verify-email", "AUTH_PASSWORD_RESET_URL": "paysplit://reset-password", "SMTP_USERNAME": "owner@gmail.com", "SMTP_APP_PASSWORD": "app-password", "CLOUDINARY_CLOUD_NAME": "test", "CLOUDINARY_API_KEY": "test", "CLOUDINARY_API_SECRET": "test", "APP_INVITE_BASE_URL": "https://paysplit.app/join"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
@@ -255,9 +255,117 @@ func TestValidateRejectsBadRealtimeMinAppVersion(t *testing.T) {
 	}
 }
 
+// Lỗ hổng thật nằm ở tầng Load, không phải Validate: trước đây APP_ENV chưa đặt
+// được stringEnv biến thành "development", nên luật bắt buộc mật khẩu Redis tự
+// tắt. Một lần deploy quên đặt biến là quay lại đúng chỗ cũ. Test này chạy qua
+// Load để khóa lại đường đi thật, chứ không dựng Config bằng tay.
+func TestLoadTreatsUnsetAppEnvAsNotDevelopment(t *testing.T) {
+	base := map[string]string{
+		"HTTP_CORS_ALLOWED_ORIGINS":           "http://localhost:3000",
+		"DATABASE_URL":                        "postgres://local/test",
+		"AUTH_EMAIL_VERIFICATION_TTL_MINUTES": "10",
+		"AUTH_PASSWORD_RESET_TTL_MINUTES":     "10",
+		"AUTH_EMAIL_VERIFICATION_URL":         "paysplit://verify-email",
+		"AUTH_PASSWORD_RESET_URL":             "paysplit://reset-password",
+		"SMTP_USERNAME":                       "owner@gmail.com",
+		"SMTP_APP_PASSWORD":                   "app-password",
+		"CLOUDINARY_CLOUD_NAME":               "test",
+		"CLOUDINARY_API_KEY":                  "test",
+		"CLOUDINARY_API_SECRET":               "test",
+		"APP_INVITE_BASE_URL":                 "https://paysplit.app/join",
+	}
+
+	tests := []struct {
+		name     string
+		appEnv   string
+		redisURL string
+		wantErr  bool
+	}{
+		{name: "APP_ENV chưa đặt, Redis không mật khẩu", appEnv: "", redisURL: "redis://localhost:6380/0", wantErr: true},
+		{name: "APP_ENV chưa đặt, Redis có mật khẩu", appEnv: "", redisURL: "redis://:secret@localhost:6380/0"},
+		{name: "development tường minh vẫn được nới", appEnv: "development", redisURL: "redis://localhost:6380/0"},
+		{name: "production, Redis không mật khẩu", appEnv: "production", redisURL: "redis://localhost:6380/0", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range base {
+				t.Setenv(key, value)
+			}
+			// t.Setenv với chuỗi rỗng đặt biến thành rỗng, và stringEnv coi rỗng
+			// như chưa đặt, nên đây đúng là ca "quên đặt APP_ENV".
+			t.Setenv("APP_ENV", tt.appEnv)
+			t.Setenv("REDIS_URL", tt.redisURL)
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Load() = nil: một Redis không mật khẩu được chấp nhận khi APP_ENV không phải development")
+				}
+				if !strings.Contains(err.Error(), "REDIS_URL") {
+					t.Fatalf("Load() error = %v, muốn nêu tên REDIS_URL", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() lỗi bất ngờ: %v", err)
+			}
+			if cfg.App.Environment != tt.appEnv {
+				t.Fatalf("Environment = %q, want %q: Load không được tự điền mặc định nào cho APP_ENV", cfg.App.Environment, tt.appEnv)
+			}
+		})
+	}
+}
+
+// Redis giữ toàn bộ phiên đăng nhập ở dạng dùng được ngay, nên một instance
+// không mật khẩu là toàn bộ tài khoản bị phơi ra cho bất kỳ ai nối được tới port.
+// Spec 0011 Follow up 4.
+func TestValidateRequiresRedisPasswordOutsideDevelopment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		environment string
+		redisURL    string
+		wantErr     bool
+	}{
+		{name: "production không mật khẩu bị từ chối", environment: "production", redisURL: "redis://redis.internal:6379/0", wantErr: true},
+		{name: "production userinfo chỉ có username bị từ chối", environment: "production", redisURL: "redis://appuser@redis.internal:6379/0", wantErr: true},
+		{name: "production mật khẩu rỗng bị từ chối", environment: "production", redisURL: "redis://:@redis.internal:6379/0", wantErr: true},
+		{name: "production có mật khẩu được chấp nhận", environment: "production", redisURL: "redis://:secret@redis.internal:6379/0"},
+		{name: "staging cũng bị ràng buộc", environment: "staging", redisURL: "redis://redis.internal:6379/0", wantErr: true},
+		{name: "environment rỗng fail closed", environment: "", redisURL: "redis://redis.internal:6379/0", wantErr: true},
+		{name: "development được nới", environment: "development", redisURL: "redis://localhost:6380/0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			cfg.App.Environment = tt.environment
+			cfg.Redis.URL = tt.redisURL
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Validate() = nil: REDIS_URL không mật khẩu được chấp nhận ngoài development")
+				}
+				if !strings.Contains(err.Error(), "REDIS_URL") {
+					t.Fatalf("Validate() error = %v, muốn nêu tên REDIS_URL để người vận hành biết sửa ở đâu", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() lỗi bất ngờ: %v", err)
+			}
+		})
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
-		App:        AppConfig{Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
+		App:        AppConfig{Environment: "development", Address: ":8080", RequestTimeout: 15 * time.Second, CORSAllowedOrigins: []string{"http://localhost"}, RateLimitRequestsPerMinute: 300, InviteAttemptsPerMinute: 30},
 		Database:   DatabaseConfig{URL: "postgres://local/test", ApplicationName: "paysplit-api", MaxConns: 10, MinConns: 1, MaxConnLifetime: time.Hour, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second},
 		Auth:       AuthConfig{EmailVerificationTTL: 10 * time.Minute, PasswordResetTTL: 10 * time.Minute, EmailVerificationURL: "paysplit://verify", PasswordResetURL: "paysplit://reset"},
 		SMTP:       SMTPConfig{Host: "smtp.gmail.com", Port: 587, Username: "owner@gmail.com", AppPassword: "app", FromName: "PaySplit", Timeout: 5 * time.Second},

@@ -453,7 +453,11 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		App: AppConfig{
-			Environment:                stringEnv("APP_ENV", "development"),
+			// KHÔNG dùng stringEnv với mặc định "development": mặc định đó biến
+			// luật bắt buộc mật khẩu Redis bên dưới thành tùy chọn, vì một lần
+			// deploy quên đặt APP_ENV sẽ tự nhận là môi trường phát triển và được
+			// nới. Để trống, và coi "trống" là KHÔNG phải development.
+			Environment:                strings.TrimSpace(os.Getenv("APP_ENV")),
 			Host:                       httpHost,
 			Port:                       httpPort,
 			Address:                    httpAddress,
@@ -553,6 +557,16 @@ func Load() (*Config, error) {
 
 // Validate từ chối cấu hình thiếu hoặc không nhất quán để startup thất bại
 // trước khi mở cổng mạng hoặc kết nối database.
+// isDevelopment cho biết tiến trình đang chạy ở môi trường phát triển cục bộ.
+// Dùng để nới các ràng buộc vận hành vốn bắt buộc ở mọi nơi khác.
+//
+// Chỉ APP_ENV được đặt TƯỜNG MINH là "development" mới được nới. Chưa đặt thì
+// không phải development: một ràng buộc vận hành mà mặc định là tắt thì không
+// phải ràng buộc, nó chỉ là lời nhắc mà lần deploy vội vàng nào cũng bỏ qua.
+func (c Config) isDevelopment() bool {
+	return strings.EqualFold(strings.TrimSpace(c.App.Environment), "development")
+}
+
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config must not be nil")
@@ -620,8 +634,21 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Redis.URL) == "" {
 		return errors.New("REDIS_URL must not be empty")
 	}
-	if redisURL, err := url.Parse(strings.TrimSpace(c.Redis.URL)); err != nil || (redisURL.Scheme != "redis" && redisURL.Scheme != "rediss") || redisURL.Host == "" {
+	redisURL, err := url.Parse(strings.TrimSpace(c.Redis.URL))
+	if err != nil || (redisURL.Scheme != "redis" && redisURL.Scheme != "rediss") || redisURL.Host == "" {
 		return errors.New("REDIS_URL must be a redis:// or rediss:// URL with a host")
+	}
+	// Redis giữ TOÀN BỘ phiên đăng nhập ở dạng dùng được ngay: ai nối được tới nó
+	// là đọc được mọi phiên và ghi được phiên mới. Mật khẩu đi vào qua userinfo của
+	// URL vì client chỉ gọi ParseURL — không có field mật khẩu riêng. Chỉ nới ở
+	// development, nơi Redis nằm sau loopback của docker-compose.
+	if !c.isDevelopment() {
+		if redisURL.User == nil {
+			return errors.New("REDIS_URL must carry a password in its userinfo outside development, for example redis://:secret@host:6379/0")
+		}
+		if password, ok := redisURL.User.Password(); !ok || strings.TrimSpace(password) == "" {
+			return errors.New("REDIS_URL userinfo must include a non-empty password outside development")
+		}
 	}
 	if c.Redis.PoolSize <= 0 {
 		return errors.New("REDIS_POOL_SIZE must be positive")

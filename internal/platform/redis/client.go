@@ -9,6 +9,8 @@ package redis
 import (
 	"context"
 	"fmt"
+	"log"
+	"strings"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -42,7 +44,44 @@ func New(ctx context.Context, cfg config.RedisConfig) (*Client, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("ping Redis: %w", err)
 	}
+	if err := verifyEvictionPolicy(ctx, client); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
 	return &Client{Client: client}, nil
+}
+
+// verifyEvictionPolicy từ chối khởi động khi Redis được cấu hình để trục xuất key.
+//
+// Chính sách kiểu `allkeys-lru` là dành cho cache. Với kho phiên nó âm thầm xoá
+// phiên của người ít hoạt động khi bộ nhớ đầy, tạo ra những lần đăng xuất ngẫu
+// nhiên không log và không tái hiện được — loại sự cố tốn hàng ngày để lần ra.
+// Chỉ `noeviction` là đúng: đầy bộ nhớ thì lệnh ghi phải lỗi ra mặt.
+//
+// Redis được quản lý (Upstash, ElastiCache) thường chặn CONFIG GET. Ở đó không
+// đọc được không có nghĩa là cấu hình sai, nên chỉ cảnh báo rồi đi tiếp; chỉ khi
+// đọc được VÀ giá trị sai mới dừng.
+// configGetter là bề mặt tối thiểu mà verifyEvictionPolicy cần, để kiểm tra được
+// cả hai nhánh mà không phải dựng một server RESP thật.
+type configGetter interface {
+	ConfigGet(ctx context.Context, parameter string) *goredis.MapStringStringCmd
+}
+
+func verifyEvictionPolicy(ctx context.Context, client configGetter) error {
+	values, err := client.ConfigGet(ctx, "maxmemory-policy").Result()
+	if err != nil {
+		log.Printf("event=redis_eviction_policy_unverified err=%v", err)
+		return nil
+	}
+	policy, ok := values["maxmemory-policy"]
+	if !ok {
+		log.Printf("event=redis_eviction_policy_unverified reason=absent_from_response")
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(policy), "noeviction") {
+		return fmt.Errorf("Redis maxmemory-policy is %q but the session store requires \"noeviction\"; any eviction policy silently signs users out", policy)
+	}
+	return nil
 }
 
 // Ping thoả interface probe của readiness handler.
