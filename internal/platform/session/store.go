@@ -187,3 +187,27 @@ func (s *RedisStore) RevokeUser(ctx context.Context, userID string) (bool, error
 	}
 	return revoked == 1, nil
 }
+
+// HasLiveSession cho biết user còn phiên đang sống hay không, hỏi Redis chứ
+// không hỏi Postgres.
+//
+// Vì sao cần: bảng `sessions` nay chỉ là bản ghi audit, và `expires_at` của nó
+// được đặt bằng trần tuyệt đối. Đếm hàng ở đó với điều kiện
+// `revoked_at IS NULL AND expires_at > now()` sẽ báo một phiên đã chết vì không
+// hoạt động từ ngày thứ tám là vẫn đang hoạt động cho tới ngày ba mươi. Redis là
+// nguồn phán quyết, nên câu hỏi này phải đi tới Redis.
+//
+// Mỗi user có tối đa một phiên sống, nên câu trả lời luôn là không hoặc một.
+func (s *RedisStore) HasLiveSession(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	live, err := hasLiveSessionScript.Run(ctx, s.client, []string{userPointerKey(userID)}).Int64()
+	if errors.Is(err, goredis.Nil) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check live session: %w", err)
+	}
+	return live == 1, nil
+}

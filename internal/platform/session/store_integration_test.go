@@ -202,3 +202,92 @@ func TestIntegrationScriptsSurviveRepeatedInvocation(t *testing.T) {
 		t.Fatalf("second sign-out must stay idempotent, got %v", fmt.Sprint(err))
 	}
 }
+
+// TestIntegrationHasLiveSessionAnswersFromBothKeys canh chỗ dễ sai nhất của
+// HasLiveSession: chỉ đọc con trỏ là chưa đủ.
+//
+// Con trỏ mang TTL tuyệt đối còn bản ghi phiên mang TTL trượt, nên có một khoảng
+// thời gian thật trong đó con trỏ còn sống mà phiên đã chết. Đó đúng là trạng
+// thái của người ngừng mở app từ ngày thứ tám, và là con số mà trang quản trị
+// từng báo sai.
+func TestIntegrationHasLiveSessionAnswersFromBothKeys(t *testing.T) {
+	store, client := integrationStore(t, 7*24*time.Hour, 30*24*time.Hour)
+	ctx := context.Background()
+	raw, sess := integrationSession(t, client)
+
+	t.Run("chưa đăng nhập bao giờ thì không có phiên", func(t *testing.T) {
+		live, err := store.HasLiveSession(ctx, sess.UserID)
+		if err != nil {
+			t.Fatalf("HasLiveSession: %v", err)
+		}
+		if live {
+			t.Fatal("want false khi user chưa từng đăng nhập")
+		}
+	})
+
+	if err := store.Create(ctx, raw, sess, time.Now()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	t.Run("vừa đăng nhập thì có phiên", func(t *testing.T) {
+		live, err := store.HasLiveSession(ctx, sess.UserID)
+		if err != nil {
+			t.Fatalf("HasLiveSession: %v", err)
+		}
+		if !live {
+			t.Fatal("want true ngay sau khi tạo phiên")
+		}
+	})
+
+	t.Run("con trỏ mồ côi không được tính là phiên sống", func(t *testing.T) {
+		// Mô phỏng đúng cảnh TTL trượt hết trước TTL tuyệt đối: xoá bản ghi phiên,
+		// giữ nguyên con trỏ.
+		if err := client.Del(ctx, "session:"+credentialHash(raw)).Err(); err != nil {
+			t.Fatalf("del session record: %v", err)
+		}
+		if n, err := client.Exists(ctx, "user_session:"+sess.UserID).Result(); err != nil || n != 1 {
+			t.Fatalf("con trỏ phải còn sống để test có nghĩa: exists=%d err=%v", n, err)
+		}
+
+		live, err := store.HasLiveSession(ctx, sess.UserID)
+		if err != nil {
+			t.Fatalf("HasLiveSession: %v", err)
+		}
+		if live {
+			t.Fatal("want false: con trỏ còn nhưng phiên đã chết, đếm nó là nói dối đúng bằng câu SQL cũ")
+		}
+	})
+
+	t.Run("đường đọc không được ghi", func(t *testing.T) {
+		// HasLiveSession vừa gặp một con trỏ mồ côi ở bước trên. Nó không được dọn:
+		// đây là đường đọc của trang quản trị, và revokeUserScript mới là nơi dọn.
+		n, err := client.Exists(ctx, "user_session:"+sess.UserID).Result()
+		if err != nil {
+			t.Fatalf("exists: %v", err)
+		}
+		if n != 1 {
+			t.Fatal("HasLiveSession đã xoá con trỏ: một lệnh đọc không được phép ghi")
+		}
+	})
+}
+
+// TestIntegrationHasLiveSessionIsScopedToOneUser: con số của user này không được
+// nhận nhầm phiên của user khác.
+func TestIntegrationHasLiveSessionIsScopedToOneUser(t *testing.T) {
+	store, client := integrationStore(t, 7*24*time.Hour, 30*24*time.Hour)
+	ctx := context.Background()
+	rawA, sessA := integrationSession(t, client)
+	_, sessB := integrationSession(t, client)
+
+	if err := store.Create(ctx, rawA, sessA, time.Now()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	live, err := store.HasLiveSession(ctx, sessB.UserID)
+	if err != nil {
+		t.Fatalf("HasLiveSession: %v", err)
+	}
+	if live {
+		t.Fatalf("want false cho user %s: chỉ user %s mới có phiên", sessB.UserID, sessA.UserID)
+	}
+}

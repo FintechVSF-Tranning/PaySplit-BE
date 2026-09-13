@@ -331,3 +331,9 @@ func (noopSessionRevoker) RevokeUserSIDs(context.Context, string, []string) (boo
 func (noopSessionRevoker) RevokeUser(context.Context, string) (bool, error) {
 	return false, nil
 }
+
+// HasLiveSession trả true vì các test ở đây kiểm hình dạng JSON, và
+// active_sessions_count nay được usecase lấy từ Redis chứ không từ repository.
+func (noopSessionRevoker) HasLiveSession(context.Context, string) (bool, error) {
+	return true, nil
+}

@@ -51,7 +51,11 @@ type mockSessionRevoker struct {
 	// đi qua đây, không qua RevokeUserSIDs.
 	revokeUserCalls  int
 	revokeUserUserID string
-	err              error
+	// hasLiveSession là câu trả lời giả của Redis cho GetAccountDetail, và
+	// hasLiveSessionUserID ghi lại user được hỏi.
+	hasLiveSession       bool
+	hasLiveSessionUserID string
+	err                  error
 }
 
 func (m *mockSessionRevoker) RevokeUserSIDs(ctx context.Context, userID string, sids []string) (bool, error) {
@@ -453,5 +457,86 @@ func TestUpdateAccountStatus_SurfacesRedisFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Redis hỏng nhưng UpdateAccountStatus trả nil: admin tưởng đã khoá xong")
+	}
+}
+
+// hasLiveSession giả lập câu trả lời của Redis cho GetAccountDetail. Mặc định là
+// false (zero value) để test nào quan tâm phải khai báo tường minh.
+func (m *mockSessionRevoker) HasLiveSession(ctx context.Context, userID string) (bool, error) {
+	m.hasLiveSessionUserID = userID
+	return m.hasLiveSession, m.err
+}
+
+// TestGetAccountDetailCountsSessionsFromRedisNotPostgres canh bất biến của spec
+// 0011: bảng `sessions` chỉ còn là bản ghi audit, nên không được đọc nó để trả
+// lời câu hỏi "user còn phiên sống không".
+//
+// Kịch bản chính là kịch bản đã sai trước khi sửa: người dùng đăng nhập rồi ngừng
+// mở app từ ngày thứ tám. Phiên trên Redis đã chết vì TTL trượt, nhưng hàng audit
+// mang `expires_at = now + 30 ngày` nên câu SQL cũ vẫn đếm nó là đang hoạt động.
+func TestGetAccountDetailCountsSessionsFromRedisNotPostgres(t *testing.T) {
+	userID := uuid.New().String()
+
+	tests := []struct {
+		name          string
+		postgresSays  int64
+		redisSaysLive bool
+		want          int64
+	}{
+		{
+			name:          "phiên chết vì không hoạt động, Postgres vẫn đếm là sống",
+			postgresSays:  1,
+			redisSaysLive: false,
+			want:          0,
+		},
+		{
+			name:          "phiên còn sống thật",
+			postgresSays:  1,
+			redisSaysLive: true,
+			want:          1,
+		},
+		{
+			name:          "hàng audit cũ chưa dọn vẫn không được cộng dồn",
+			postgresSays:  7,
+			redisSaysLive: true,
+			want:          1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockRepository{
+				getAccountDetailFn: func(ctx context.Context, id string) (*domain.AccountDetail, error) {
+					return &domain.AccountDetail{ActiveSessionsCount: tc.postgresSays}, nil
+				},
+			}
+			revoker := &mockSessionRevoker{hasLiveSession: tc.redisSaysLive}
+
+			detail, err := NewService(repo, revoker).GetAccountDetail(context.Background(), userID)
+			if err != nil {
+				t.Fatalf("GetAccountDetail: %v", err)
+			}
+			if detail.ActiveSessionsCount != tc.want {
+				t.Fatalf("active_sessions_count = %d, want %d: con số phải đến từ Redis, không phải từ bảng sessions", detail.ActiveSessionsCount, tc.want)
+			}
+			if revoker.hasLiveSessionUserID != userID {
+				t.Fatalf("Redis được hỏi về user %q, want %q", revoker.hasLiveSessionUserID, userID)
+			}
+		})
+	}
+}
+
+// TestGetAccountDetailSurfacesSessionStoreFailure: khi Redis lỗi, trang quản trị
+// phải báo lỗi chứ không được lặng lẽ hiển thị con số cũ của Postgres.
+func TestGetAccountDetailSurfacesSessionStoreFailure(t *testing.T) {
+	repo := &mockRepository{
+		getAccountDetailFn: func(ctx context.Context, id string) (*domain.AccountDetail, error) {
+			return &domain.AccountDetail{ActiveSessionsCount: 1}, nil
+		},
+	}
+	revoker := &mockSessionRevoker{err: errors.New("redis down")}
+
+	if _, err := NewService(repo, revoker).GetAccountDetail(context.Background(), uuid.New().String()); err == nil {
+		t.Fatal("want lỗi khi kho phiên hỏng, got nil: nuốt lỗi ở đây chỉ đổi một lỗi nhìn thấy được thành một con số nói dối")
 	}
 }

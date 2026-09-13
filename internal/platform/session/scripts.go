@@ -135,3 +135,22 @@ redis.call('DEL', 'session:' .. h)
 redis.call('DEL', KEYS[1])
 return 1
 `)
+
+// hasLiveSessionScript trả lời "user này còn phiên đang sống không".
+//
+// Phải kiểm CẢ HAI key chứ không chỉ con trỏ. Con trỏ mang TTL tuyệt đối (30
+// ngày) còn bản ghi phiên mang TTL trượt (7 ngày), nên một người ngừng mở app ở
+// ngày thứ tám để lại con trỏ sống thêm hai mươi hai ngày mà không còn phiên nào
+// phía sau. Đếm theo con trỏ khi đó nói dối đúng bằng cái mà câu SQL
+// `expires_at > now()` bên Postgres đang nói dối.
+//
+// Cố tình KHÔNG dọn con trỏ mồ côi ở đây: đây là đường ĐỌC của trang quản trị và
+// một lệnh đọc không được phép ghi. revokeUserScript đã dọn nó khi đi ngang qua.
+//
+// KEYS[1] = user_session:<user_id>
+var hasLiveSessionScript = goredis.NewScript(`
+local h = redis.call('GET', KEYS[1])
+if not h then return 0 end
+if redis.call('EXISTS', 'session:' .. h) == 0 then return 0 end
+return 1
+`)

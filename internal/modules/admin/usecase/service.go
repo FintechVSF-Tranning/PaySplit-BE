@@ -46,6 +46,11 @@ type SessionRevoker interface {
 	// dùng hàm này: danh sách SID đến từ Postgres nên nó chỉ chạm được những phiên
 	// mà Postgres còn tin là đang sống, trong khi Redis mới là nguồn phán quyết.
 	RevokeUser(ctx context.Context, userID string) (bool, error)
+	// HasLiveSession trả lời "user này còn phiên sống không". Đây là câu hỏi đọc,
+	// nhưng nó vẫn thuộc cổng này vì chỉ Redis trả lời đúng được: bảng `sessions`
+	// nay là audit và `expires_at` của nó mang trần tuyệt đối, nên đếm ở đó sẽ báo
+	// một phiên đã chết vì không hoạt động là vẫn đang sống.
+	HasLiveSession(ctx context.Context, userID string) (bool, error)
 }
 
 type Service struct {
@@ -149,7 +154,30 @@ func (s *Service) GetAccountDetail(ctx context.Context, userID string) (*domain.
 	if _, err := uuid.Parse(userID); err != nil {
 		return nil, domain.ErrInvalidInput
 	}
-	return s.repo.GetAccountDetail(ctx, userID)
+	detail, err := s.repo.GetAccountDetail(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	// Repository trả con số đếm từ Postgres, và con số đó sai kể từ khi Redis thành
+	// nguồn phán quyết: hàng audit mang `expires_at = now + trần tuyệt đối` (30
+	// ngày) trong khi phiên thật chết sau TTL trượt (7 ngày) nếu người dùng ngừng
+	// mở app. Hỏi lại Redis rồi ghi đè.
+	//
+	// Mỗi user có tối đa một phiên sống nên con số luôn là 0 hoặc 1.
+	//
+	// Lỗi Redis được trả thẳng ra ngoài thay vì lặng lẽ giữ số cũ: chính request
+	// này đã phải đi qua middleware xác thực vốn cũng đọc Redis, nên Redis chết thì
+	// quản trị viên không vào được tới đây. Nuốt lỗi ở đây chỉ đổi một lỗi nhìn
+	// thấy được thành một con số nói dối.
+	live, err := s.sessions.HasLiveSession(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	detail.ActiveSessionsCount = 0
+	if live {
+		detail.ActiveSessionsCount = 1
+	}
+	return detail, nil
 }
 
 // UpdateAccountStatus thực hiện thay đổi trạng thái, thu hồi phiên và ghi log kiểm toán theo AC-3 & AC-4.
