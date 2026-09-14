@@ -34,7 +34,7 @@ func (e *enqueuerStub) EnqueueNotificationTx(_ context.Context, _ notificationre
 }
 
 func TestNotifier_AC6ThroughAC10CreatesAndEnqueuesTypedNotification(t *testing.T) {
-	kinds := []string{"payment_submitted", "payment_confirmed", "payment_rejected", "debt_reminded", "payment_stalled_confirmation"}
+	kinds := []string{"payment_created", "payment_confirmed", "debt_reminded"}
 	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
 			repo := &notificationRepositoryStub{}
@@ -69,5 +69,17 @@ func TestNotifier_AC7RollsBackWhenNotificationOrQueueFails(t *testing.T) {
 				t.Fatal("queue ran after repository failure")
 			}
 		})
+	}
+}
+
+func TestNotifier_BankConfirmationUsesPaymentConfirmedType(t *testing.T) {
+	for _, kind := range []string{"payment_bank_confirmed", "payment_bank_received", "payment_marked_received"} {
+		repo := &notificationRepositoryStub{}
+		if err := NewNotifier(repo, nil).NotifyTx(context.Background(), struct{}{}, "user", kind, nil); err != nil {
+			t.Fatal(err)
+		}
+		if repo.created.Type != "payment_confirmed" || repo.created.Title == "Thông báo từ PaySplit" {
+			t.Fatalf("%s: unexpected notification %+v", kind, repo.created)
+		}
 	}
 }

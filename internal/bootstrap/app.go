@@ -35,6 +35,10 @@ import (
 	notificationjobs "paysplit-backend/internal/modules/notification/jobs"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
+	sepayhttp "paysplit-backend/internal/modules/sepay/delivery/http"
+	sepayintegration "paysplit-backend/internal/modules/sepay/integration"
+	sepaypostgres "paysplit-backend/internal/modules/sepay/repository/postgres"
+	sepayusecase "paysplit-backend/internal/modules/sepay/usecase"
 	settlementhttp "paysplit-backend/internal/modules/settlement/delivery/http"
 	settlementintegration "paysplit-backend/internal/modules/settlement/integration"
 	settlementjobs "paysplit-backend/internal/modules/settlement/jobs"
@@ -203,12 +207,7 @@ func New(ctx context.Context) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("create bill storage: %w", err)
 	}
-	proofStorage, err := avatarstorage.NewProofStorage(cfg.Cloudinary, cfg.BillImage.UploadTimeout)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create payment proof storage: %w", err)
-	}
-	qrGenerator := vietqr.New(cfg.Settlement.VietQRServiceBaseURL, cfg.Settlement.VietQRTemplate)
+	qrGenerator := vietqr.New(cfg.Settlement.VietQRServiceBaseURL, cfg.Settlement.VietQRTemplate, cfg.Settlement.TransferContentPrefix)
 	settlementRepo := settlementpostgres.NewWithPayments(db, func(code string) (settlementpostgres.BankInfo, bool) {
 		bank, ok := bankDirectory.Get(code)
 		name := strings.TrimSpace(bank.ShortName)
@@ -219,9 +218,8 @@ func New(ctx context.Context) (*App, error) {
 	}, qrGenerator)
 	settlementpostgres.SetRealtimePublisher(settlementRepo, userEvents)
 	settlementService := settlementusecase.NewService(settlementRepo)
-	settlementService.SetProofStorage(proofStorage, cfg.Settlement.ProofMaxBytes, cfg.Settlement.ProofSignedURLTTL)
 	settlementService.SetReminderMaxCount(cfg.Settlement.ReminderMaxCount)
-	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL, cfg.Settlement.ProofMaxBytes)
+	settlementHandler := settlementhttp.NewHandler(settlementService, avatarStore.URL)
 	receiptProcessor := receiptimage.NewProcessor(cfg.BillImage.ProcessingTimeout, 2)
 	billRepo := billpostgres.New(db)
 	billpostgres.SetRealtimePublisher(billRepo, userEvents)
@@ -241,7 +239,7 @@ func New(ctx context.Context) (*App, error) {
 	// Hai worker dọn dẹp định kỳ. Trước đây OCRRetentionWorker được viết đầy đủ nhưng không ai đăng
 	// ký, nên cam kết xóa raw OCR sau 30 ngày trong Spec 3 chưa bao giờ chạy (Spec 3 AC-11, AC-13).
 	billPeriodicJobs := billjobs.RegisterRetentionJobs(riverWorkers, billRepo, cfg.OCR.RawRetentionDays, cfg.OCR.StaleJobAge)
-	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, proofStorage, cfg.Settlement.ReminderStaleAge, cfg.Settlement.StalledConfirmationAge, cfg.Settlement.ReminderMaxCount)
+	settlementPeriodicJobs := settlementjobs.Register(riverWorkers, settlementService, settlementRepo, cfg.Settlement.ReminderStaleAge, cfg.Settlement.ReminderMaxCount)
 	periodicJobs := append(billPeriodicJobs, settlementPeriodicJobs...)
 
 	riverClient, err := riverpkg.NewClient(db, riverWorkers, riverpkg.Config{
@@ -330,6 +328,10 @@ func New(ctx context.Context) (*App, error) {
 	adminService := adminusecase.NewService(adminRepo, sessionStore)
 	adminHandler := adminhttp.NewHandler(adminService, avatarStore.URL)
 	bankHandler := banks.NewHandler(bankDirectory)
+	sepayHandler := sepayhttp.NewHandler(sepayusecase.NewService(sepaypostgres.New(db), sepayintegration.NewSettler(settlementService)), cfg.SePay.WebhookAPIKey)
+	if cfg.SePay.WebhookAPIKey == "" {
+		log.Println("[SePay] SEPAY_WEBHOOK_API_KEY trống: POST /api/v1/webhooks/sepay sẽ trả 503")
+	}
 
 	platformmetrics.RegisterDBPool(db)
 
@@ -353,8 +355,9 @@ func New(ctx context.Context) (*App, error) {
 		api.Route("/admin", func(r chi.Router) { adminHandler.RegisterRoutes(r, liveAuth) })
 		api.Route("/banks", func(r chi.Router) { bankHandler.RegisterRoutes(r) })
 		api.Route("/bills", func(r chi.Router) { billHandler.RegisterRoutes(r, liveAuth) })
+		api.Route("/webhooks", func(r chi.Router) { sepayHandler.RegisterRoutes(r) })
 	})
-	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, bills, admin, banks)")
+	log.Println("[HTTP] API routes registered (/api/v1: auth, users, notifications, groups, bills, admin, banks, webhooks)")
 
 	// 11. Khởi chạy River Queue Worker Engine
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())

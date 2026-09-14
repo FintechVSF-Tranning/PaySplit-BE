@@ -59,8 +59,8 @@ func TestWriteError_AC3ThroughAC12MapsPublicErrorsWithoutDetails(t *testing.T) {
 		{"invalid", "VALIDATION_FAILED", 400, domain.ErrInvalidInput},
 		{"outsider", "GROUP_NOT_FOUND", 404, domain.ErrGroupNotFound},
 		{"bank", "BANK_ACCOUNT_REQUIRED", 422, domain.ErrBankAccountRequired},
-		{"state", "PAYMENT_NOT_PENDING_PROOF", 409, domain.ErrPaymentNotPendingProof},
-		{"storage", "STORAGE_UNAVAILABLE", 503, domain.ErrStorageUnavailable},
+		{"state", "DEBT_NOT_AWAITING", 409, domain.ErrDebtNotAwaiting},
+		{"forbidden", "FORBIDDEN", 403, domain.ErrForbidden},
 		{"reminder", "REMINDER_RATE_LIMITED", 429, domain.ErrReminderRateLimited},
 		{"idempotency", "IDEMPOTENCY_IN_PROGRESS", 409, domain.ErrIdempotencyInProgress},
 	}

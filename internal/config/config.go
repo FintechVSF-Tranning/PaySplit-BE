@@ -33,6 +33,7 @@ type Config struct {
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
 	Realtime   RealtimeConfig
+	SePay      SePayConfig
 }
 
 type RealtimeConfig struct {
@@ -201,14 +202,22 @@ type GroupSyncConfig struct {
 	EventRetention    time.Duration
 }
 
+// SePayConfig cấu hình webhook nhận biến động số dư từ SePay.
+type SePayConfig struct {
+	// WebhookAPIKey phải trùng API Key khai báo trên SePay (SePay gửi header
+	// "Authorization: Apikey <key>"). Để trống thì endpoint trả 503.
+	WebhookAPIKey string
+}
+
 type SettlementConfig struct {
-	VietQRServiceBaseURL   string
-	VietQRTemplate         string
-	ProofMaxBytes          int64
-	ProofSignedURLTTL      time.Duration
-	ReminderStaleAge       time.Duration
-	ReminderMaxCount       int
-	StalledConfirmationAge time.Duration
+	VietQRServiceBaseURL string
+	VietQRTemplate       string
+	// TransferContentPrefix đứng trước mã tham chiếu trong nội dung chuyển
+	// khoản. Có ngân hàng chỉ đẩy giao dịch sang bên đối soát khi nội dung bắt
+	// đầu bằng từ khóa của họ (VietinBank cá nhân qua SePay: "SEVQR").
+	TransferContentPrefix string
+	ReminderStaleAge      time.Duration
+	ReminderMaxCount      int
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -387,23 +396,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	paymentProofMaxBytes, err := intEnv("PAYMENT_PROOF_MAX_BYTES", 10*1024*1024)
-	if err != nil {
-		return nil, err
-	}
-	paymentProofSignedTTL, err := durationEnv("PAYMENT_PROOF_SIGNED_URL_TTL", 300, time.Second)
-	if err != nil {
-		return nil, err
-	}
 	paymentReminderAge, err := durationEnv("PAYMENT_REMINDER_STALE_HOURS", 72, time.Hour)
 	if err != nil {
 		return nil, err
 	}
 	paymentReminderMax, err := intEnv("PAYMENT_REMINDER_MAX_COUNT", 3)
-	if err != nil {
-		return nil, err
-	}
-	stalledConfirmationAge, err := durationEnv("STALLED_CONFIRMATION_HOURS", 48, time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -539,13 +536,17 @@ func Load() (*Config, error) {
 		Settlement: SettlementConfig{
 			VietQRServiceBaseURL: stringEnv("VIETQR_SERVICE_BASE_URL", "https://img.vietqr.io/image"),
 			VietQRTemplate:       stringEnv("VIETQR_TEMPLATE", "compact"),
-			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
+			TransferContentPrefix: strings.ToUpper(
+				strings.TrimSpace(os.Getenv("PAYMENT_TRANSFER_CONTENT_PREFIX")),
+			),
 			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
-			StalledConfirmationAge: stalledConfirmationAge,
 		},
 		Realtime: RealtimeConfig{
 			UserSSEEnabled:          boolEnv("USER_SSE_ENABLED", false),
 			MinUserStreamAppVersion: strings.TrimSpace(os.Getenv("REALTIME_MIN_USER_STREAM_APP_VERSION")),
+		},
+		SePay: SePayConfig{
+			WebhookAPIKey: strings.TrimSpace(os.Getenv("SEPAY_WEBHOOK_API_KEY")),
 		},
 	}
 
@@ -705,11 +706,17 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Settlement.VietQRTemplate) == "" {
 		return errors.New("VIETQR_TEMPLATE must not be empty")
 	}
-	if c.Settlement.ProofMaxBytes <= 0 {
-		return errors.New("PAYMENT_PROOF_MAX_BYTES must be positive")
-	}
-	if c.Settlement.ProofSignedURLTTL <= 0 {
-		return errors.New("PAYMENT_PROOF_SIGNED_URL_TTL must be positive")
+	// Nội dung chuyển khoản của VietQR chỉ chứa được 25 ký tự, mã tham chiếu đã
+	// chiếm 11 và dấu cách 1; tiền tố dài hơn 13 ký tự sẽ bị ngân hàng cắt.
+	if prefix := c.Settlement.TransferContentPrefix; prefix != "" {
+		if len(prefix) > 13 {
+			return errors.New("PAYMENT_TRANSFER_CONTENT_PREFIX must be at most 13 characters")
+		}
+		for _, r := range prefix {
+			if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+				return errors.New("PAYMENT_TRANSFER_CONTENT_PREFIX must contain only letters and digits")
+			}
+		}
 	}
 	if c.Settlement.ReminderStaleAge <= 0 {
 		return errors.New("PAYMENT_REMINDER_STALE_HOURS must be positive")
@@ -717,8 +724,8 @@ func (c *Config) Validate() error {
 	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
 		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
 	}
-	if c.Settlement.StalledConfirmationAge <= 0 {
-		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
+	if key := c.SePay.WebhookAPIKey; key != "" && len(key) < 32 {
+		return errors.New("SEPAY_WEBHOOK_API_KEY must be at least 32 characters")
 	}
 	if strings.TrimSpace(c.Realtime.MinUserStreamAppVersion) != "" {
 		parts := strings.Split(c.Realtime.MinUserStreamAppVersion, "+")

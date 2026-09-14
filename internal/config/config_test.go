@@ -195,21 +195,21 @@ func TestLoadSettlementDefaults_AC6AndAC10(t *testing.T) {
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	for _, key := range []string{"PAYMENT_PROOF_MAX_BYTES", "PAYMENT_PROOF_SIGNED_URL_TTL", "PAYMENT_REMINDER_STALE_HOURS", "PAYMENT_REMINDER_MAX_COUNT", "STALLED_CONFIRMATION_HOURS"} {
+	for _, key := range []string{"PAYMENT_REMINDER_STALE_HOURS", "PAYMENT_REMINDER_MAX_COUNT"} {
 		t.Setenv(key, "")
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Settlement.ProofMaxBytes != 10<<20 || cfg.Settlement.ProofSignedURLTTL != 5*time.Minute || cfg.Settlement.ReminderStaleAge != 72*time.Hour || cfg.Settlement.ReminderMaxCount != 3 || cfg.Settlement.StalledConfirmationAge != 48*time.Hour {
+	if cfg.Settlement.ReminderStaleAge != 72*time.Hour || cfg.Settlement.ReminderMaxCount != 3 {
 		t.Fatalf("unexpected settlement defaults: %+v", cfg.Settlement)
 	}
 }
 
 func TestValidateAcceptsConfiguredSettlementReminderMaximum_AC10(t *testing.T) {
 	cfg := validConfig()
-	cfg.Settlement = SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 2, StalledConfirmationAge: 48 * time.Hour}
+	cfg.Settlement = SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 2}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("configured reminder maximum rejected: %v", err)
 	}
@@ -379,7 +379,7 @@ func validConfig() *Config {
 		BillImage:  BillImageConfig{MaxCount: 5, MaxBytes: 10 * 1024 * 1024, UploadTimeout: 15 * time.Second, ProcessingTimeout: 10 * time.Second, SignedURLTTL: 5 * time.Minute},
 		BillSSE:    BillSSEConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute},
 		GroupSync:  GroupSyncConfig{HeartbeatInterval: 15 * time.Second, MaxConnectionAge: 15 * time.Minute, EventRetention: 7 * 24 * time.Hour},
-		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ProofMaxBytes: 10 << 20, ProofSignedURLTTL: 5 * time.Minute, ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3, StalledConfirmationAge: 48 * time.Hour},
+		Settlement: SettlementConfig{VietQRServiceBaseURL: "https://img.vietqr.io/image", VietQRTemplate: "compact", ReminderStaleAge: 72 * time.Hour, ReminderMaxCount: 3},
 	}
 }
 

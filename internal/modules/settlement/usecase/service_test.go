@@ -12,14 +12,10 @@ import (
 )
 
 type stubRepository struct {
-	createFn  func(repository.CreatePaymentInput) (*domain.Payment, bool, error)
-	prepareFn func(string, string) (string, *domain.Payment, error)
-	resetFn   func(string, string, bool) error
-	submitFn  func(repository.SubmitProofInput) (*domain.Payment, error)
-	queueFn   func(string) error
-	confirmFn func(repository.PaymentMutationInput) (*domain.Payment, []string, error)
-	rejectFn  func(repository.PaymentMutationInput) (*domain.Payment, []string, error)
-	remindFn  func(repository.RemindInput) (*domain.ReminderResult, error)
+	createFn   func(repository.CreatePaymentInput) (*domain.Payment, bool, error)
+	remindFn   func(repository.RemindInput) (*domain.ReminderResult, error)
+	bankFn     func(repository.BankTransferInput) (domain.BankMatchResult, error)
+	receivedFn func(repository.MarkReceivedInput) (*domain.Payment, []string, error)
 }
 
 func (s *stubRepository) ListExpenses(context.Context, repository.ListInput) (*domain.ExpensePage, error) {
@@ -34,23 +30,11 @@ func (s *stubRepository) CreatePayment(_ context.Context, in repository.CreatePa
 func (s *stubRepository) GetPayment(context.Context, string, string, string) (*domain.Payment, error) {
 	return &domain.Payment{}, nil
 }
-func (s *stubRepository) PrepareProof(_ context.Context, _, _, _, key, hash string) (string, *domain.Payment, error) {
-	return s.prepareFn(key, hash)
+func (s *stubRepository) SettleBankTransfer(_ context.Context, in repository.BankTransferInput) (domain.BankMatchResult, error) {
+	return s.bankFn(in)
 }
-func (s *stubRepository) ResetProofAttempt(_ context.Context, _, _, requestHash, operationID string, replaceOperation bool) error {
-	return s.resetFn(operationID, requestHash, replaceOperation)
-}
-func (s *stubRepository) SubmitProof(_ context.Context, in repository.SubmitProofInput) (*domain.Payment, error) {
-	return s.submitFn(in)
-}
-func (s *stubRepository) QueueMediaCleanup(_ context.Context, key, _ string) error {
-	return s.queueFn(key)
-}
-func (s *stubRepository) ConfirmPayment(_ context.Context, in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-	return s.confirmFn(in)
-}
-func (s *stubRepository) RejectPayment(_ context.Context, in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-	return s.rejectFn(in)
+func (s *stubRepository) MarkDebtReceived(_ context.Context, in repository.MarkReceivedInput) (*domain.Payment, []string, error) {
+	return s.receivedFn(in)
 }
 func (s *stubRepository) RemindDebt(_ context.Context, in repository.RemindInput) (*domain.ReminderResult, error) {
 	return s.remindFn(in)
@@ -58,21 +42,7 @@ func (s *stubRepository) RemindDebt(_ context.Context, in repository.RemindInput
 func (s *stubRepository) ProcessAutomatedReminders(context.Context, time.Time, int, repository.BeforeCommit) error {
 	return nil
 }
-func (s *stubRepository) ProcessStalledPayments(context.Context, time.Time, repository.BeforeCommit) error {
-	return nil
-}
 func (s *stubRepository) DeleteExpiredIdempotency(context.Context) error { return nil }
-func (s *stubRepository) ProcessMediaCleanup(context.Context, func(context.Context, string) error, func(string)) error {
-	return nil
-}
-
-type stubStorage struct {
-	uploads, deletes int
-	queuedKey        string
-	uploadErr        error
-	deleteErr        error
-	signedTTL        time.Duration
-}
 
 type stubNotifier struct {
 	kind string
@@ -85,30 +55,10 @@ func (s *stubNotifier) NotifyTx(_ context.Context, _ repository.Executor, _, kin
 	return nil
 }
 
-func (s *stubStorage) Upload(_ context.Context, _ []byte, key string) (string, error) {
-	s.uploads++
-	return key, s.uploadErr
-}
-func (s *stubStorage) SignedURL(key string, ttl time.Duration) (string, error) {
-	s.signedTTL = ttl
-	return "signed:" + key, nil
-}
-func (s *stubStorage) Delete(context.Context, string) error { s.deletes++; return s.deleteErr }
-
 func serviceRepo() *stubRepository {
 	return &stubRepository{
 		createFn: func(repository.CreatePaymentInput) (*domain.Payment, bool, error) {
 			return &domain.Payment{}, true, nil
-		},
-		prepareFn: func(string, string) (string, *domain.Payment, error) { return "operation", nil, nil },
-		resetFn:   func(string, string, bool) error { return nil },
-		submitFn:  func(repository.SubmitProofInput) (*domain.Payment, error) { return &domain.Payment{}, nil },
-		queueFn:   func(string) error { return nil },
-		confirmFn: func(repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-			return &domain.Payment{}, nil, nil
-		},
-		rejectFn: func(repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-			return &domain.Payment{}, nil, nil
 		},
 		remindFn: func(repository.RemindInput) (*domain.ReminderResult, error) { return &domain.ReminderResult{}, nil },
 	}
@@ -155,106 +105,6 @@ func TestNotifyPreservesRoutingIdentifiers(t *testing.T) {
 	}
 }
 
-func TestSubmitProof_AC6AcceptsJPEGPNGAndHEIC(t *testing.T) {
-	images := map[string][]byte{
-		"image/jpeg": {0xff, 0xd8, 0xff},
-		"image/png":  {'\x89', 'P', 'N', 'G', '\r', '\n', '\x1a', '\n'},
-		"image/heic": {0, 0, 0, 12, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c'},
-	}
-	for contentType, image := range images {
-		t.Run(contentType, func(t *testing.T) {
-			repo := serviceRepo()
-			storage := &stubStorage{}
-			svc := NewService(repo)
-			svc.SetProofStorage(storage, 1024, 5*time.Minute)
-			if _, err := svc.SubmitProof(context.Background(), SubmitProofInput{GroupID: "group", CallerUserID: "user", PaymentID: "payment", IdempotencyKey: "key", ContentType: contentType, Image: image}); err != nil {
-				t.Fatal(err)
-			}
-			if storage.uploads != 1 {
-				t.Fatalf("uploads=%d, want 1", storage.uploads)
-			}
-		})
-	}
-}
-
-func TestDetectProofContentTypeRejectsNonHEICISOBaseMedia(t *testing.T) {
-	mp4 := []byte{0, 0, 0, 12, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
-	if got := DetectProofContentType(mp4); got != "" {
-		t.Fatalf("detected MP4 as %q", got)
-	}
-}
-
-func TestSubmitProof_AC6RejectsInvalidAndOversizedInput(t *testing.T) {
-	repo := serviceRepo()
-	svc := NewService(repo)
-	svc.SetProofStorage(&stubStorage{}, 8, 5*time.Minute)
-	longNote := string(make([]rune, 501))
-	cases := []SubmitProofInput{
-		{IdempotencyKey: "key", ContentType: "text/plain", Image: []byte("text")},
-		{IdempotencyKey: "key", ContentType: "image/jpeg", Image: append([]byte{0xff, 0xd8, 0xff}, make([]byte, 6)...)},
-		{IdempotencyKey: "key", ContentType: "image/jpeg", Image: []byte{0xff, 0xd8, 0xff}, Note: &longNote},
-	}
-	for _, in := range cases {
-		if _, err := svc.SubmitProof(context.Background(), in); err == nil {
-			t.Fatalf("SubmitProof(%+v) succeeded, want validation error", in)
-		}
-	}
-}
-
-func TestSubmitProof_AC11ReleasesIdempotencyAfterUploadFailure(t *testing.T) {
-	repo := serviceRepo()
-	var operationID, requestHash string
-	var replaceOperation bool
-	repo.resetFn = func(operation, hash string, replace bool) error {
-		operationID, requestHash, replaceOperation = operation, hash, replace
-		return nil
-	}
-	svc := NewService(repo)
-	svc.SetProofStorage(&stubStorage{uploadErr: errors.New("upload failed")}, 1024, 5*time.Minute)
-	_, err := svc.SubmitProof(context.Background(), SubmitProofInput{GroupID: "group", CallerUserID: "user", PaymentID: "payment", IdempotencyKey: "key", ContentType: "image/jpeg", Image: []byte{0xff, 0xd8, 0xff}})
-	if !errors.Is(err, domain.ErrStorageUnavailable) {
-		t.Fatalf("error=%v, want storage unavailable", err)
-	}
-	if operationID != "operation" || requestHash == "" || replaceOperation {
-		t.Fatalf("unexpected reset operation=%q hash=%q replace=%v", operationID, requestHash, replaceOperation)
-	}
-}
-
-func TestSubmitProof_AC6AndAC11ReplaysWithoutUploading(t *testing.T) {
-	repo := serviceRepo()
-	objectKey := "payments/payment/proofs/operation"
-	repo.prepareFn = func(string, string) (string, *domain.Payment, error) {
-		return "operation", &domain.Payment{Status: domain.PaymentPendingConfirmation, ImageObjectKey: &objectKey}, nil
-	}
-	storage := &stubStorage{}
-	svc := NewService(repo)
-	svc.SetProofStorage(storage, 1024, 5*time.Minute)
-	payment, err := svc.SubmitProof(context.Background(), SubmitProofInput{GroupID: "group", PaymentID: "payment", IdempotencyKey: "key", ContentType: "image/jpeg", Image: []byte{0xff, 0xd8, 0xff}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if storage.uploads != 0 || payment.ImageURL == nil || storage.signedTTL != 5*time.Minute {
-		t.Fatalf("unexpected replay: uploads=%d payment=%+v ttl=%s", storage.uploads, payment, storage.signedTTL)
-	}
-}
-
-func TestSubmitProof_AC6AndAC11InProgressDoesNotUploadOrDelete(t *testing.T) {
-	repo := serviceRepo()
-	repo.prepareFn = func(string, string) (string, *domain.Payment, error) {
-		return "", nil, domain.ErrIdempotencyInProgress
-	}
-	storage := &stubStorage{}
-	svc := NewService(repo)
-	svc.SetProofStorage(storage, 1024, 5*time.Minute)
-	_, err := svc.SubmitProof(context.Background(), SubmitProofInput{GroupID: "group", PaymentID: "payment", IdempotencyKey: "key", ContentType: "image/jpeg", Image: []byte{0xff, 0xd8, 0xff}})
-	if !errors.Is(err, domain.ErrIdempotencyInProgress) {
-		t.Fatalf("error=%v, want idempotency in progress", err)
-	}
-	if storage.uploads != 0 || storage.deletes != 0 {
-		t.Fatalf("uploads=%d deletes=%d, want no storage mutation", storage.uploads, storage.deletes)
-	}
-}
-
 func TestRemindDebt_AC9UsesConfiguredMaximum(t *testing.T) {
 	repo := serviceRepo()
 	var maxCount int32
@@ -272,53 +122,6 @@ func TestRemindDebt_AC9UsesConfiguredMaximum(t *testing.T) {
 	}
 }
 
-func TestSubmitProof_AC6QueuesExactObjectWhenCompensationDeleteFails(t *testing.T) {
-	repo := serviceRepo()
-	repo.submitFn = func(in repository.SubmitProofInput) (*domain.Payment, error) { return nil, domain.ErrDebtsNotAwaiting }
-	repo.queueFn = func(key string) error { repoKey := key; _ = repoKey; return nil }
-	storage := &stubStorage{deleteErr: errors.New("delete failed")}
-	var queued string
-	var resetOperation string
-	var replaceOperation bool
-	repo.queueFn = func(key string) error { queued = key; return nil }
-	repo.resetFn = func(operation, _ string, replace bool) error {
-		resetOperation, replaceOperation = operation, replace
-		return nil
-	}
-	svc := NewService(repo)
-	svc.SetProofStorage(storage, 1024, 5*time.Minute)
-	_, err := svc.SubmitProof(context.Background(), SubmitProofInput{GroupID: "group", PaymentID: "payment", IdempotencyKey: "key", ContentType: "image/jpeg", Image: []byte{0xff, 0xd8, 0xff}})
-	if !errors.Is(err, domain.ErrDebtsNotAwaiting) {
-		t.Fatalf("error=%v", err)
-	}
-	want := "payments/payment/proofs/operation"
-	if storage.deletes != 1 || queued != want || resetOperation != "operation" || !replaceOperation {
-		t.Fatalf("deletes=%d queued=%q reset=%q replace=%v, want isolated retry for %q", storage.deletes, queued, resetOperation, replaceOperation, want)
-	}
-}
-
-func TestRejectPayment_AC8TrimsReasonAndRejectsBounds(t *testing.T) {
-	repo := serviceRepo()
-	var got string
-	repo.rejectFn = func(in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-		got = *in.Reason
-		return &domain.Payment{}, nil, nil
-	}
-	svc := NewService(repo)
-	reason := "  not received  "
-	if _, _, err := svc.RejectPayment(context.Background(), PaymentMutationInput{IdempotencyKey: "key", Reason: &reason}); err != nil {
-		t.Fatal(err)
-	}
-	if got != "not received" {
-		t.Fatalf("reason=%q", got)
-	}
-	for _, value := range []string{"   ", string(make([]rune, 501))} {
-		if _, _, err := svc.RejectPayment(context.Background(), PaymentMutationInput{IdempotencyKey: "key", Reason: &value}); !errors.Is(err, domain.ErrInvalidInput) {
-			t.Fatalf("reason length=%d error=%v", len([]rune(value)), err)
-		}
-	}
-}
-
 func TestListInputs_AC1AndAC2RejectInvalidLimitsAndStatuses(t *testing.T) {
 	svc := NewService(serviceRepo())
 	if _, err := svc.ListExpenses(context.Background(), repository.ListInput{GroupID: "group", CallerUserID: "user", Limit: 0}); !errors.Is(err, domain.ErrInvalidInput) {
@@ -327,5 +130,57 @@ func TestListInputs_AC1AndAC2RejectInvalidLimitsAndStatuses(t *testing.T) {
 	status := "voided"
 	if _, err := svc.ListDebts(context.Background(), repository.ListDebtsInput{ListInput: repository.ListInput{GroupID: "group", CallerUserID: "user", Limit: 20}, Status: &status}); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("ListDebts error=%v", err)
+	}
+}
+
+func TestSettleBankTransferValidatesAndWiresBothNotifications(t *testing.T) {
+	var got repository.BankTransferInput
+	repo := &stubRepository{bankFn: func(in repository.BankTransferInput) (domain.BankMatchResult, error) {
+		got = in
+		return domain.BankMatchResult{Outcome: domain.BankMatchConfirmed}, nil
+	}}
+	svc := NewService(repo)
+	valid := domain.BankTransfer{TransactionID: 1, ReferenceCode: "PAYAB3CD4EF", Amount: 300000, AccountNumbers: []string{"0123"}}
+	res, err := svc.SettleBankTransfer(context.Background(), valid)
+	if err != nil || res.Outcome != domain.BankMatchConfirmed {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if got.Transfer.ReferenceCode != valid.ReferenceCode || got.NotifyDebtor == nil || got.NotifyCreditor == nil {
+		t.Fatalf("unexpected repository input: %+v", got)
+	}
+	for _, bad := range []domain.BankTransfer{
+		{ReferenceCode: "PAYAB3CD4EF", Amount: 1, AccountNumbers: []string{"1"}},
+		{TransactionID: 1, Amount: 1, AccountNumbers: []string{"1"}},
+		{TransactionID: 1, ReferenceCode: "PAYAB3CD4EF", AccountNumbers: []string{"1"}},
+		{TransactionID: 1, ReferenceCode: "PAYAB3CD4EF", Amount: 1},
+	} {
+		if _, err := svc.SettleBankTransfer(context.Background(), bad); !errors.Is(err, domain.ErrInvalidInput) {
+			t.Fatalf("%+v: err=%v, want ErrInvalidInput", bad, err)
+		}
+	}
+}
+
+func TestMarkDebtReceivedRequiresKeyAndNotifiesDebtorOnly(t *testing.T) {
+	repo := serviceRepo()
+	var got repository.MarkReceivedInput
+	repo.receivedFn = func(in repository.MarkReceivedInput) (*domain.Payment, []string, error) {
+		got = in
+		return &domain.Payment{}, []string{in.DebtID}, nil
+	}
+	svc := NewService(repo)
+	notifier := &stubNotifier{}
+	svc.SetNotifier(notifier)
+	if _, _, err := svc.MarkDebtReceived(context.Background(), MarkReceivedInput{GroupID: "group", DebtID: "debt"}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("missing idempotency key err=%v", err)
+	}
+	_, ids, err := svc.MarkDebtReceived(context.Background(), MarkReceivedInput{GroupID: "group", CallerUserID: "user", DebtID: "debt", IdempotencyKey: "key"})
+	if err != nil || len(ids) != 1 || ids[0] != "debt" {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	if got.RequestHash == "" || got.NotifyDebtor == nil {
+		t.Fatalf("unexpected repository input: %+v", got)
+	}
+	if err = got.NotifyDebtor(context.Background(), struct{}{}, []string{"debtor"}, nil); err != nil || notifier.kind != "payment_marked_received" {
+		t.Fatalf("notification kind=%q err=%v", notifier.kind, err)
 	}
 }

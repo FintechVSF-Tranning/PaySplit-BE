@@ -118,5 +118,5 @@ func paymentResponse(p *domain.Payment) map[string]any {
 	if coveredDebtIDs == nil {
 		coveredDebtIDs = []string{}
 	}
-	return map[string]any{"id": p.ID, "group_id": p.GroupID, "debtor_member_id": p.DebtorMemberID, "creditor_member_id": p.CreditorMemberID, "amount": strconv.FormatInt(p.Amount, 10), "reference_code": p.ReferenceCode, "status": p.Status, "qr_payload": nullable(p.QRPayload), "qr_image_url": nullable(p.QRImageURL), "recipient": recipient, "image_url": p.ImageURL, "note": p.Note, "rejection_reason": p.RejectionReason, "covered_debt_ids": coveredDebtIDs, "created_at": p.CreatedAt, "submitted_at": p.SubmittedAt, "confirmed_at": p.ConfirmedAt, "rejected_at": p.RejectedAt}
+	return map[string]any{"id": p.ID, "group_id": p.GroupID, "debtor_member_id": p.DebtorMemberID, "creditor_member_id": p.CreditorMemberID, "amount": strconv.FormatInt(p.Amount, 10), "reference_code": p.ReferenceCode, "transfer_content": nullable(p.TransferContent), "status": p.Status, "confirmation_source": p.ConfirmationSource, "qr_payload": nullable(p.QRPayload), "qr_image_url": nullable(p.QRImageURL), "recipient": recipient, "image_url": p.ImageURL, "note": p.Note, "rejection_reason": p.RejectionReason, "covered_debt_ids": coveredDebtIDs, "created_at": p.CreatedAt, "submitted_at": p.SubmittedAt, "confirmed_at": p.ConfirmedAt, "rejected_at": p.RejectedAt}
 }

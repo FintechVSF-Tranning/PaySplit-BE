@@ -13,6 +13,7 @@ tags:
   - name: Notifications
   - name: Bills
   - name: Admin
+  - name: Webhooks
 paths:
   /health:
     get:
@@ -1715,6 +1716,27 @@ paths:
         "404": {$ref: "#/components/responses/NotFound"}
         "409": {$ref: "#/components/responses/Conflict"}
         "429": {$ref: "#/components/responses/RateLimited"}
+  /api/v1/groups/{groupId}/debts/{debtId}/mark-received:
+    post:
+      operationId: markDebtReceived
+      summary: Người nhận xác nhận đã nhận đủ tiền của một khoản nợ
+      description: |
+        Đường dự phòng khi ngân hàng (SePay) không tự khớp được giao dịch: chuyển sai số tiền, mất mã tham chiếu, SePay lỗi.
+        Chỉ creditor của khoản nợ gọi được. Khoản nợ được gạch ngay bằng một payment mới `confirmed` với
+        `confirmation_source=manual`, không cần ảnh minh chứng. Mọi mã QR đang chờ có gom khoản nợ này chuyển `superseded`,
+        nên webhook của mã đó về sau không gạch lần hai. Debtor nhận thông báo `payment_confirmed`.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/GroupId"}
+        - {name: debtId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      responses:
+        "200": {description: Debt settled by the recipient, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}]}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "422": {$ref: "#/components/responses/UnprocessableEntity"}
   /api/v1/groups/{groupId}/payments/qr:
     post:
       operationId: generatePaymentQR
@@ -1742,58 +1764,6 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "422": {$ref: "#/components/responses/UnprocessableEntity"}
-  /api/v1/groups/{groupId}/payments/{paymentId}/proof:
-    post:
-      operationId: submitPaymentProof
-      security: [{bearerAuth: []}]
-      parameters:
-        - {$ref: "#/components/parameters/GroupId"}
-        - {$ref: "#/components/parameters/PaymentId"}
-        - {$ref: "#/components/parameters/IdempotencyKey"}
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [image]
-              properties: {image: {type: string, format: binary}, note: {type: string, maxLength: 500}}
-      responses:
-        "200": {description: Proof accepted, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentEnvelope"}}}]}}}}
-        "400": {$ref: "#/components/responses/BadRequest"}
-        "403": {$ref: "#/components/responses/Forbidden"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/Conflict"}
-        "422": {$ref: "#/components/responses/UnprocessableEntity"}
-        "503": {description: Private storage unavailable}
-  /api/v1/groups/{groupId}/payments/{paymentId}/confirm:
-    post:
-      operationId: confirmPayment
-      security: [{bearerAuth: []}]
-      parameters:
-        - {$ref: "#/components/parameters/GroupId"}
-        - {$ref: "#/components/parameters/PaymentId"}
-        - {$ref: "#/components/parameters/IdempotencyKey"}
-      responses:
-        "200": {description: Payment and every covered debt settled, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}]}}}}
-        "403": {$ref: "#/components/responses/Forbidden"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/Conflict"}
-  /api/v1/groups/{groupId}/payments/{paymentId}/reject:
-    post:
-      operationId: rejectPayment
-      security: [{bearerAuth: []}]
-      parameters:
-        - {$ref: "#/components/parameters/GroupId"}
-        - {$ref: "#/components/parameters/PaymentId"}
-        - {$ref: "#/components/parameters/IdempotencyKey"}
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 1, maxLength: 500}}}}}}
-      responses:
-        "200": {description: Payment rejected and covered debts reset, content: {application/json: {schema: {allOf: [{$ref: "#/components/schemas/SuccessEnvelope"}, {type: object, properties: {data: {$ref: "#/components/schemas/PaymentMutationEnvelope"}}}]}}}}
-        "400": {$ref: "#/components/responses/BadRequest"}
-        "403": {$ref: "#/components/responses/Forbidden"}
-        "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/Conflict"}
   /api/v1/admin/accounts:
     get:
       summary: List user accounts with search, filter, sort, and pagination
@@ -1931,8 +1901,47 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
 
+  /api/v1/webhooks/sepay:
+    post:
+      operationId: receiveSepayWebhook
+      tags: [Webhooks]
+      summary: Receive a SePay balance-change webhook
+      description: |
+        Endpoint để SePay (my.sepay.vn → Webhooks) gọi mỗi khi tài khoản ngân hàng liên kết có biến động số dư.
+        Xác thực bằng header `Authorization: Apikey <SEPAY_WEBHOOK_API_KEY>`, không dùng session.
+        Payload giữ nguyên camelCase của SePay (ngoại lệ với quy ước snake_case vì do bên thứ ba định nghĩa); field lạ được bỏ qua.
+        Idempotent theo `id`: SePay retry tối đa 7 lần trong 5 giờ khi không nhận được 200/201 kèm `"success": true`,
+        lần gửi lại trả 200 với `duplicate: true` và không ghi đè dữ liệu.
+        Mã `PAYxxxxxxxx` trong `code` hoặc `content` được trích vào `payment_reference` để đối soát với `payments.reference_code`.
+        Giao dịch tiền vào khớp đủ mã tham chiếu, số tiền (bằng đúng) và tài khoản nhận (tài khoản mặc định của người nhận)
+        thì payment chuyển `confirmed` với `confirmation_source=bank_transfer`, các khoản nợ được gạch và cả hai bên nhận thông báo `payment_confirmed`.
+        Không khớp vẫn trả 200 (kết quả nghiệp vụ, retry không đổi được) với `match_status` cho biết lý do.
+      security:
+        - sepayApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SepayWebhookPayload"}
+      responses:
+        "200":
+          description: Giao dịch đã được ghi nhận (hoặc đã ghi nhận trước đó)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data: {$ref: "#/components/schemas/SepayWebhookResult"}
+        "400": {description: "VALIDATION_FAILED — payload không hợp lệ", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "401": {description: "UNAUTHORIZED — thiếu hoặc sai API key", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "413": {description: "PAYLOAD_TOO_LARGE — body vượt 64 KiB", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "500": {description: "INTERNAL_ERROR — lỗi lưu trữ, SePay sẽ tự retry", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
+        "503": {description: "SEPAY_WEBHOOK_DISABLED — server chưa cấu hình SEPAY_WEBHOOK_API_KEY", content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}}
 components:
   securitySchemes:
+    sepayApiKey: {type: apiKey, in: header, name: Authorization, description: "Giá trị dạng `Apikey <SEPAY_WEBHOOK_API_KEY>`, trùng API Key khai báo khi tạo webhook trên SePay."}
     bearerAuth: {type: http, scheme: bearer, bearerFormat: Opaque, description: "Session ID đục do POST /api/v1/auth/sign-in cấp. Không phải JWT: chuỗi này không mang thông tin nào và chỉ có server tra được.\n\nMọi endpoint có bảo vệ đều có thể trả 401 AUTHENTICATION_REQUIRED hoặc 503 SESSION_STORE_UNAVAILABLE, và client PHẢI phân biệt hai mã này: 401 nghĩa là phiên đã chết, hãy xóa credential và đăng nhập lại; 503 nghĩa là kho phiên tạm thời không truy cập được, credential VẪN CÒN GIÁ TRỊ, hãy giữ nguyên và thử lại. Xóa credential khi gặp 503 sẽ biến một cú chớp vài chục giây của Redis thành một lần đăng xuất vĩnh viễn của toàn bộ người dùng."}
   parameters:
     GroupId: {name: groupId, in: path, required: true, schema: {type: string, format: uuid}}
@@ -2036,6 +2045,39 @@ components:
                 properties:
                   data: {nullable: true}
   schemas:
+    SepayWebhookPayload:
+      type: object
+      required: [id, transferType, transferAmount]
+      properties:
+        id: {type: integer, format: int64, minimum: 0, description: "ID giao dịch phía SePay (khóa chống trùng). 0 là dữ liệu của nút Gửi thử: được xác nhận nhưng không lưu.", example: 92704}
+        gateway: {type: string, example: Vietcombank}
+        transactionDate: {type: string, description: "Giờ Việt Nam (UTC+7), định dạng YYYY-MM-DD HH:mm:ss", example: "2023-03-25 14:02:37"}
+        accountNumber: {type: string, example: "0123499999"}
+        subAccount: {type: string, nullable: true}
+        code: {type: string, nullable: true, description: "Mã thanh toán SePay tự nhận diện", example: PAYAB3CD4EF}
+        content: {type: string, example: "PAYAB3CD4EF chuyen tien"}
+        transferType: {type: string, enum: [in, out]}
+        transferAmount: {type: integer, format: int64, example: 2277000}
+        accumulated: {type: integer, format: int64, example: 19077000}
+        referenceCode: {type: string, nullable: true, example: MBVCB.3278907687}
+        description: {type: string}
+    SepayWebhookResult:
+      type: object
+      required: [transaction_id, payment_reference, match_status, payment_id, duplicate]
+      properties:
+        transaction_id: {type: integer, format: int64}
+        payment_reference: {type: string, nullable: true, description: "Mã PAYxxxxxxxx trích được, null nếu không có"}
+        match_status:
+          type: string
+          enum: [confirmed, already_confirmed, payment_not_found, payment_closed, amount_mismatch, account_mismatch, no_reference, zero_amount, ignored_outgoing, test_delivery]
+          description: |
+            confirmed: đã gạch nợ bằng giao dịch này. already_confirmed: giao dịch này đã gạch trước đó.
+            payment_not_found: không có payment mang mã. payment_closed: payment đã xác nhận/từ chối/bị thay thế hoặc nhóm đã đóng.
+            amount_mismatch / account_mismatch: sai số tiền / tiền vào tài khoản không phải của người nhận.
+            no_reference: nội dung không có mã PAYxxxxxxxx. zero_amount: tiền vào 0đ. ignored_outgoing: giao dịch tiền ra.
+            test_delivery: nút "Gửi thử" của SePay (id=0), trả thành công nhưng không lưu.
+        payment_id: {type: string, format: uuid, nullable: true, description: "Payment khớp theo mã tham chiếu, null nếu không tìm thấy"}
+        duplicate: {type: boolean, description: "true khi SePay gửi lại giao dịch đã ghi nhận"}
     GeneratePaymentRequest:
       type: object
       required: [creditor_member_id]
@@ -2052,7 +2094,7 @@ components:
         account_holder: {type: string}
     Payment:
       type: object
-      required: [id, group_id, debtor_member_id, creditor_member_id, amount, reference_code, status, covered_debt_ids, created_at]
+      required: [id, group_id, debtor_member_id, creditor_member_id, amount, reference_code, status, confirmation_source, covered_debt_ids, created_at]
       properties:
         id: {type: string, format: uuid}
         group_id: {type: string, format: uuid}
@@ -2060,11 +2102,13 @@ components:
         creditor_member_id: {type: string, format: uuid}
         amount: {type: string, pattern: '^[0-9]+$'}
         reference_code: {type: string, pattern: '^PAY[A-HJ-NP-Z2-9]{8}$'}
+        transfer_content: {type: string, nullable: true, description: "Nội dung chuyển khoản người trả phải giữ nguyên, gồm tiền tố ngân hàng yêu cầu (PAYMENT_TRANSFER_CONTENT_PREFIX, ví dụ VietinBank cá nhân qua SePay cần \"SEVQR\") đứng trước reference_code. Null khi payment không còn QR (đã xác nhận/bị thay thế)."}
         status: {type: string, enum: [pending_proof, pending_confirmation, confirmed, rejected, superseded]}
+        confirmation_source: {type: string, enum: [manual, bank_transfer], description: "bank_transfer: ngân hàng (qua SePay) báo tiền đã vào đúng tài khoản người nhận. manual: người nhận tự xác nhận qua mark-received (hoặc payment cũ từ luồng minh chứng đã gỡ)."}
         qr_payload: {type: string, nullable: true}
         qr_image_url: {type: string, format: uri, nullable: true}
         recipient: {allOf: [{$ref: "#/components/schemas/RecipientBank"}], nullable: true}
-        image_url: {type: string, format: uri, nullable: true}
+        image_url: {type: string, format: uri, nullable: true, description: "Luôn null: luồng ảnh minh chứng đã bị gỡ, giữ field để client cũ không vỡ."}
         note: {type: string, nullable: true}
         rejection_reason: {type: string, nullable: true}
         covered_debt_ids: {type: array, items: {type: string, format: uuid}}
@@ -2082,7 +2126,6 @@ components:
       properties:
         payment: {$ref: "#/components/schemas/Payment"}
         settled_debts: {type: array, items: {type: string, format: uuid}}
-        reset_debts: {type: array, items: {type: string, format: uuid}}
     ReminderResult:
       type: object
       required: [debt_id, reminder_count, reminded_at]

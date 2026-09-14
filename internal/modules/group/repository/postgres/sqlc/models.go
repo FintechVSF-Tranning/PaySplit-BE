@@ -281,6 +281,8 @@ type Payment struct {
 	RecipientAccountNumber pgtype.Text        `json:"recipient_account_number"`
 	RecipientAccountHolder pgtype.Text        `json:"recipient_account_holder"`
 	StalledAlertedAt       pgtype.Timestamptz `json:"stalled_alerted_at"`
+	ConfirmationSource     string             `json:"confirmation_source"`
+	BankTransactionID      pgtype.Int8        `json:"bank_transaction_id"`
 }
 
 type PaymentDebt struct {
@@ -304,6 +306,27 @@ type PaymentIdempotencyKey struct {
 	RetryAfter           pgtype.Timestamptz `json:"retry_after"`
 	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
+type SepayTransaction struct {
+	ID               int64              `json:"id"`
+	Gateway          string             `json:"gateway"`
+	TransactionDate  pgtype.Timestamptz `json:"transaction_date"`
+	AccountNumber    string             `json:"account_number"`
+	SubAccount       pgtype.Text        `json:"sub_account"`
+	Code             pgtype.Text        `json:"code"`
+	Content          string             `json:"content"`
+	TransferType     string             `json:"transfer_type"`
+	TransferAmount   int64              `json:"transfer_amount"`
+	Accumulated      int64              `json:"accumulated"`
+	ReferenceCode    pgtype.Text        `json:"reference_code"`
+	Description      string             `json:"description"`
+	PaymentReference pgtype.Text        `json:"payment_reference"`
+	RawPayload       []byte             `json:"raw_payload"`
+	ReceivedAt       pgtype.Timestamptz `json:"received_at"`
+	MatchStatus      pgtype.Text        `json:"match_status"`
+	PaymentID        pgtype.UUID        `json:"payment_id"`
+	ProcessedAt      pgtype.Timestamptz `json:"processed_at"`
 }
 
 type Session struct {
