@@ -39,11 +39,12 @@ func (m *mockRepository) GetAccountDetail(ctx context.Context, userID string) (*
 	return nil, nil
 }
 
-func (m *mockRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+func (m *mockRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, []string, error) {
 	if m.updateStatusFn != nil {
-		return m.updateStatusFn(ctx, input)
+		user, warning, err := m.updateStatusFn(ctx, input)
+		return user, warning, nil, err
 	}
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }
 
 func (m *mockRepository) GetSystemOverview(ctx context.Context) (*domain.SystemOverview, error) {
@@ -71,7 +72,7 @@ func decodeEnvelope[T any](t *testing.T, body []byte) T {
 }
 
 func setupTestRouter(repo *mockRepository) (http.Handler, *usecase.Service) {
-	svc := usecase.NewService(repo)
+	svc := usecase.NewService(repo, noopSessionRevoker{})
 	handler := NewHandler(svc, func(k string) string { return "https://res.cloudinary.com/" + k })
 
 	r := chi.NewRouter()
@@ -317,4 +318,22 @@ func TestHandler_GetSystemOverview(t *testing.T) {
 	if resp.Users.Total != 100 || resp.Bills.TotalFinalized != 25 {
 		t.Errorf("unexpected system overview response: %+v", resp)
 	}
+}
+
+// noopSessionRevoker: các test ở tầng delivery chỉ quan tâm mã HTTP và hình dạng
+// JSON, không quan tâm việc thu hồi phiên trên Redis.
+type noopSessionRevoker struct{}
+
+func (noopSessionRevoker) RevokeUserSIDs(context.Context, string, []string) (bool, error) {
+	return false, nil
+}
+
+func (noopSessionRevoker) RevokeUser(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+// HasLiveSession trả true vì các test ở đây kiểm hình dạng JSON, và
+// active_sessions_count nay được usecase lấy từ Redis chứ không từ repository.
+func (noopSessionRevoker) HasLiveSession(context.Context, string) (bool, error) {
+	return true, nil
 }

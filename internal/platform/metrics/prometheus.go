@@ -289,6 +289,22 @@ var (
 		},
 		[]string{"route", "app_version_class"},
 	)
+
+	// SessionPurgeExhaustedTotal đếm số job thu hồi phiên bị River loại bỏ sau khi
+	// cạn lượt thử (Spec 0011 Follow up 3).
+	//
+	// Đây là backstop cuối cùng cho việc khoá tài khoản: middleware không còn đọc
+	// users.status, nên khi cả lệnh DEL trực tiếp lẫn job retry đều lỡ, tài khoản
+	// bị khoá vẫn gọi được API tới hết TTL. Bất kỳ giá trị nào khác 0 đều là sự cố
+	// bảo mật cần người xử lý, nên metric này phải có alert.
+	SessionPurgeExhaustedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "paysplit",
+			Subsystem: "session",
+			Name:      "purge_exhausted_total",
+			Help:      "Session revocation purge jobs discarded after exhausting all retries. Any increase means a locked account may still hold a live session.",
+		},
+	)
 )
 
 var activePool *pgxpool.Pool
@@ -324,6 +340,7 @@ func init() {
 	prometheus.MustRegister(UserEventsTotal)
 	prometheus.MustRegister(UserEventInvalidPayloadsTotal)
 	prometheus.MustRegister(LegacySSERequestsTotal)
+	prometheus.MustRegister(SessionPurgeExhaustedTotal)
 }
 
 func RecordSettlementOperation(operation, outcome string) {

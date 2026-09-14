@@ -12,16 +12,18 @@ import (
 )
 
 const clearFCMToken = `-- name: ClearFCMToken :exec
-UPDATE sessions
-SET fcm_token = NULL
+DELETE FROM device_tokens
 WHERE fcm_token = $1 AND user_id = $2
 `
 
 type ClearFCMTokenParams struct {
-	FcmToken pgtype.Text `json:"fcm_token"`
+	FcmToken string      `json:"fcm_token"`
 	UserID   pgtype.UUID `json:"user_id"`
 }
 
+// Gọi khi Firebase báo token không còn hợp lệ (người dùng gỡ app). Xoá hẳn hàng
+// thay vì set NULL: hàng không có token thì không còn ý nghĩa gì, và cột
+// fcm_token là NOT NULL.
 func (q *Queries) ClearFCMToken(ctx context.Context, arg ClearFCMTokenParams) error {
 	_, err := q.db.Exec(ctx, clearFCMToken, arg.FcmToken, arg.UserID)
 	return err
@@ -91,15 +93,18 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 
 const getActiveFCMTokenByUserID = `-- name: GetActiveFCMTokenByUserID :one
 SELECT fcm_token
-FROM sessions
-WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() AND fcm_token IS NOT NULL AND fcm_token <> ''
-ORDER BY issued_at DESC
+FROM device_tokens
+WHERE user_id = $1
+ORDER BY updated_at DESC
 LIMIT 1
 `
 
-func (q *Queries) GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (pgtype.Text, error) {
+// Địa chỉ push thuộc về thiết bị, không thuộc về phiên đăng nhập: không lọc theo
+// trạng thái phiên ở đây, nếu không thì đúng nhóm người dùng lâu không mở app —
+// nhóm cần nhắc nợ nhất — sẽ không bao giờ nhận được thông báo.
+func (q *Queries) GetActiveFCMTokenByUserID(ctx context.Context, userID pgtype.UUID) (string, error) {
 	row := q.db.QueryRow(ctx, getActiveFCMTokenByUserID, userID)
-	var fcm_token pgtype.Text
+	var fcm_token string
 	err := row.Scan(&fcm_token)
 	return fcm_token, err
 }

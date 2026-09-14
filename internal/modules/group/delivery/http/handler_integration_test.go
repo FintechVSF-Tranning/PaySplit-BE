@@ -18,10 +18,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	authdomain "paysplit-backend/internal/modules/auth/domain"
 	grouphttp "paysplit-backend/internal/modules/group/delivery/http"
 	grouppostgres "paysplit-backend/internal/modules/group/repository/postgres"
 	groupusecase "paysplit-backend/internal/modules/group/usecase"
+	"paysplit-backend/internal/platform/session"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
@@ -30,19 +30,15 @@ import (
 // session validates. Session/token verification is auth's own concern with
 // its own test suite; here it is mocked at that boundary so these tests
 // exercise the group HTTP layer against a real Postgres database instead.
-type fakeVerifier struct{}
+type fakeSessionStore struct{}
 
-func (fakeVerifier) Verify(token string) (string, string, string, error) {
-	if token == "" {
-		return "", "", "", fmt.Errorf("empty token")
+// Credential đục giờ vừa là thứ client gửi, vừa là khoá tra cứu. Test ở tầng này
+// dùng thẳng credential làm user ID để giữ nguyên cách các ca test đang gọi API.
+func (fakeSessionStore) Get(_ context.Context, raw string, _ time.Time) (*session.Session, error) {
+	if raw == "" {
+		return nil, session.ErrNotFound
 	}
-	return token, "user", "session-" + token, nil
-}
-
-type fakeSessions struct{}
-
-func (fakeSessions) ValidateSession(_ context.Context, userID, sessionID string, _ time.Time) (*authdomain.SessionIdentity, error) {
-	return &authdomain.SessionIdentity{UserID: userID, Role: "user", SessionID: sessionID}, nil
+	return &session.Session{UserID: raw, Role: "user", SID: "session-" + raw}, nil
 }
 
 func testHandler(t *testing.T) (stdhttp.Handler, *pgxpool.Pool) {
@@ -62,7 +58,7 @@ func testHandler(t *testing.T) (stdhttp.Handler, *pgxpool.Pool) {
 	handler := grouphttp.NewHandler(service, func(key string) string { return "https://images.invalid/" + key })
 
 	router := chi.NewRouter()
-	liveAuth := authmw.Auth(fakeVerifier{}, fakeSessions{})
+	liveAuth := authmw.Auth(fakeSessionStore{})
 	router.Route("/api/v1", func(api chi.Router) {
 		api.Route("/groups", func(r chi.Router) {
 			handler.RegisterGroupRoutes(r, nil, liveAuth, authmw.RateLimitByAccountAndIP(10000, time.Minute))

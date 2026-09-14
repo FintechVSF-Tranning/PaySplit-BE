@@ -13,6 +13,7 @@ import (
 )
 
 type mockRepository struct {
+	revokedSIDs         []string
 	listAccountsFn      func(ctx context.Context, filter repository.ListAccountsFilter) ([]domain.AccountSummary, int64, error)
 	getAccountDetailFn  func(ctx context.Context, userID string) (*domain.AccountDetail, error)
 	updateStatusFn      func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error)
@@ -33,11 +34,40 @@ func (m *mockRepository) GetAccountDetail(ctx context.Context, userID string) (*
 	return nil, nil
 }
 
-func (m *mockRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+func (m *mockRepository) UpdateAccountStatusWithRevocation(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, []string, error) {
 	if m.updateStatusFn != nil {
-		return m.updateStatusFn(ctx, input)
+		user, warning, err := m.updateStatusFn(ctx, input)
+		return user, warning, m.revokedSIDs, err
 	}
-	return nil, nil, nil
+	return nil, nil, nil, nil
+}
+
+// mockSessionRevoker ghi lại lời gọi tới kho phiên Redis: sau khi bỏ JWT, đây là
+// nơi việc khoá tài khoản thực sự có hiệu lực, nên test phải nhìn thấy nó.
+type mockSessionRevoker struct {
+	calledUserID string
+	calledSIDs   []string
+	// revokeUserCalls đếm số lần thu hồi vô điều kiện. Đường khoá tài khoản phải
+	// đi qua đây, không qua RevokeUserSIDs.
+	revokeUserCalls  int
+	revokeUserUserID string
+	// hasLiveSession là câu trả lời giả của Redis cho GetAccountDetail, và
+	// hasLiveSessionUserID ghi lại user được hỏi.
+	hasLiveSession       bool
+	hasLiveSessionUserID string
+	err                  error
+}
+
+func (m *mockSessionRevoker) RevokeUserSIDs(ctx context.Context, userID string, sids []string) (bool, error) {
+	m.calledUserID = userID
+	m.calledSIDs = sids
+	return m.err == nil && len(sids) > 0, m.err
+}
+
+func (m *mockSessionRevoker) RevokeUser(ctx context.Context, userID string) (bool, error) {
+	m.revokeUserCalls++
+	m.revokeUserUserID = userID
+	return m.err == nil, m.err
 }
 
 func (m *mockRepository) GetSystemOverview(ctx context.Context) (*domain.SystemOverview, error) {
@@ -56,7 +86,7 @@ func TestListAccounts_ValidationAndClamping(t *testing.T) {
 				return []domain.AccountSummary{}, 150, nil
 			},
 		}
-		service := NewService(mockRepo)
+		service := NewService(mockRepo, &mockSessionRevoker{})
 
 		out, err := service.ListAccounts(context.Background(), ListAccountsInput{
 			Page:  1,
@@ -77,7 +107,7 @@ func TestListAccounts_ValidationAndClamping(t *testing.T) {
 	})
 
 	t.Run("rejects negative page or limit", func(t *testing.T) {
-		service := NewService(&mockRepository{})
+		service := NewService(&mockRepository{}, &mockSessionRevoker{})
 
 		_, err := service.ListAccounts(context.Background(), ListAccountsInput{Page: -1})
 		if !errors.Is(err, domain.ErrInvalidInput) {
@@ -91,7 +121,7 @@ func TestListAccounts_ValidationAndClamping(t *testing.T) {
 	})
 
 	t.Run("rejects invalid status or role", func(t *testing.T) {
-		service := NewService(&mockRepository{})
+		service := NewService(&mockRepository{}, &mockSessionRevoker{})
 
 		invalidStatus := "invalid_status"
 		_, err := service.ListAccounts(context.Background(), ListAccountsInput{Status: &invalidStatus})
@@ -107,7 +137,7 @@ func TestListAccounts_ValidationAndClamping(t *testing.T) {
 	})
 
 	t.Run("rejects invalid sort_by or sort_order", func(t *testing.T) {
-		service := NewService(&mockRepository{})
+		service := NewService(&mockRepository{}, &mockSessionRevoker{})
 
 		_, err := service.ListAccounts(context.Background(), ListAccountsInput{SortBy: "unknown_column"})
 		if !errors.Is(err, domain.ErrInvalidInput) {
@@ -122,7 +152,7 @@ func TestListAccounts_ValidationAndClamping(t *testing.T) {
 }
 
 func TestGetAccountDetail_Validation(t *testing.T) {
-	service := NewService(&mockRepository{})
+	service := NewService(&mockRepository{}, &mockSessionRevoker{})
 
 	t.Run("rejects invalid UUID", func(t *testing.T) {
 		_, err := service.GetAccountDetail(context.Background(), "invalid-uuid")
@@ -142,7 +172,7 @@ func TestGetAccountDetail_Validation(t *testing.T) {
 				}, nil
 			},
 		}
-		s := NewService(mockRepo)
+		s := NewService(mockRepo, &mockSessionRevoker{})
 		detail, err := s.GetAccountDetail(context.Background(), validID)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -154,7 +184,7 @@ func TestGetAccountDetail_Validation(t *testing.T) {
 }
 
 func TestUpdateAccountStatus_Validation(t *testing.T) {
-	service := NewService(&mockRepository{})
+	service := NewService(&mockRepository{}, &mockSessionRevoker{})
 
 	adminID := uuid.New().String()
 	targetID := uuid.New().String()
@@ -213,7 +243,7 @@ func TestUpdateAccountStatus_Validation(t *testing.T) {
 				return &domain.SafeUser{ID: input.TargetUserID, Status: input.NewStatus}, &domain.WarningMeta{}, nil
 			},
 		}
-		s := NewService(mockRepo)
+		s := NewService(mockRepo, &mockSessionRevoker{})
 		_, _, err := s.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
 			TargetUserID: targetID,
 			AdminID:      adminID,
@@ -237,7 +267,7 @@ func TestUpdateAccountStatus_Validation(t *testing.T) {
 				}, &domain.WarningMeta{UnsettledDebtsCount: 2}, nil
 			},
 		}
-		s := NewService(mockRepo)
+		s := NewService(mockRepo, &mockSessionRevoker{})
 		user, warning, err := s.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
 			TargetUserID: targetID,
 			AdminID:      adminID,
@@ -277,7 +307,7 @@ func TestUpdateAccountStatus_Validation(t *testing.T) {
 						return nil, nil, tc.repoErr
 					},
 				}
-				s := NewService(mockRepo)
+				s := NewService(mockRepo, &mockSessionRevoker{})
 				_, _, err := s.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
 					TargetUserID: targetID,
 					AdminID:      adminID,
@@ -301,7 +331,7 @@ func TestGetSystemOverview(t *testing.T) {
 			}, nil
 		},
 	}
-	s := NewService(mockRepo)
+	s := NewService(mockRepo, &mockSessionRevoker{})
 	res, err := s.GetSystemOverview(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -338,4 +368,175 @@ func repository_MaskBankAccount(accountNumber string) string {
 		return "******" + accountNumber
 	}
 	return "******" + accountNumber[len(accountNumber)-4:]
+}
+
+// Hồi quy cho lỗi "khoá lần hai không có tác dụng".
+//
+// Đường thu hồi từng được gác bằng `if len(revokedSIDs) > 0`, mà danh sách đó
+// đến từ `UPDATE sessions ... WHERE revoked_at IS NULL RETURNING id`. Khi hàng
+// audit đã revoked nhưng key Redis còn sống — đúng trạng thái lệch mà backstop
+// sinh ra để chữa — danh sách rỗng và lệnh khoá không chạm tới Redis. Quản trị
+// viên bấm khoá, API trả 200, và tài khoản bị khoá vẫn dùng được tới hết TTL.
+//
+// covers: AC-11
+func TestUpdateAccountStatus_RevokesUnconditionallyEvenWhenNoSessionRowMatched(t *testing.T) {
+	adminID := uuid.New().String()
+	targetID := uuid.New().String()
+
+	for _, status := range []string{"suspended", "locked"} {
+		t.Run(status+" khi Postgres không khớp hàng nào", func(t *testing.T) {
+			repo := &mockRepository{
+				// Danh sách rỗng: hàng audit đã bị revoke từ lần khoá trước.
+				revokedSIDs: nil,
+				updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+					return &domain.SafeUser{}, nil, nil
+				},
+			}
+			revoker := &mockSessionRevoker{}
+			service := NewService(repo, revoker)
+
+			if _, _, err := service.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
+				TargetUserID: targetID,
+				AdminID:      adminID,
+				Status:       status,
+				Reason:       "khoá lại vì lần đầu lỡ",
+			}); err != nil {
+				t.Fatalf("UpdateAccountStatus lỗi bất ngờ: %v", err)
+			}
+
+			if revoker.revokeUserCalls != 1 {
+				t.Fatalf("RevokeUser được gọi %d lần, want 1: khoá tài khoản phải chạm Redis kể cả khi Postgres không khớp hàng nào", revoker.revokeUserCalls)
+			}
+			if revoker.revokeUserUserID != targetID {
+				t.Fatalf("RevokeUser nhận user_id %q, want %q", revoker.revokeUserUserID, targetID)
+			}
+		})
+	}
+}
+
+// Mở lại tài khoản KHÔNG được thu hồi phiên: người vừa được mở khoá mà bị đá ra
+// là hồi quy theo chiều ngược lại.
+func TestUpdateAccountStatus_ReactivateNeverRevokes(t *testing.T) {
+	repo := &mockRepository{
+		updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+			return &domain.SafeUser{}, nil, nil
+		},
+	}
+	revoker := &mockSessionRevoker{}
+	service := NewService(repo, revoker)
+
+	if _, _, err := service.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
+		TargetUserID: uuid.New().String(),
+		AdminID:      uuid.New().String(),
+		Status:       "active",
+	}); err != nil {
+		t.Fatalf("UpdateAccountStatus lỗi bất ngờ: %v", err)
+	}
+
+	if revoker.revokeUserCalls != 0 {
+		t.Fatalf("RevokeUser được gọi %d lần khi mở lại tài khoản, want 0", revoker.revokeUserCalls)
+	}
+}
+
+// Lỗi Redis lúc khoá phải nổi lên cho admin thấy, không được nuốt: nếu nuốt thì
+// admin tin là đã khoá xong trong khi phiên vẫn sống.
+func TestUpdateAccountStatus_SurfacesRedisFailure(t *testing.T) {
+	repo := &mockRepository{
+		updateStatusFn: func(ctx context.Context, input repository.UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error) {
+			return &domain.SafeUser{}, nil, nil
+		},
+	}
+	revoker := &mockSessionRevoker{err: errors.New("dial tcp: connection refused")}
+	service := NewService(repo, revoker)
+
+	_, _, err := service.UpdateAccountStatus(context.Background(), UpdateAccountStatusInput{
+		TargetUserID: uuid.New().String(),
+		AdminID:      uuid.New().String(),
+		Status:       "suspended",
+		Reason:       "vi phạm",
+	})
+	if err == nil {
+		t.Fatal("Redis hỏng nhưng UpdateAccountStatus trả nil: admin tưởng đã khoá xong")
+	}
+}
+
+// hasLiveSession giả lập câu trả lời của Redis cho GetAccountDetail. Mặc định là
+// false (zero value) để test nào quan tâm phải khai báo tường minh.
+func (m *mockSessionRevoker) HasLiveSession(ctx context.Context, userID string) (bool, error) {
+	m.hasLiveSessionUserID = userID
+	return m.hasLiveSession, m.err
+}
+
+// TestGetAccountDetailCountsSessionsFromRedisNotPostgres canh bất biến của spec
+// 0011: bảng `sessions` chỉ còn là bản ghi audit, nên không được đọc nó để trả
+// lời câu hỏi "user còn phiên sống không".
+//
+// Kịch bản chính là kịch bản đã sai trước khi sửa: người dùng đăng nhập rồi ngừng
+// mở app từ ngày thứ tám. Phiên trên Redis đã chết vì TTL trượt, nhưng hàng audit
+// mang `expires_at = now + 30 ngày` nên câu SQL cũ vẫn đếm nó là đang hoạt động.
+func TestGetAccountDetailCountsSessionsFromRedisNotPostgres(t *testing.T) {
+	userID := uuid.New().String()
+
+	tests := []struct {
+		name          string
+		postgresSays  int64
+		redisSaysLive bool
+		want          int64
+	}{
+		{
+			name:          "phiên chết vì không hoạt động, Postgres vẫn đếm là sống",
+			postgresSays:  1,
+			redisSaysLive: false,
+			want:          0,
+		},
+		{
+			name:          "phiên còn sống thật",
+			postgresSays:  1,
+			redisSaysLive: true,
+			want:          1,
+		},
+		{
+			name:          "hàng audit cũ chưa dọn vẫn không được cộng dồn",
+			postgresSays:  7,
+			redisSaysLive: true,
+			want:          1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockRepository{
+				getAccountDetailFn: func(ctx context.Context, id string) (*domain.AccountDetail, error) {
+					return &domain.AccountDetail{ActiveSessionsCount: tc.postgresSays}, nil
+				},
+			}
+			revoker := &mockSessionRevoker{hasLiveSession: tc.redisSaysLive}
+
+			detail, err := NewService(repo, revoker).GetAccountDetail(context.Background(), userID)
+			if err != nil {
+				t.Fatalf("GetAccountDetail: %v", err)
+			}
+			if detail.ActiveSessionsCount != tc.want {
+				t.Fatalf("active_sessions_count = %d, want %d: con số phải đến từ Redis, không phải từ bảng sessions", detail.ActiveSessionsCount, tc.want)
+			}
+			if revoker.hasLiveSessionUserID != userID {
+				t.Fatalf("Redis được hỏi về user %q, want %q", revoker.hasLiveSessionUserID, userID)
+			}
+		})
+	}
+}
+
+// TestGetAccountDetailSurfacesSessionStoreFailure: khi Redis lỗi, trang quản trị
+// phải báo lỗi chứ không được lặng lẽ hiển thị con số cũ của Postgres.
+func TestGetAccountDetailSurfacesSessionStoreFailure(t *testing.T) {
+	repo := &mockRepository{
+		getAccountDetailFn: func(ctx context.Context, id string) (*domain.AccountDetail, error) {
+			return &domain.AccountDetail{ActiveSessionsCount: 1}, nil
+		},
+	}
+	revoker := &mockSessionRevoker{err: errors.New("redis down")}
+
+	if _, err := NewService(repo, revoker).GetAccountDetail(context.Background(), uuid.New().String()); err == nil {
+		t.Fatal("want lỗi khi kho phiên hỏng, got nil: nuốt lỗi ở đây chỉ đổi một lỗi nhìn thấy được thành một con số nói dối")
+	}
 }

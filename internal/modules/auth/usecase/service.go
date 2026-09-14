@@ -16,6 +16,7 @@ import (
 
 	"paysplit-backend/internal/modules/auth/domain"
 	"paysplit-backend/internal/modules/auth/repository"
+	"paysplit-backend/internal/platform/session"
 )
 
 type PasswordManager interface {
@@ -24,8 +25,14 @@ type PasswordManager interface {
 	Compare(string, string) error
 }
 
-type TokenIssuer interface {
-	Issue(userID, role, sessionID string) (string, time.Time, error)
+// SessionStore là nguồn phán quyết cho câu hỏi "credential này còn hiệu lực
+// không". Tầng usecase điều phối cả nó lẫn repository Postgres: Postgres giữ bản
+// ghi audit, Redis giữ quyền phán quyết, và THỨ TỰ ghi hai bên khác nhau tuỳ
+// từng luồng — xem chú thích ở mỗi chỗ gọi.
+type SessionStore interface {
+	Create(ctx context.Context, raw string, sess session.Session, now time.Time) error
+	PeekAndDelete(ctx context.Context, raw string) (*session.Session, error)
+	RevokeUserSIDs(ctx context.Context, userID string, sids []string) (bool, error)
 }
 
 type Mailer interface {
@@ -49,7 +56,7 @@ type AvatarStorage interface {
 type Service struct {
 	repo            repository.Repository
 	passwords       PasswordManager
-	tokens          TokenIssuer
+	sessions        SessionStore
 	mailer          Mailer
 	banks           BankDirectory
 	images          ImageProcessor
@@ -59,16 +66,19 @@ type Service struct {
 	sessionTTL      time.Duration
 }
 
+// SessionTTL là hạn của HÀNG AUDIT trong bảng sessions, phải đặt bằng trần tuyệt
+// đối của Redis chứ không phải TTL trượt: worker dọn rác xoá hàng theo expires_at,
+// nên hàng ngắn hạn hơn phiên sẽ biến mất trong khi phiên vẫn đang sống.
 type Options struct{ VerificationTTL, ResetTTL, SessionTTL time.Duration }
 
-func NewService(repo repository.Repository, passwords PasswordManager, tokens TokenIssuer, mailer Mailer, banks BankDirectory, images ImageProcessor, avatars AvatarStorage, opts Options) *Service {
-	if repo == nil || passwords == nil || tokens == nil || mailer == nil || banks == nil || images == nil || avatars == nil {
+func NewService(repo repository.Repository, passwords PasswordManager, sessions SessionStore, mailer Mailer, banks BankDirectory, images ImageProcessor, avatars AvatarStorage, opts Options) *Service {
+	if repo == nil || passwords == nil || sessions == nil || mailer == nil || banks == nil || images == nil || avatars == nil {
 		panic("auth service dependencies must not be nil")
 	}
 	if opts.VerificationTTL <= 0 || opts.ResetTTL <= 0 || opts.SessionTTL <= 0 {
 		panic("auth service TTL values must be positive")
 	}
-	return &Service{repo: repo, passwords: passwords, tokens: tokens, mailer: mailer, banks: banks, images: images, avatars: avatars, verificationTTL: opts.VerificationTTL, resetTTL: opts.ResetTTL, sessionTTL: opts.SessionTTL}
+	return &Service{repo: repo, passwords: passwords, sessions: sessions, mailer: mailer, banks: banks, images: images, avatars: avatars, verificationTTL: opts.VerificationTTL, resetTTL: opts.ResetTTL, sessionTTL: opts.SessionTTL}
 }
 
 type SignUpInput struct{ Email, PhoneNumber, DisplayName, Password, ClientIP string }
@@ -181,10 +191,13 @@ func (s *Service) sendUserToken(ctx context.Context, inputEmail, clientIP, kind 
 }
 
 type SignInInput struct{ Email, Password, DeviceID, DeviceName, FCMToken string }
+
+// TokenOutput chỉ còn một credential. Không có access/refresh: session ID đục
+// vừa là thứ client gửi mỗi request, vừa tự gia hạn qua TTL trượt trên Redis.
 type TokenOutput struct {
-	User                              *domain.User
-	AccessToken, RefreshToken         string
-	AccessExpiresAt, RefreshExpiresAt time.Time
+	User      *domain.User
+	SessionID string
+	ExpiresAt time.Time
 }
 
 func (s *Service) SignIn(ctx context.Context, in SignInInput) (*TokenOutput, error) {
@@ -223,48 +236,58 @@ func (s *Service) SignIn(ctx context.Context, in SignInInput) (*TokenOutput, err
 		}
 		return nil, domain.ErrInvalidCredentials
 	}
-	refresh, refreshHash, err := domain.NewOpaqueToken()
-	if err != nil {
-		return nil, err
-	}
+	// Postgres TRƯỚC, Redis SAU. Transaction này còn kiểm mật khẩu, trạng thái tài
+	// khoản và khoá đăng nhập, nên nó có quyền huỷ bỏ hợp lệ; chạm Redis trước khi
+	// biết kết quả sẽ để một lần đăng nhập thất bại giết mất phiên đang dùng.
 	sessionExpires := now.Add(s.sessionTTL)
-	user, session, err := s.repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: deviceID, DeviceName: deviceName, FCMToken: fcmToken, RefreshTokenHash: refreshHash, Now: now, ExpiresAt: sessionExpires})
+	user, sess, err := s.repo.CreateSession(ctx, repository.CreateSessionParams{UserID: user.ID, ExpectedPasswordHash: user.PasswordHash, DeviceID: deviceID, DeviceName: deviceName, FCMToken: fcmToken, Now: now, ExpiresAt: sessionExpires})
 	if err != nil {
 		return nil, err
 	}
-	access, accessExpiry, err := s.tokens.Issue(user.ID, user.Role, session.ID)
+	raw, err := session.NewCredential()
 	if err != nil {
-		_ = s.repo.RevokeSession(ctx, user.ID, session.ID, "access_issue_failed", time.Now())
+		_ = s.repo.RevokeSession(ctx, user.ID, sess.ID, "session_store_failed", time.Now())
 		return nil, err
 	}
-	return &TokenOutput{User: user, AccessToken: access, RefreshToken: refresh, AccessExpiresAt: accessExpiry, RefreshExpiresAt: session.ExpiresAt}, nil
+	// SID gắn credential với hàng audit vừa tạo. Middleware sẽ đặt SID này vào
+	// context — không bao giờ đặt credential — vì tầng SSE parse nó thành UUID.
+	if err = s.sessions.Create(ctx, raw, session.Session{SID: sess.ID, UserID: user.ID, Role: user.Role}, now); err != nil {
+		// Hàng audit đã tồn tại nhưng không có credential nào trỏ tới nó; thu hồi
+		// để nó không chiếm chỗ phiên sống duy nhất của user.
+		_ = s.repo.RevokeSession(ctx, user.ID, sess.ID, "session_store_failed", time.Now())
+		return nil, err
+	}
+	return &TokenOutput{User: user, SessionID: raw, ExpiresAt: sess.ExpiresAt}, nil
 }
 
-func (s *Service) Refresh(ctx context.Context, raw, device string) (*TokenOutput, error) {
+// SignOut nhận credential thô thay vì userID/sessionID: sau khi bỏ JWT thì không
+// còn cách nào biết ai đang gọi mà không tra kho phiên, nên route này không đi qua
+// middleware xác thực và handler đưa thẳng bearer xuống đây.
+//
+// Redis TRƯỚC, Postgres SAU — ngược với SignIn. Redis là nguồn phán quyết: xoá
+// trước rồi ghi audit hỏng thì người dùng đã thực sự đăng xuất (hỏng theo hướng
+// đóng); làm ngược lại sẽ để hàng audit ghi "đã thu hồi" trong khi credential vẫn
+// dùng được (hỏng theo hướng mở).
+//
+// Luôn trả nil khi không tìm thấy, để đăng xuất giữ tính idempotent.
+func (s *Service) SignOut(ctx context.Context, raw string) error {
 	if !validRawToken(raw) {
-		return nil, domain.ErrInvalidOrExpiredToken
+		return nil
 	}
-	deviceID, err := canonicalUUID(device)
+	sess, err := s.sessions.PeekAndDelete(ctx, raw)
+	if errors.Is(err, session.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
-		return nil, domain.ErrInvalidOrExpiredToken
+		return err
 	}
-	next, nextHash, err := domain.NewOpaqueToken()
-	if err != nil {
-		return nil, err
+	if err = s.repo.RevokeSession(ctx, sess.UserID, sess.SID, "sign_out", time.Now()); err != nil {
+		// Phiên đã chết trên Redis nhưng NOTIFY nằm trong transaction vừa hỏng,
+		// nên stream SSE đang mở sẽ chạy tiếp tới maxConnectionAge. Phát bù.
+		_ = s.repo.PublishSessionEnded(ctx, []string{sess.SID})
+		return err
 	}
-	rotated, err := s.repo.RotateRefresh(ctx, domain.HashToken(raw), nextHash, deviceID, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	access, accessExpiry, err := s.tokens.Issue(rotated.User.ID, rotated.User.Role, rotated.SessionID)
-	if err != nil {
-		return nil, err
-	}
-	return &TokenOutput{AccessToken: access, RefreshToken: next, AccessExpiresAt: accessExpiry, RefreshExpiresAt: rotated.ExpiresAt}, nil
-}
-
-func (s *Service) SignOut(ctx context.Context, userID, sessionID string) error {
-	return s.repo.RevokeSession(ctx, userID, sessionID, "sign_out", time.Now())
+	return nil
 }
 
 func (s *Service) ResetPassword(ctx context.Context, email, otp, newPassword string) error {
@@ -279,7 +302,20 @@ func (s *Service) ResetPassword(ctx context.Context, email, otp, newPassword str
 	if err != nil {
 		return err
 	}
-	return s.repo.ResetPassword(ctx, normEmail, domain.HashToken(otp), hash, time.Now())
+	// Postgres TRƯỚC, Redis SAU — và ở đây thứ tự là vấn đề BẢO MẬT, không phải sở
+	// thích. Transaction này commit rồi mới trả ErrInvalidOrExpiredToken khi OTP
+	// sai hoặc hết lượt thử, nên nếu xoá Redis trước khi biết OTP có đúng không,
+	// bất kỳ ai biết email của nạn nhân đều đá được họ ra khỏi app bằng một mã sai.
+	userID, revokedSIDs, err := s.repo.ResetPassword(ctx, normEmail, domain.HashToken(otp), hash, time.Now())
+	if err != nil {
+		return err
+	}
+	if len(revokedSIDs) > 0 {
+		if _, revokeErr := s.sessions.RevokeUserSIDs(ctx, userID, revokedSIDs); revokeErr != nil {
+			return revokeErr
+		}
+	}
+	return nil
 }
 
 func (s *Service) ChangePassword(ctx context.Context, userID, sessionID, current, next string) error {

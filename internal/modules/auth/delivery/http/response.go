@@ -20,13 +20,15 @@ type userResponse struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
-type tokenResponse struct {
-	User                  *userResponse `json:"user,omitempty"`
-	TokenType             string        `json:"token_type"`
-	AccessToken           string        `json:"access_token"`
-	AccessTokenExpiresAt  time.Time     `json:"access_token_expires_at"`
-	RefreshToken          string        `json:"refresh_token"`
-	RefreshTokenExpiresAt time.Time     `json:"refresh_token_expires_at"`
+
+// sessionResponse thay cho cặp access/refresh token cũ. Client chỉ còn giữ một
+// credential và gửi kèm mọi request dưới dạng `Authorization: Bearer <session_id>`.
+// Không có endpoint làm mới: TTL trượt trên Redis tự gia hạn phiên mỗi request.
+type sessionResponse struct {
+	User      *userResponse `json:"user,omitempty"`
+	TokenType string        `json:"token_type"`
+	SessionID string        `json:"session_id"`
+	ExpiresAt time.Time     `json:"expires_at"`
 }
 
 func (h *Handler) userResponse(user *domain.User) userResponse {

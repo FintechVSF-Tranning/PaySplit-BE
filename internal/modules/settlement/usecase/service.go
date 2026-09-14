@@ -3,10 +3,8 @@ package usecase
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -17,20 +15,12 @@ import (
 	"paysplit-backend/internal/modules/settlement/repository"
 )
 
-type ProofStorage interface {
-	Upload(context.Context, []byte, string) (string, error)
-	SignedURL(string, time.Duration) (string, error)
-	Delete(context.Context, string) error
-}
 type TxNotifier interface {
 	NotifyTx(context.Context, repository.Executor, string, string, map[string]string) error
 }
 
 type Service struct {
 	repo      repository.Repository
-	storage   ProofStorage
-	proofMax  int64
-	signedTTL time.Duration
 	remindMax int32
 	notifier  TxNotifier
 }
@@ -62,17 +52,6 @@ func (s *Service) SetReminderMaxCount(maxCount int) {
 		panic("settlement reminder maximum must be between 1 and 3")
 	}
 	s.remindMax = int32(maxCount)
-}
-
-func (s *Service) SetProofStorage(storage ProofStorage, maxBytes int64, signedTTL time.Duration) {
-	s.storage = storage
-	if maxBytes <= 0 {
-		maxBytes = 10 << 20
-	}
-	if signedTTL <= 0 {
-		signedTTL = 5 * time.Minute
-	}
-	s.proofMax, s.signedTTL = maxBytes, signedTTL
 }
 
 type GeneratePaymentInput struct {
@@ -111,150 +90,20 @@ func (s *Service) GetPayment(ctx context.Context, groupID, callerUserID, payment
 	if groupID == "" || callerUserID == "" || paymentID == "" {
 		return nil, domain.ErrPaymentNotFound
 	}
-	payment, err := s.repo.GetPayment(ctx, groupID, callerUserID, paymentID)
-	if err == nil {
-		s.signProof(payment)
-	}
-	return payment, err
+	return s.repo.GetPayment(ctx, groupID, callerUserID, paymentID)
 }
 
-type SubmitProofInput struct {
-	GroupID, CallerUserID, PaymentID, IdempotencyKey, ContentType string
-	Image                                                         []byte
-	Note                                                          *string
-}
-
-func (s *Service) SubmitProof(ctx context.Context, in SubmitProofInput) (*domain.Payment, error) {
-	if s.storage == nil {
-		return nil, domain.ErrStorageUnavailable
+// SettleBankTransfer đối soát một giao dịch tiền vào do ngân hàng báo với
+// payment mang cùng mã tham chiếu và gạch nợ nếu khớp.
+func (s *Service) SettleBankTransfer(ctx context.Context, transfer domain.BankTransfer) (domain.BankMatchResult, error) {
+	if transfer.TransactionID <= 0 || strings.TrimSpace(transfer.ReferenceCode) == "" || transfer.Amount <= 0 || len(transfer.AccountNumbers) == 0 {
+		return domain.BankMatchResult{}, domain.ErrInvalidInput
 	}
-	if strings.TrimSpace(in.IdempotencyKey) == "" {
-		return nil, domain.ErrInvalidInput
-	}
-	if len(in.Image) == 0 || int64(len(in.Image)) > s.proofMax || !validProofImage(in.Image, in.ContentType) {
-		return nil, domain.ErrInvalidImage
-	}
-	if in.Note != nil {
-		value := strings.TrimSpace(*in.Note)
-		if len([]rune(value)) > 500 {
-			return nil, domain.ErrInvalidInput
-		}
-		in.Note = &value
-	}
-	imageHash := sha256.Sum256(in.Image)
-	canonical, _ := json.Marshal(map[string]any{"group_id": in.GroupID, "payment_id": in.PaymentID, "note": in.Note, "image_sha256": hex.EncodeToString(imageHash[:])})
-	requestHash := sha256.Sum256(canonical)
-	requestHashValue := hex.EncodeToString(requestHash[:])
-	operationID, replay, err := s.repo.PrepareProof(ctx, in.GroupID, in.CallerUserID, in.PaymentID, in.IdempotencyKey, requestHashValue)
-	if err != nil {
-		return nil, err
-	}
-	if replay != nil {
-		s.signProof(replay)
-		return replay, nil
-	}
-	objectKey := "payments/" + in.PaymentID + "/proofs/" + operationID
-	uploaded, err := s.storage.Upload(ctx, in.Image, objectKey)
-	if err != nil {
-		resetErr := s.repo.ResetProofAttempt(ctx, in.CallerUserID, in.IdempotencyKey, requestHashValue, operationID, false)
-		return nil, errors.Join(domain.ErrStorageUnavailable, resetErr)
-	}
-	payment, err := s.repo.SubmitProof(ctx, repository.SubmitProofInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, PaymentID: in.PaymentID, ObjectKey: uploaded, Note: in.Note, IdempotencyKey: in.IdempotencyKey, RequestHash: requestHashValue, OperationID: operationID, BeforeCommit: s.notify("payment_submitted")})
-	if err != nil {
-		var cleanupErr error
-		if deleteErr := s.storage.Delete(ctx, uploaded); deleteErr != nil {
-			cleanupErr = s.repo.QueueMediaCleanup(ctx, uploaded, "proof submission compensation")
-		}
-		resetErr := s.repo.ResetProofAttempt(ctx, in.CallerUserID, in.IdempotencyKey, requestHashValue, operationID, true)
-		return nil, errors.Join(err, cleanupErr, resetErr)
-	}
-	s.signProof(payment)
-	return payment, nil
-}
-
-func (s *Service) signProof(payment *domain.Payment) {
-	if payment == nil || payment.ImageObjectKey == nil || s.storage == nil {
-		return
-	}
-	if value, err := s.storage.SignedURL(*payment.ImageObjectKey, s.signedTTL); err == nil {
-		payment.ImageURL = &value
-	}
-}
-
-func validProofImage(data []byte, contentType string) bool {
-	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	if contentType == "image/heif" {
-		contentType = "image/heic"
-	}
-	detected := DetectProofContentType(data)
-	if contentType == "" || contentType == "application/octet-stream" {
-		return detected != ""
-	}
-	return contentType == detected
-}
-
-// DetectProofContentType validates file signatures independently of multipart headers.
-func DetectProofContentType(data []byte) string {
-	if len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff {
-		return "image/jpeg"
-	}
-	if len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n" {
-		return "image/png"
-	}
-	if len(data) >= 12 && string(data[4:8]) == "ftyp" {
-		boxEnd := int(binary.BigEndian.Uint32(data[:4]))
-		if boxEnd == 0 {
-			boxEnd = len(data)
-		}
-		if boxEnd < 12 || boxEnd > len(data) {
-			return ""
-		}
-		for offset := 8; offset+4 <= boxEnd; offset += 4 {
-			switch string(data[offset : offset+4]) {
-			case "heic", "heix", "hevc", "hevx", "mif1", "msf1":
-				return "image/heic"
-			}
-		}
-	}
-	return ""
-}
-
-type PaymentMutationInput struct {
-	GroupID, CallerUserID, PaymentID, IdempotencyKey string
-	Reason                                           *string
-}
-
-func (s *Service) ConfirmPayment(ctx context.Context, in PaymentMutationInput) (*domain.Payment, []string, error) {
-	if strings.TrimSpace(in.IdempotencyKey) == "" {
-		return nil, nil, domain.ErrInvalidInput
-	}
-	hash := canonicalMutationHash(in, "confirm")
-	payment, ids, err := s.repo.ConfirmPayment(ctx, repository.PaymentMutationInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, PaymentID: in.PaymentID, IdempotencyKey: in.IdempotencyKey, RequestHash: hash, BeforeCommit: s.notify("payment_confirmed")})
-	if err == nil {
-		s.signProof(payment)
-	}
-	return payment, ids, err
-}
-func (s *Service) RejectPayment(ctx context.Context, in PaymentMutationInput) (*domain.Payment, []string, error) {
-	if strings.TrimSpace(in.IdempotencyKey) == "" || in.Reason == nil {
-		return nil, nil, domain.ErrInvalidInput
-	}
-	reason := strings.TrimSpace(*in.Reason)
-	if len([]rune(reason)) < 1 || len([]rune(reason)) > 500 {
-		return nil, nil, domain.ErrInvalidInput
-	}
-	in.Reason = &reason
-	hash := canonicalMutationHash(in, "reject")
-	payment, ids, err := s.repo.RejectPayment(ctx, repository.PaymentMutationInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, PaymentID: in.PaymentID, Reason: &reason, IdempotencyKey: in.IdempotencyKey, RequestHash: hash, BeforeCommit: s.notify("payment_rejected")})
-	if err == nil {
-		s.signProof(payment)
-	}
-	return payment, ids, err
-}
-func canonicalMutationHash(in PaymentMutationInput, operation string) string {
-	raw, _ := json.Marshal(map[string]any{"operation": operation, "group_id": in.GroupID, "payment_id": in.PaymentID, "reason": in.Reason})
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return s.repo.SettleBankTransfer(ctx, repository.BankTransferInput{
+		Transfer:       transfer,
+		NotifyDebtor:   s.notify("payment_bank_confirmed"),
+		NotifyCreditor: s.notify("payment_bank_received"),
+	})
 }
 
 type RemindInput struct{ GroupID, CallerUserID, DebtID, IdempotencyKey string }
@@ -270,8 +119,19 @@ func (s *Service) RemindDebt(ctx context.Context, in RemindInput) (*domain.Remin
 func (s *Service) ProcessAutomatedReminders(ctx context.Context, staleBefore time.Time, maxCount int) error {
 	return s.repo.ProcessAutomatedReminders(ctx, staleBefore, maxCount, s.notify("debt_reminded"))
 }
-func (s *Service) ProcessStalledPayments(ctx context.Context, submittedBefore time.Time) error {
-	return s.repo.ProcessStalledPayments(ctx, submittedBefore, s.notify("payment_stalled_confirmation"))
+
+type MarkReceivedInput struct{ GroupID, CallerUserID, DebtID, IdempotencyKey string }
+
+// MarkDebtReceived là đường dự phòng khi ngân hàng không tự khớp được giao dịch
+// (sai số tiền, mất mã tham chiếu, SePay lỗi): người nhận tự xác nhận đã nhận
+// đủ tiền và khoản nợ được gạch ngay, không cần minh chứng.
+func (s *Service) MarkDebtReceived(ctx context.Context, in MarkReceivedInput) (*domain.Payment, []string, error) {
+	if strings.TrimSpace(in.IdempotencyKey) == "" {
+		return nil, nil, domain.ErrInvalidInput
+	}
+	raw, _ := json.Marshal(map[string]string{"operation": "mark_received", "group_id": in.GroupID, "debt_id": in.DebtID})
+	sum := sha256.Sum256(raw)
+	return s.repo.MarkDebtReceived(ctx, repository.MarkReceivedInput{GroupID: in.GroupID, CallerUserID: in.CallerUserID, DebtID: in.DebtID, IdempotencyKey: in.IdempotencyKey, RequestHash: hex.EncodeToString(sum[:]), NotifyDebtor: s.notify("payment_marked_received")})
 }
 
 func (s *Service) ListExpenses(ctx context.Context, in repository.ListInput) (*domain.ExpensePage, error) {

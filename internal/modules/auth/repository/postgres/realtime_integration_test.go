@@ -104,17 +104,12 @@ func TestResetPasswordControlClosesTheLiveSessionBeyondFiftyRetained(t *testing.
 	var liveSID uuid.UUID
 	base := time.Now().Add(-time.Duration(logins) * time.Second)
 	for i := 0; i < logins; i++ {
-		_, refreshHash, tokenErr := domain.NewOpaqueToken()
-		if tokenErr != nil {
-			t.Fatal(tokenErr)
-		}
 		now := base.Add(time.Duration(i) * time.Second)
 		_, session, sessErr := repo.CreateSession(ctx, repository.CreateSessionParams{
 			UserID:               user.ID,
 			ExpectedPasswordHash: user.PasswordHash,
 			DeviceID:             uuid.Must(uuid.NewV7()).String(),
 			DeviceName:           "device",
-			RefreshTokenHash:     refreshHash,
 			Now:                  now,
 			ExpiresAt:            now.Add(7 * 24 * time.Hour),
 		})
@@ -133,7 +128,7 @@ func TestResetPasswordControlClosesTheLiveSessionBeyondFiftyRetained(t *testing.
 	if err = repo.CreateUserToken(ctx, user.ID, domain.TokenPasswordReset, resetHash, time.Now().Add(10*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err = repo.ResetPassword(ctx, user.Email, domain.HashToken(resetOTP), "new-password-hash", time.Now()); err != nil {
+	if _, _, err = repo.ResetPassword(ctx, user.Email, domain.HashToken(resetOTP), "new-password-hash", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,17 +223,12 @@ func TestSecondRevocationPublishesNoStaleSIDs(t *testing.T) {
 	SetRealtimePublisher(repo, &realtime.Publisher{Enabled: true})
 	user := seedVerifiedUser(t, ctx, pool, repo, "realtime.revoke.test@example.invalid", "+84987650002")
 
-	_, refreshHash, err := domain.NewOpaqueToken()
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now()
 	_, session, err := repo.CreateSession(ctx, repository.CreateSessionParams{
 		UserID:               user.ID,
 		ExpectedPasswordHash: user.PasswordHash,
 		DeviceID:             uuid.Must(uuid.NewV7()).String(),
 		DeviceName:           "device",
-		RefreshTokenHash:     refreshHash,
 		Now:                  now,
 		ExpiresAt:            now.Add(7 * 24 * time.Hour),
 	})

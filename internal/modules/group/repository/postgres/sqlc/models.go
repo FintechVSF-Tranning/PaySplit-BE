@@ -133,6 +133,15 @@ type Debt struct {
 	LastRemindedAt   pgtype.Timestamptz `json:"last_reminded_at"`
 }
 
+type DeviceToken struct {
+	ID        pgtype.UUID        `json:"id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	DeviceID  pgtype.UUID        `json:"device_id"`
+	FcmToken  string             `json:"fcm_token"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Group struct {
 	ID                     pgtype.UUID        `json:"id"`
 	Name                   string             `json:"name"`
@@ -272,6 +281,8 @@ type Payment struct {
 	RecipientAccountNumber pgtype.Text        `json:"recipient_account_number"`
 	RecipientAccountHolder pgtype.Text        `json:"recipient_account_holder"`
 	StalledAlertedAt       pgtype.Timestamptz `json:"stalled_alerted_at"`
+	ConfirmationSource     string             `json:"confirmation_source"`
+	BankTransactionID      pgtype.Int8        `json:"bank_transaction_id"`
 }
 
 type PaymentDebt struct {
@@ -297,6 +308,27 @@ type PaymentIdempotencyKey struct {
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 }
 
+type SepayTransaction struct {
+	ID               int64              `json:"id"`
+	Gateway          string             `json:"gateway"`
+	TransactionDate  pgtype.Timestamptz `json:"transaction_date"`
+	AccountNumber    string             `json:"account_number"`
+	SubAccount       pgtype.Text        `json:"sub_account"`
+	Code             pgtype.Text        `json:"code"`
+	Content          string             `json:"content"`
+	TransferType     string             `json:"transfer_type"`
+	TransferAmount   int64              `json:"transfer_amount"`
+	Accumulated      int64              `json:"accumulated"`
+	ReferenceCode    pgtype.Text        `json:"reference_code"`
+	Description      string             `json:"description"`
+	PaymentReference pgtype.Text        `json:"payment_reference"`
+	RawPayload       []byte             `json:"raw_payload"`
+	ReceivedAt       pgtype.Timestamptz `json:"received_at"`
+	MatchStatus      pgtype.Text        `json:"match_status"`
+	PaymentID        pgtype.UUID        `json:"payment_id"`
+	ProcessedAt      pgtype.Timestamptz `json:"processed_at"`
+}
+
 type Session struct {
 	ID            pgtype.UUID        `json:"id"`
 	UserID        pgtype.UUID        `json:"user_id"`
@@ -306,17 +338,6 @@ type Session struct {
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt     pgtype.Timestamptz `json:"revoked_at"`
 	RevokedReason pgtype.Text        `json:"revoked_reason"`
-	FcmToken      pgtype.Text        `json:"fcm_token"`
-}
-
-type SessionRefreshToken struct {
-	ID        pgtype.UUID        `json:"id"`
-	SessionID pgtype.UUID        `json:"session_id"`
-	TokenHash []byte             `json:"token_hash"`
-	IssuedAt  pgtype.Timestamptz `json:"issued_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	UsedAt    pgtype.Timestamptz `json:"used_at"`
-	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
 }
 
 type User struct {

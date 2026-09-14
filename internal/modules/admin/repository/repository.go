@@ -29,6 +29,11 @@ type UpdateStatusInput struct {
 type Repository interface {
 	ListAccounts(ctx context.Context, filter ListAccountsFilter) ([]domain.AccountSummary, int64, error)
 	GetAccountDetail(ctx context.Context, userID string) (*domain.AccountDetail, error)
-	UpdateAccountStatusWithRevocation(ctx context.Context, input UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, error)
+	// UpdateAccountStatusWithRevocation trả thêm SID của các phiên vừa bị đánh dấu
+	// revoked trong transaction. Danh sách này CHỈ dùng cho tín hiệu `session.ended`
+	// qua pg_notify; việc thu hồi trên Redis là vô điều kiện theo user và không đọc
+	// nó, vì gác theo danh sách này chính là lỗi khiến khóa tài khoản lần hai không
+	// có tác dụng (spec 0011 Follow up 1, spec 0012).
+	UpdateAccountStatusWithRevocation(ctx context.Context, input UpdateStatusInput) (*domain.SafeUser, *domain.WarningMeta, []string, error)
 	GetSystemOverview(ctx context.Context) (*domain.SystemOverview, error)
 }

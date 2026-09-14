@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"paysplit-backend/internal/modules/admin/domain"
@@ -69,17 +70,11 @@ func seedTestSession(t *testing.T, pool *pgxpool.Pool, userID string) (sessionID
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokenHash := make([]byte, 32)
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO session_refresh_tokens (session_id, token_hash, issued_at, expires_at)
-		VALUES ($1, $2, $3, $4)`, sessionID, tokenHash, now, now.Add(7*24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
 	return sessionID
 }
 
 // TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit covers AC-4: transitioning
-// an account to suspended must update users.status, revoke all active sessions and refresh tokens,
+// an account to suspended must update users.status, revoke all active sessions,
 // and record the mutation in admin_audit_logs, all within one transaction.
 func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t *testing.T) {
 	pool := openTestPool(t)
@@ -91,7 +86,7 @@ func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t 
 	sessionID := seedTestSession(t, pool, targetID)
 
 	repo := New(pool)
-	safeUser, warning, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	safeUser, warning, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID,
 		AdminID:      adminID,
 		NewStatus:    "suspended",
@@ -127,14 +122,6 @@ func TestUpdateAccountStatusWithRevocation_SuspendRevokesSessionsAndLogsAudit(t 
 		t.Fatalf("expected revoked_reason admin_suspended, got %v", revokedReason)
 	}
 
-	var refreshRevokedAt *time.Time
-	if err := pool.QueryRow(ctx, `SELECT revoked_at FROM session_refresh_tokens WHERE session_id=$1`, sessionID).Scan(&refreshRevokedAt); err != nil {
-		t.Fatal(err)
-	}
-	if refreshRevokedAt == nil {
-		t.Fatal("expected refresh token to be revoked, revoked_at is null")
-	}
-
 	var action, reason string
 	if err := pool.QueryRow(ctx, `SELECT action, reason FROM admin_audit_logs WHERE target_user_id=$1 AND admin_id=$2`, targetID, adminID).Scan(&action, &reason); err != nil {
 		t.Fatal(err)
@@ -160,7 +147,7 @@ func TestUpdateAccountStatusWithRevocation_LockAndReactivateMapToValidEnumAction
 
 	repo := New(pool)
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID, AdminID: adminID, NewStatus: "locked", Reason: "policy",
 	}); err != nil {
 		t.Fatalf("lock transition failed: %v", err)
@@ -173,7 +160,7 @@ func TestUpdateAccountStatusWithRevocation_LockAndReactivateMapToValidEnumAction
 		t.Fatalf("expected audit action 'lock', got %q", lockAction)
 	}
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: targetID, AdminID: adminID, NewStatus: "active", Reason: "restored",
 	}); err != nil {
 		t.Fatalf("reactivate transition failed: %v", err)
@@ -198,13 +185,13 @@ func TestUpdateAccountStatusWithRevocation_SelfAndAdminProtection(t *testing.T) 
 
 	repo := New(pool)
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: adminID, AdminID: adminID, NewStatus: "locked", Reason: "test",
 	}); !errors.Is(err, domain.ErrCannotModifySelf) {
 		t.Fatalf("expected ErrCannotModifySelf, got %v", err)
 	}
 
-	if _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
 		TargetUserID: otherAdminID, AdminID: adminID, NewStatus: "suspended", Reason: "test",
 	}); !errors.Is(err, domain.ErrCannotModifyAdmin) {
 		t.Fatalf("expected ErrCannotModifyAdmin, got %v", err)
@@ -247,5 +234,109 @@ func TestGetSystemOverview_MediaCleanupCountsOnlyPendingJobs(t *testing.T) {
 	if delta != 1 {
 		t.Fatalf("expected pending_jobs_count to increase by 1 (only the still-pending job), got delta %d (before=%d, after=%d)",
 			delta, before.MediaCleanup.PendingJobsCount, after.MediaCleanup.PendingJobsCount)
+	}
+}
+
+// spyPurgeEnqueuer ghi lại từng lần backstop được đặt vào hàng đợi, để test thấy
+// được điều mà một mock repository không thấy: transaction thật có gọi enqueue hay
+// không, ở đúng những transition nào.
+type spyPurgeEnqueuer struct {
+	calls   int
+	userIDs []string
+}
+
+func (s *spyPurgeEnqueuer) EnqueueUnconditionalTx(_ context.Context, _ pgx.Tx, userID string) error {
+	s.calls++
+	s.userIDs = append(s.userIDs, userID)
+	return nil
+}
+
+// Đây là ca mà lỗ hổng nằm ở: khóa một tài khoản mà hàng `sessions` đã revoked từ
+// trước. Lệnh `UPDATE sessions ... WHERE revoked_at IS NULL RETURNING id` khớp
+// không hàng nào, nên trước bản sửa này danh sách SID rỗng làm enqueue thoát sớm
+// và KHÔNG job backstop nào tồn tại. Lệnh xoá Redis đồng bộ ở tầng usecase khi đó
+// là cơ chế duy nhất, không có gì retry phía sau nếu nó hỏng.
+//
+// Test dùng repository thật trên Postgres thật, vì mock repository ở tầng usecase
+// không phản ánh được hành vi thoát sớm này.
+//
+// covers: spec 0012 Requirements 1
+func TestUpdateAccountStatusWithRevocation_RepeatLockStillEnqueuesTheBackstop(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+
+	adminID := seedTestUser(t, pool, "admin.repeatlock.test@example.invalid", "+84900000021", "admin", "active")
+	targetID := seedTestUser(t, pool, "target.repeatlock.test@example.invalid", "+84900000022", "user", "active")
+	cleanupAuditLogsFor(t, pool, adminID, targetID)
+	seedTestSession(t, pool, targetID)
+
+	repo := New(pool)
+	spy := &spyPurgeEnqueuer{}
+	SetSessionPurgeEnqueuer(repo, spy)
+
+	lock := func(reason string) {
+		t.Helper()
+		if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+			TargetUserID: targetID,
+			AdminID:      adminID,
+			NewStatus:    "locked",
+			Reason:       reason,
+		}); err != nil {
+			t.Fatalf("khóa tài khoản lỗi: %v", err)
+		}
+	}
+
+	lock("lần khóa đầu")
+	if spy.calls != 1 {
+		t.Fatalf("sau lần khóa đầu, enqueue được gọi %d lần, want 1", spy.calls)
+	}
+
+	// Xác nhận đã ở đúng trạng thái lỗ hổng: không còn hàng sessions nào chưa revoke.
+	var live int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL`, targetID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live != 0 {
+		t.Fatalf("còn %d hàng sessions chưa revoke; test không dựng được ca khóa lại", live)
+	}
+
+	lock("lần khóa thứ hai, không hàng sessions nào khớp")
+	if spy.calls != 2 {
+		t.Fatalf("sau lần khóa thứ hai, enqueue được gọi %d lần, want 2: khóa lại phải để lại backstop, nếu không lệnh Redis đồng bộ không có gì retry phía sau", spy.calls)
+	}
+	for _, got := range spy.userIDs {
+		if got != targetID {
+			t.Fatalf("enqueue nhận user_id %q, want %q", got, targetID)
+		}
+	}
+}
+
+// Mở lại tài khoản không phải là thu hồi, nên không được để lại job nào. Một job
+// thu hồi vô điều kiện chạy sau khi tài khoản đã mở lại sẽ giết đúng phiên mà
+// người dùng vừa đăng nhập.
+//
+// covers: spec 0012 Requirements 4
+func TestUpdateAccountStatusWithRevocation_ReactivateEnqueuesNothing(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+
+	adminID := seedTestUser(t, pool, "admin.reactivate.test@example.invalid", "+84900000023", "admin", "active")
+	targetID := seedTestUser(t, pool, "target.reactivate.test@example.invalid", "+84900000024", "user", "locked")
+	cleanupAuditLogsFor(t, pool, adminID, targetID)
+
+	repo := New(pool)
+	spy := &spyPurgeEnqueuer{}
+	SetSessionPurgeEnqueuer(repo, spy)
+
+	if _, _, _, err := repo.UpdateAccountStatusWithRevocation(ctx, repository.UpdateStatusInput{
+		TargetUserID: targetID,
+		AdminID:      adminID,
+		NewStatus:    "active",
+		Reason:       "mở lại",
+	}); err != nil {
+		t.Fatalf("mở lại tài khoản lỗi: %v", err)
+	}
+	if spy.calls != 0 {
+		t.Fatalf("enqueue được gọi %d lần khi mở lại tài khoản, want 0", spy.calls)
 	}
 }

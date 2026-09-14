@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -37,6 +36,8 @@ type BankInfo struct {
 type BankDirectory interface{ Get(string) (BankInfo, bool) }
 type QRGenerator interface {
 	Build(string, string, string, string, int64) (string, string, error)
+	// Content trả nội dung chuyển khoản kèm tiền tố ngân hàng yêu cầu (nếu có).
+	Content(string) string
 }
 
 type postgresRepository struct {
@@ -431,6 +432,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 				return nil, false, domain.ErrBankAccountRequired
 			}
 			existing.QRPayload, existing.QRImageURL = payload, imageURL
+			existing.TransferContent = r.qr.Content(existing.ReferenceCode)
 			existing.Recipient = domain.RecipientBank{Code: bank.BIN, Name: bank.Name, AccountNumber: account, AccountHolder: holder, BIN: bank.BIN}
 			if err = completeIdempotency(ctx, tx, uid, "create_payment", keyHash, httpStatusOK, existing); err != nil {
 				return nil, false, err
@@ -494,6 +496,7 @@ func (r *postgresRepository) CreatePayment(ctx context.Context, in repository.Cr
 		return nil, false, err
 	}
 	p.QRPayload, p.QRImageURL = payload, imageURL
+	p.TransferContent = r.qr.Content(ref)
 	p.Recipient = domain.RecipientBank{Code: bank.BIN, Name: bank.Name, AccountNumber: account, AccountHolder: holder, BIN: bank.BIN}
 	if err = completeIdempotency(ctx, tx, uid, "create_payment", keyHash, httpStatusCreated, p); err != nil {
 		return nil, false, err
@@ -566,6 +569,7 @@ func (r *postgresRepository) GetPayment(ctx context.Context, groupID, callerUser
 		if e != nil {
 			return nil, domain.ErrBankAccountRequired
 		}
+		p.TransferContent = r.qr.Content(p.ReferenceCode)
 		p.QRPayload, p.QRImageURL, p.Recipient = payload, image, domain.RecipientBank{Code: bank.BIN, Name: bank.Name, AccountNumber: account, AccountHolder: holder, BIN: bank.BIN}
 	} else if p.Status == domain.PaymentSuperseded {
 		p.QRPayload = ""
@@ -573,142 +577,6 @@ func (r *postgresRepository) GetPayment(ctx context.Context, groupID, callerUser
 		p.Recipient = domain.RecipientBank{}
 	}
 	return p, nil
-}
-
-func (r *postgresRepository) PrepareProof(ctx context.Context, groupID, callerUserID, paymentID, idempotencyKey, requestHash string) (string, *domain.Payment, error) {
-	if r.banks == nil || r.qr == nil {
-		return "", nil, errors.New("settlement payment support is not configured")
-	}
-	gid, e := uuid.Parse(groupID)
-	if e != nil {
-		return "", nil, domain.ErrGroupNotFound
-	}
-	uid, e := uuid.Parse(callerUserID)
-	if e != nil {
-		return "", nil, domain.ErrGroupNotFound
-	}
-	pid, e := uuid.Parse(paymentID)
-	if e != nil {
-		return "", nil, domain.ErrPaymentNotFound
-	}
-	if _, e = r.activeMembership(ctx, groupID, callerUserID); e != nil {
-		return "", nil, e
-	}
-	ctx = WithAudienceCache(ctx)
-	tx, e := r.pool.Begin(ctx)
-	if e != nil {
-		return "", nil, e
-	}
-	defer tx.Rollback(ctx)
-	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
-		return "", nil, e
-	}
-	keyHash := hashString(idempotencyKey)
-	operationID := uuid.Must(uuid.NewV7())
-	tag, e := tx.Exec(ctx, `INSERT INTO payment_idempotency_keys(actor_user_id,operation,key_hash,canonical_request_hash,operation_id) VALUES($1,'submit_proof',$2,$3,$4) ON CONFLICT DO NOTHING`, uid, keyHash, requestHash, operationID)
-	if e != nil {
-		return "", nil, e
-	}
-	if tag.RowsAffected() == 0 {
-		var storedHash, state string
-		var storedOperation uuid.UUID
-		var body []byte
-		var retryable bool
-		e = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,operation_id,response_body,retry_after IS NOT NULL AND retry_after<=now() FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 FOR UPDATE`, uid, keyHash).Scan(&storedHash, &state, &storedOperation, &body, &retryable)
-		if e != nil {
-			return "", nil, e
-		}
-		if storedHash != requestHash {
-			return "", nil, domain.ErrIdempotencyConflict
-		}
-		if state == "completed" {
-			var replay domain.Payment
-			if e = json.Unmarshal(body, &replay); e != nil {
-				return "", nil, e
-			}
-			if e = tx.Commit(ctx); e != nil {
-				return "", nil, e
-			}
-			return storedOperation.String(), &replay, nil
-		}
-		if state == "in_progress" {
-			if retryable {
-				if _, e = tx.Exec(ctx, `UPDATE payment_idempotency_keys SET retry_after=NULL WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 AND operation_id=$3 AND state='in_progress'`, uid, keyHash, storedOperation); e != nil {
-					return "", nil, e
-				}
-				if e = tx.Commit(ctx); e != nil {
-					return "", nil, e
-				}
-				return storedOperation.String(), nil, nil
-			}
-			return "", nil, domain.ErrIdempotencyInProgress
-		}
-		return "", nil, domain.ErrIdempotencyConflict
-	}
-	payment, e := loadPaymentTx(ctx, tx, pid, gid)
-	if e != nil {
-		return "", nil, e
-	}
-	var debtorUser uuid.UUID
-	debtorMemberID, e := storedUUID(payment.DebtorMemberID, "debtor member ID")
-	if e != nil {
-		return "", nil, e
-	}
-	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1 AND group_id=$2`, debtorMemberID, gid).Scan(&debtorUser); e != nil {
-		return "", nil, e
-	}
-	if debtorUser != uid {
-		return "", nil, domain.ErrForbidden
-	}
-	if payment.Status != domain.PaymentPendingProof {
-		return "", nil, domain.ErrPaymentNotPendingProof
-	}
-	var codeValue, accountValue, holderValue pgtype.Text
-	creditorMemberID, e := storedUUID(payment.CreditorMemberID, "creditor member ID")
-	if e != nil {
-		return "", nil, e
-	}
-	e = tx.QueryRow(ctx, `SELECT u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, creditorMemberID, gid).Scan(&codeValue, &accountValue, &holderValue)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return "", nil, domain.ErrBankAccountRequired
-	} else if e != nil {
-		return "", nil, fmt.Errorf("load creditor bank profile: %w", e)
-	}
-	code, account, holder := codeValue.String, accountValue.String, holderValue.String
-	bank, ok := r.banks(code)
-	if !codeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
-		return "", nil, domain.ErrBankAccountRequired
-	}
-	if _, _, e = r.qr.Build(bank.BIN, account, holder, payment.ReferenceCode, payment.Amount); e != nil {
-		return "", nil, domain.ErrBankAccountRequired
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return "", nil, e
-	}
-	return operationID.String(), nil, nil
-}
-
-func (r *postgresRepository) ResetProofAttempt(ctx context.Context, callerUserID, idempotencyKey, requestHash, operationID string, replaceOperation bool) error {
-	uid, err := uuid.Parse(callerUserID)
-	if err != nil {
-		return domain.ErrGroupNotFound
-	}
-	currentOperation, err := uuid.Parse(operationID)
-	if err != nil {
-		return domain.ErrIdempotencyConflict
-	}
-	nextOperation := currentOperation
-	if replaceOperation {
-		nextOperation = uuid.Must(uuid.NewV7())
-	}
-	tag, err := r.pool.Exec(ctx, `UPDATE payment_idempotency_keys SET operation_id=$5,retry_after=now() WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 AND canonical_request_hash=$3 AND operation_id=$4 AND state='in_progress' AND expires_at>now()`, uid, hashString(idempotencyKey), requestHash, currentOperation, nextOperation)
-	if err != nil {
-		return fmt.Errorf("reset proof idempotency attempt: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return errors.New("proof idempotency attempt is no longer resettable")
-	}
-	return nil
 }
 
 func loadPaymentPool(ctx context.Context, q interface {
@@ -730,7 +598,7 @@ func loadPayment(ctx context.Context, q interface {
 	var image, note, rejection pgtype.Text
 	var submitted, confirmed, rejected pgtype.Timestamptz
 	var bankCode, bankName, account, holder pgtype.Text
-	err := q.QueryRow(ctx, `SELECT id::text,group_id::text,debtor_member_id,creditor_member_id,amount,reference_code,status::text,qr_payload,image_object_key,note,rejection_reason,created_at,submitted_at,confirmed_at,rejected_at,recipient_bank_code,recipient_bank_name,recipient_account_number,recipient_account_holder FROM payments WHERE id=$1 AND group_id=$2`, pid, gid).Scan(&p.ID, &p.GroupID, &debtor, &creditor, &p.Amount, &p.ReferenceCode, &p.Status, &qr, &image, &note, &rejection, &p.CreatedAt, &submitted, &confirmed, &rejected, &bankCode, &bankName, &account, &holder)
+	err := q.QueryRow(ctx, `SELECT id::text,group_id::text,debtor_member_id,creditor_member_id,amount,reference_code,status::text,qr_payload,image_object_key,note,rejection_reason,created_at,submitted_at,confirmed_at,rejected_at,recipient_bank_code,recipient_bank_name,recipient_account_number,recipient_account_holder,confirmation_source FROM payments WHERE id=$1 AND group_id=$2`, pid, gid).Scan(&p.ID, &p.GroupID, &debtor, &creditor, &p.Amount, &p.ReferenceCode, &p.Status, &qr, &image, &note, &rejection, &p.CreatedAt, &submitted, &confirmed, &rejected, &bankCode, &bankName, &account, &holder, &p.ConfirmationSource)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrPaymentNotFound
 	}
@@ -813,33 +681,6 @@ func beginIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, op, keyHa
 	return nil, 0, false, nil
 }
 
-func resumeProofIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, keyHash, requestHash, operationID string) (*domain.Payment, bool, error) {
-	opID, e := uuid.Parse(operationID)
-	if e != nil {
-		return nil, false, domain.ErrIdempotencyConflict
-	}
-	var storedHash, state string
-	var storedOperation uuid.UUID
-	var body []byte
-	e = tx.QueryRow(ctx, `SELECT canonical_request_hash,state::text,operation_id,response_body FROM payment_idempotency_keys WHERE actor_user_id=$1 AND operation='submit_proof' AND key_hash=$2 FOR UPDATE`, actor, keyHash).Scan(&storedHash, &state, &storedOperation, &body)
-	if e != nil {
-		return nil, false, e
-	}
-	if storedHash != requestHash || storedOperation != opID {
-		return nil, false, domain.ErrIdempotencyConflict
-	}
-	if state == "completed" {
-		var replay domain.Payment
-		if e = json.Unmarshal(body, &replay); e != nil {
-			return nil, false, e
-		}
-		return &replay, true, nil
-	}
-	if state != "in_progress" {
-		return nil, false, domain.ErrIdempotencyConflict
-	}
-	return nil, false, nil
-}
 func completeIdempotency(ctx context.Context, tx pgx.Tx, actor uuid.UUID, op, keyHash string, status int, p *domain.Payment) error {
 	body, e := json.Marshal(p)
 	if e != nil {
@@ -882,354 +723,6 @@ func uuidStrings(ids []uuid.UUID) []string {
 		out[i] = id.String()
 	}
 	return out
-}
-func (r *postgresRepository) SubmitProof(ctx context.Context, in repository.SubmitProofInput) (*domain.Payment, error) {
-	if r.banks == nil || r.qr == nil {
-		return nil, errors.New("settlement payment support is not configured")
-	}
-	gid, e := uuid.Parse(in.GroupID)
-	if e != nil {
-		return nil, domain.ErrGroupNotFound
-	}
-	uid, e := uuid.Parse(in.CallerUserID)
-	if e != nil {
-		return nil, domain.ErrGroupNotFound
-	}
-	pid, e := uuid.Parse(in.PaymentID)
-	if e != nil {
-		return nil, domain.ErrPaymentNotFound
-	}
-	ctx = WithAudienceCache(ctx)
-	tx, e := r.pool.Begin(ctx)
-	if e != nil {
-		return nil, e
-	}
-	defer tx.Rollback(ctx)
-	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
-		return nil, e
-	}
-	var memberID uuid.UUID
-	if e = tx.QueryRow(ctx, `SELECT id FROM group_members WHERE group_id=$1 AND user_id=$2 AND status='active'`, gid, uid).Scan(&memberID); errors.Is(e, pgx.ErrNoRows) {
-		return nil, domain.ErrGroupNotFound
-	} else if e != nil {
-		return nil, e
-	}
-	keyHash := hashString(in.IdempotencyKey)
-	replay, done, e := resumeProofIdempotency(ctx, tx, uid, keyHash, in.RequestHash, in.OperationID)
-	if e != nil {
-		return nil, e
-	}
-	if done {
-		if e = tx.Commit(ctx); e != nil {
-			return nil, e
-		}
-		return replay, nil
-	}
-	rows, e := tx.Query(ctx, `SELECT d.id,d.status::text FROM payment_debts pd JOIN debts d ON d.id=pd.debt_id WHERE pd.payment_id=$1 ORDER BY d.id FOR UPDATE`, pid)
-	if e != nil {
-		return nil, e
-	}
-	var debtIDs []uuid.UUID
-	valid := true
-	for rows.Next() {
-		var id uuid.UUID
-		var status string
-		if e = rows.Scan(&id, &status); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		debtIDs = append(debtIDs, id)
-		valid = valid && status == "awaiting"
-	}
-	if e = rows.Err(); e != nil {
-		rows.Close()
-		return nil, fmt.Errorf("iterate proof debts: %w", e)
-	}
-	rows.Close()
-	if len(debtIDs) == 0 || !valid {
-		return nil, domain.ErrDebtsNotAwaiting
-	}
-	if _, e = tx.Exec(ctx, `SELECT id FROM payments WHERE id=$1 AND group_id=$2 FOR UPDATE`, pid, gid); e != nil {
-		return nil, e
-	}
-	payment, e := loadPaymentTx(ctx, tx, pid, gid)
-	if e != nil {
-		return nil, e
-	}
-	if payment.DebtorMemberID != memberID.String() {
-		return nil, domain.ErrForbidden
-	}
-	if payment.Status != domain.PaymentPendingProof {
-		return nil, domain.ErrPaymentNotPendingProof
-	}
-	var creditorUser uuid.UUID
-	var codeValue, accountValue, holderValue pgtype.Text
-	creditorMemberID, e := storedUUID(payment.CreditorMemberID, "creditor member ID")
-	if e != nil {
-		return nil, e
-	}
-	e = tx.QueryRow(ctx, `SELECT gm.user_id,u.default_bank_code,u.default_bank_account_number,u.default_bank_account_holder FROM group_members gm JOIN users u ON u.id=gm.user_id WHERE gm.id=$1 AND gm.group_id=$2 AND gm.status='active'`, creditorMemberID, gid).Scan(&creditorUser, &codeValue, &accountValue, &holderValue)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return nil, domain.ErrBankAccountRequired
-	} else if e != nil {
-		return nil, fmt.Errorf("load creditor bank profile: %w", e)
-	}
-	code, account, holder := codeValue.String, accountValue.String, holderValue.String
-	bank, ok := r.banks(code)
-	if !codeValue.Valid || !accountValue.Valid || !holderValue.Valid || !ok || !bank.Supported || strings.TrimSpace(account) == "" || strings.TrimSpace(holder) == "" {
-		return nil, domain.ErrBankAccountRequired
-	}
-	payload, imageURL, e := r.qr.Build(bank.BIN, account, holder, payment.ReferenceCode, payment.Amount)
-	if e != nil {
-		return nil, domain.ErrBankAccountRequired
-	}
-	_, e = tx.Exec(ctx, `UPDATE payments SET status='pending_confirmation',qr_payload=$2,image_object_key=$3,note=$4,recipient_bank_code=$5,recipient_bank_name=$6,recipient_account_number=$7,recipient_account_holder=$8,submitted_at=now(),updated_at=now() WHERE id=$1`, pid, payload, in.ObjectKey, in.Note, bank.BIN, bank.Name, account, holder)
-	if e != nil {
-		return nil, fmt.Errorf("submit proof: %w", e)
-	}
-	tag, e := tx.Exec(ctx, `UPDATE debts SET status='pending_confirmation',payment_id=$1,updated_at=now() WHERE id=ANY($2::uuid[]) AND status='awaiting'`, pid, debtIDs)
-	if e != nil || tag.RowsAffected() != int64(len(debtIDs)) {
-		return nil, domain.ErrDebtsNotAwaiting
-	}
-	metadata, _ := json.Marshal(map[string]any{"payment_id": pid, "creditor_member_id": payment.CreditorMemberID, "amount": payment.Amount, "has_note": in.Note != nil})
-	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member','payment_submitted','Đã gửi minh chứng thanh toán',$3)`, gid, memberID, metadata)
-	if e != nil {
-		return nil, e
-	}
-	bills, e := r.distinctBillIDs(ctx, tx, debtIDs)
-	if e != nil {
-		return nil, e
-	}
-	if e = r.notifyAll(ctx, tx, gid, "settlement.payment_changed", realtime.ScopeSettlement, &pid); e != nil {
-		return nil, e
-	}
-	if e = r.notifyAll(ctx, tx, gid, "group.debts_changed", realtime.ScopeGroup, nil); e != nil {
-		return nil, e
-	}
-	for i := range bills {
-		if e = r.notifyAll(ctx, tx, gid, "bill.settlement_changed", realtime.ScopeBill, &bills[i]); e != nil {
-			return nil, e
-		}
-	}
-	if e = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
-		return nil, e
-	}
-	if in.BeforeCommit != nil {
-		recipients := []string{creditorUser.String()}
-		if e = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
-			return nil, e
-		}
-		if e = r.notifyNotificationCreated(ctx, tx, gid, recipients); e != nil {
-			return nil, e
-		}
-	}
-	payment, e = loadPaymentTx(ctx, tx, pid, gid)
-	if e != nil {
-		return nil, e
-	}
-	payment.QRImageURL = imageURL
-	if e = completeIdempotency(ctx, tx, uid, "submit_proof", keyHash, httpStatusOK, payment); e != nil {
-		return nil, e
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return nil, e
-	}
-	return payment, nil
-}
-
-func (r *postgresRepository) QueueMediaCleanup(ctx context.Context, objectKey, reason string) error {
-	_, e := r.pool.Exec(ctx, `INSERT INTO media_cleanup_jobs(provider,object_key,reason) VALUES('cloudinary',$1,$2) ON CONFLICT (provider,object_key) WHERE completed_at IS NULL DO NOTHING`, objectKey, reason)
-	return e
-}
-func (r *postgresRepository) ConfirmPayment(ctx context.Context, in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-	return r.finishPayment(ctx, in, true)
-}
-func (r *postgresRepository) RejectPayment(ctx context.Context, in repository.PaymentMutationInput) (*domain.Payment, []string, error) {
-	return r.finishPayment(ctx, in, false)
-}
-func (r *postgresRepository) finishPayment(ctx context.Context, in repository.PaymentMutationInput, confirm bool) (*domain.Payment, []string, error) {
-	gid, e := uuid.Parse(in.GroupID)
-	if e != nil {
-		return nil, nil, domain.ErrGroupNotFound
-	}
-	uid, e := uuid.Parse(in.CallerUserID)
-	if e != nil {
-		return nil, nil, domain.ErrGroupNotFound
-	}
-	pid, e := uuid.Parse(in.PaymentID)
-	if e != nil {
-		return nil, nil, domain.ErrPaymentNotFound
-	}
-	ctx = WithAudienceCache(ctx)
-	tx, e := r.pool.Begin(ctx)
-	if e != nil {
-		return nil, nil, e
-	}
-	defer tx.Rollback(ctx)
-	if e = lockActiveSettlementGroup(ctx, tx, gid); e != nil {
-		return nil, nil, e
-	}
-	var memberID uuid.UUID
-	if e = tx.QueryRow(ctx, `SELECT id FROM group_members WHERE group_id=$1 AND user_id=$2 AND status='active'`, gid, uid).Scan(&memberID); errors.Is(e, pgx.ErrNoRows) {
-		return nil, nil, domain.ErrGroupNotFound
-	} else if e != nil {
-		return nil, nil, e
-	}
-	op := "reject_payment"
-	if confirm {
-		op = "confirm_payment"
-	}
-	keyHash := hashString(in.IdempotencyKey)
-	replay, _, done, e := beginIdempotency(ctx, tx, uid, op, keyHash, in.RequestHash)
-	if e != nil {
-		return nil, nil, e
-	}
-	if done {
-		if e = tx.Commit(ctx); e != nil {
-			return nil, nil, e
-		}
-		return replay, replay.CoveredDebtIDs, nil
-	}
-	rows, e := tx.Query(ctx, `SELECT d.id,d.status::text,d.payment_id FROM payment_debts pd JOIN debts d ON d.id=pd.debt_id WHERE pd.payment_id=$1 ORDER BY d.id FOR UPDATE`, pid)
-	if e != nil {
-		return nil, nil, e
-	}
-	var ids []uuid.UUID
-	valid := true
-	for rows.Next() {
-		var id uuid.UUID
-		var status string
-		var active pgtype.UUID
-		if e = rows.Scan(&id, &status, &active); e != nil {
-			rows.Close()
-			return nil, nil, e
-		}
-		ids = append(ids, id)
-		valid = valid && status == "pending_confirmation" && active.Valid && uuid.UUID(active.Bytes) == pid
-	}
-	if e = rows.Err(); e != nil {
-		rows.Close()
-		return nil, nil, fmt.Errorf("iterate payment debts: %w", e)
-	}
-	rows.Close()
-	if len(ids) == 0 || !valid {
-		return nil, nil, domain.ErrPaymentNotPendingConfirmation
-	}
-	if _, e = tx.Exec(ctx, `SELECT id FROM payments WHERE id=$1 AND group_id=$2 FOR UPDATE`, pid, gid); e != nil {
-		return nil, nil, e
-	}
-	payment, e := loadPaymentTx(ctx, tx, pid, gid)
-	if e != nil {
-		return nil, nil, e
-	}
-	if payment.CreditorMemberID != memberID.String() {
-		return nil, nil, domain.ErrForbidden
-	}
-	if payment.Status != domain.PaymentPendingConfirmation {
-		return nil, nil, domain.ErrPaymentNotPendingConfirmation
-	}
-	var debtorUser uuid.UUID
-	debtorMemberID, e := storedUUID(payment.DebtorMemberID, "debtor member ID")
-	if e != nil {
-		return nil, nil, e
-	}
-	if e = tx.QueryRow(ctx, `SELECT user_id FROM group_members WHERE id=$1`, debtorMemberID).Scan(&debtorUser); e != nil {
-		return nil, nil, e
-	}
-	var activity string
-	var metadata []byte
-	reason := ""
-	if in.Reason != nil {
-		reason = *in.Reason
-	}
-	if confirm {
-		_, e = tx.Exec(ctx, `UPDATE payments SET status='confirmed',confirmed_at=now(),updated_at=now() WHERE id=$1`, pid)
-		if e == nil {
-			var tag pgconn.CommandTag
-			tag, e = tx.Exec(ctx, `UPDATE debts SET status='settled',settled_at=now(),updated_at=now() WHERE id=ANY($1::uuid[]) AND status='pending_confirmation' AND payment_id=$2`, ids, pid)
-			if e == nil && tag.RowsAffected() != int64(len(ids)) {
-				e = domain.ErrPaymentNotPendingConfirmation
-			}
-		}
-		activity = "payment_confirmed"
-		metadata, _ = json.Marshal(map[string]any{"payment_id": pid, "debtor_member_id": payment.DebtorMemberID, "amount": payment.Amount, "settled_debt_count": len(ids)})
-	} else {
-		_, e = tx.Exec(ctx, `UPDATE payments SET status='rejected',rejected_at=now(),rejection_reason=$2,updated_at=now() WHERE id=$1`, pid, reason)
-		if e == nil {
-			var tag pgconn.CommandTag
-			tag, e = tx.Exec(ctx, `UPDATE debts SET status='awaiting',payment_id=NULL,settled_at=NULL,updated_at=now() WHERE id=ANY($1::uuid[]) AND status='pending_confirmation' AND payment_id=$2`, ids, pid)
-			if e == nil && tag.RowsAffected() != int64(len(ids)) {
-				e = domain.ErrPaymentNotPendingConfirmation
-			}
-		}
-		activity = "payment_rejected"
-		metadata, _ = json.Marshal(map[string]any{"payment_id": pid, "debtor_member_id": payment.DebtorMemberID, "amount": payment.Amount, "rejection_reason": reason})
-	}
-	if e != nil {
-		return nil, nil, e
-	}
-	var actDesc string
-	if confirm {
-		actDesc = "Đã xác nhận thanh toán"
-	} else {
-		if reason != "" {
-			actDesc = fmt.Sprintf("Đã từ chối minh chứng thanh toán: %s", reason)
-		} else {
-			actDesc = "Đã từ chối minh chứng thanh toán"
-		}
-	}
-	_, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,$2,'member',$3,$4,$5)`, gid, memberID, activity, actDesc, metadata)
-	if e != nil {
-		return nil, nil, e
-	}
-	bills, e := r.distinctBillIDs(ctx, tx, ids)
-	if e != nil {
-		return nil, nil, e
-	}
-	if e = r.notifyAll(ctx, tx, gid, "settlement.payment_changed", realtime.ScopeSettlement, &pid); e != nil {
-		return nil, nil, e
-	}
-	if e = r.notifyAll(ctx, tx, gid, "group.debts_changed", realtime.ScopeGroup, nil); e != nil {
-		return nil, nil, e
-	}
-	for i := range bills {
-		if e = r.notifyAll(ctx, tx, gid, "bill.settlement_changed", realtime.ScopeBill, &bills[i]); e != nil {
-			return nil, nil, e
-		}
-	}
-	if e = r.notifyAll(ctx, tx, gid, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
-		return nil, nil, e
-	}
-	if confirm {
-		homeAudience := realtime.NormalizeAudience([]uuid.UUID{debtorUser, uid})
-		if e = r.notifyInvalidate(ctx, tx, homeAudience, realtime.InvalidateBody{
-			Scope:   realtime.ScopeHome,
-			GroupID: gid,
-			Type:    "home.balance_changed",
-		}); e != nil {
-			return nil, nil, e
-		}
-	}
-	if in.BeforeCommit != nil {
-		recipients := []string{debtorUser.String()}
-		if e = in.BeforeCommit(ctx, tx, recipients, map[string]string{"group_id": gid.String(), "payment_id": pid.String()}); e != nil {
-			return nil, nil, e
-		}
-		if e = r.notifyNotificationCreated(ctx, tx, gid, recipients); e != nil {
-			return nil, nil, e
-		}
-	}
-	payment, e = loadPaymentTx(ctx, tx, pid, gid)
-	if e != nil {
-		return nil, nil, e
-	}
-	if e = completeIdempotency(ctx, tx, uid, op, keyHash, httpStatusOK, payment); e != nil {
-		return nil, nil, e
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return nil, nil, e
-	}
-	return payment, uuidStrings(ids), nil
 }
 func (r *postgresRepository) RemindDebt(ctx context.Context, in repository.RemindInput) (*domain.ReminderResult, error) {
 	maxCount := in.MaxCount
@@ -1415,129 +908,7 @@ func (r *postgresRepository) ProcessAutomatedReminders(ctx context.Context, stal
 	}
 	return tx.Commit(ctx)
 }
-func (r *postgresRepository) ProcessStalledPayments(ctx context.Context, submittedBefore time.Time, before repository.BeforeCommit) error {
-	ctx = WithAudienceCache(ctx)
-	tx, e := r.pool.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	rows, e := tx.Query(ctx, `SELECT p.id,p.group_id,p.creditor_member_id,p.debtor_member_id,p.submitted_at,gm.user_id FROM payments p JOIN groups g ON g.id=p.group_id AND g.status='active' JOIN group_members gm ON gm.id=p.creditor_member_id WHERE p.status='pending_confirmation' AND p.submitted_at<=$1 AND p.stalled_alerted_at IS NULL ORDER BY p.id FOR UPDATE OF p SKIP LOCKED LIMIT 100`, submittedBefore)
-	if e != nil {
-		return e
-	}
-	type candidate struct {
-		id, group, creditor, debtor, user uuid.UUID
-		submitted                         time.Time
-	}
-	var items []candidate
-	for rows.Next() {
-		var c candidate
-		if e = rows.Scan(&c.id, &c.group, &c.creditor, &c.debtor, &c.submitted, &c.user); e != nil {
-			rows.Close()
-			return e
-		}
-		items = append(items, c)
-	}
-	if e = rows.Err(); e != nil {
-		rows.Close()
-		return e
-	}
-	rows.Close()
-	for _, c := range items {
-		tag, e := tx.Exec(ctx, `UPDATE payments SET stalled_alerted_at=now(),updated_at=now() WHERE id=$1 AND stalled_alerted_at IS NULL`, c.id)
-		if e != nil {
-			return e
-		}
-		if tag.RowsAffected() == 0 {
-			continue
-		}
-		hours := int64(time.Since(c.submitted).Hours())
-		metadata, _ := json.Marshal(map[string]any{"payment_id": c.id, "creditor_member_id": c.creditor, "debtor_member_id": c.debtor, "hours_pending": hours})
-		if _, e = tx.Exec(ctx, `INSERT INTO group_activities(group_id,actor_member_id,actor_kind,action_type,description,metadata) VALUES($1,NULL,'system','payment_stalled_confirmation','Minh chứng thanh toán đang chờ xác nhận',$2)`, c.group, metadata); e != nil {
-			return e
-		}
-		if e = r.notifyAll(ctx, tx, c.group, "settlement.payment_changed", realtime.ScopeSettlement, &c.id); e != nil {
-			return e
-		}
-		if e = r.notifyAll(ctx, tx, c.group, "group.activity_changed", realtime.ScopeGroup, nil); e != nil {
-			return e
-		}
-		if before != nil {
-			recipients := []string{c.user.String()}
-			if e = before(ctx, tx, recipients, map[string]string{"group_id": c.group.String(), "payment_id": c.id.String()}); e != nil {
-				return e
-			}
-			if e = r.notifyNotificationCreated(ctx, tx, c.group, recipients); e != nil {
-				return e
-			}
-		}
-	}
-	return tx.Commit(ctx)
-}
-
 func (r *postgresRepository) DeleteExpiredIdempotency(ctx context.Context) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM payment_idempotency_keys WHERE expires_at <= now()`)
 	return err
-}
-
-func (r *postgresRepository) ProcessMediaCleanup(ctx context.Context, deleteObject func(context.Context, string) error, recordFailure func(string)) error {
-	ctx = WithAudienceCache(ctx)
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `WITH due AS (
-		SELECT id FROM media_cleanup_jobs
-		WHERE completed_at IS NULL AND next_attempt_at <= now()
-		ORDER BY next_attempt_at, id
-		FOR UPDATE SKIP LOCKED
-		LIMIT 100
-	)
-	UPDATE media_cleanup_jobs j
-	SET attempt_count=LEAST(j.attempt_count+1, 10),
-		next_attempt_at=now()+(interval '5 minutes' * power(2, LEAST(j.attempt_count, 8)))
-	FROM due
-	WHERE j.id=due.id
-	RETURNING j.id,j.object_key`)
-	if err != nil {
-		return err
-	}
-	type cleanupJob struct {
-		id  uuid.UUID
-		key string
-	}
-	var jobs []cleanupJob
-	for rows.Next() {
-		var job cleanupJob
-		if err = rows.Scan(&job.id, &job.key); err != nil {
-			rows.Close()
-			return err
-		}
-		jobs = append(jobs, job)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	if err = tx.Commit(ctx); err != nil {
-		return err
-	}
-	for _, job := range jobs {
-		if err = deleteObject(ctx, job.key); err != nil {
-			if recordFailure != nil {
-				recordFailure("delete_failed")
-			}
-			if _, updateErr := r.pool.Exec(ctx, `UPDATE media_cleanup_jobs SET last_error_code=$2,updated_at=now() WHERE id=$1 AND completed_at IS NULL`, job.id, err.Error()); updateErr != nil {
-				return fmt.Errorf("record media cleanup failure: %w", updateErr)
-			}
-			continue
-		}
-		if _, err = r.pool.Exec(ctx, `UPDATE media_cleanup_jobs SET completed_at=now(),last_error_code=NULL,updated_at=now() WHERE id=$1`, job.id); err != nil {
-			return err
-		}
-	}
-	return nil
 }

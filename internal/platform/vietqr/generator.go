@@ -13,9 +13,13 @@ const napasAID = "A000000727"
 type Generator struct {
 	baseURL  string
 	template string
+	// contentPrefix đứng TRƯỚC mã tham chiếu trong nội dung chuyển khoản. Có
+	// ngân hàng chỉ đẩy giao dịch sang bên đối soát khi nội dung bắt đầu bằng
+	// từ khóa của họ; ví dụ VietinBank cá nhân qua SePay yêu cầu "SEVQR".
+	contentPrefix string
 }
 
-func New(baseURL, template string) *Generator {
+func New(baseURL, template, contentPrefix string) *Generator {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		baseURL = "https://img.vietqr.io/image"
@@ -23,7 +27,21 @@ func New(baseURL, template string) *Generator {
 	if strings.TrimSpace(template) == "" {
 		template = "compact"
 	}
-	return &Generator{baseURL: baseURL, template: strings.TrimSpace(template)}
+	return &Generator{
+		baseURL:       baseURL,
+		template:      strings.TrimSpace(template),
+		contentPrefix: strings.TrimSpace(contentPrefix),
+	}
+}
+
+// Content là nội dung chuyển khoản người trả phải giữ nguyên: tiền tố của ngân
+// hàng (nếu có) rồi tới mã tham chiếu.
+func (g *Generator) Content(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if g.contentPrefix == "" || reference == "" {
+		return reference
+	}
+	return g.contentPrefix + " " + reference
 }
 
 func (g *Generator) Build(bankBIN, accountNumber, accountHolder, reference string, amount int64) (string, string, error) {
@@ -42,7 +60,8 @@ func (g *Generator) Build(bankBIN, accountNumber, accountHolder, reference strin
 	if err != nil {
 		return "", "", err
 	}
-	additional, err := tlvFields("08", reference)
+	content := g.Content(reference)
+	additional, err := tlvFields("08", content)
 	if err != nil {
 		return "", "", err
 	}
@@ -53,7 +72,7 @@ func (g *Generator) Build(bankBIN, accountNumber, accountHolder, reference strin
 	prefix += "6304"
 	payload := prefix + fmt.Sprintf("%04X", crc16([]byte(prefix)))
 	path := fmt.Sprintf("%s/%s-%s-%s.png", g.baseURL, url.PathEscape(bankBIN), url.PathEscape(accountNumber), url.PathEscape(g.template))
-	query := url.Values{"amount": {strconv.FormatInt(amount, 10)}, "addInfo": {reference}, "accountName": {accountHolder}}.Encode()
+	query := url.Values{"amount": {strconv.FormatInt(amount, 10)}, "addInfo": {content}, "accountName": {accountHolder}}.Encode()
 	return payload, path + "?" + strings.ReplaceAll(query, "+", "%20"), nil
 }
 

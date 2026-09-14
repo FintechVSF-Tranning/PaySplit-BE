@@ -13,6 +13,10 @@ import (
 type Querier interface {
 	CountAccounts(ctx context.Context, arg CountAccountsParams) (int64, error)
 	CountActiveSessionsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// RevokeSessionsByUserID và RevokeRefreshTokensByUserID đã được gỡ bỏ.
+	// Việc thu hồi phiên nằm ở UpdateAccountStatusWithRevocation, viết tay bằng raw SQL
+	// vì nó cần RETURNING id để vừa phát pg_notify vừa xếp job dọn Redis trong cùng
+	// transaction. Refresh token không còn tồn tại (spec 0011).
 	CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditLogParams) (AdminAuditLog, error)
 	GetAccountByID(ctx context.Context, id pgtype.UUID) (GetAccountByIDRow, error)
 	GetOutstandingCreditsByUserID(ctx context.Context, userID pgtype.UUID) (GetOutstandingCreditsByUserIDRow, error)
@@ -26,8 +30,6 @@ type Querier interface {
 	ListAccounts(ctx context.Context, arg ListAccountsParams) ([]ListAccountsRow, error)
 	ListGroupMembershipsByUserID(ctx context.Context, userID pgtype.UUID) ([]ListGroupMembershipsByUserIDRow, error)
 	ListRecentAuditLogsByTargetUserID(ctx context.Context, targetUserID pgtype.UUID) ([]ListRecentAuditLogsByTargetUserIDRow, error)
-	RevokeRefreshTokensByUserID(ctx context.Context, userID pgtype.UUID) error
-	RevokeSessionsByUserID(ctx context.Context, arg RevokeSessionsByUserIDParams) error
 	UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (UpdateUserStatusRow, error)
 }
 

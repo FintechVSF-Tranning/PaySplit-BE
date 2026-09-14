@@ -15,8 +15,7 @@ FROM users
 WHERE id = $1
 LIMIT 1;
 
--- name: UpdateSessionFCMToken :execrows
-UPDATE sessions
-SET fcm_token = $2
-WHERE id = $1 AND revoked_at IS NULL;
+-- FCM token không còn nằm trên bảng sessions. Việc ghi nó vào `device_tokens`
+-- được viết tay trong repository (UpdateSessionFCMToken) vì cần hai bước trong
+-- một transaction: tra (user_id, device_id) từ phiên rồi mới upsert.
 

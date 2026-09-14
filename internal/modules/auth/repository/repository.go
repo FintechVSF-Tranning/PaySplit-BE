@@ -15,14 +15,7 @@ type CreateUserParams struct {
 
 type CreateSessionParams struct {
 	UserID, ExpectedPasswordHash, DeviceID, DeviceName, FCMToken string
-	RefreshTokenHash                                             []byte
 	Now, ExpiresAt                                               time.Time
-}
-
-type RotateRefreshResult struct {
-	User      *domain.User
-	SessionID string
-	ExpiresAt time.Time
 }
 
 type ProfilePatch struct {
@@ -39,10 +32,13 @@ type Repository interface {
 	VerifyEmail(context.Context, string, []byte, time.Time) (*domain.User, error)
 	RecordLoginFailure(context.Context, string, time.Time) (time.Duration, error)
 	CreateSession(context.Context, CreateSessionParams) (*domain.User, *domain.Session, error)
-	RotateRefresh(context.Context, []byte, []byte, string, time.Time) (*RotateRefreshResult, error)
-	ValidateSession(context.Context, string, string, time.Time) (*domain.SessionIdentity, error)
 	RevokeSession(context.Context, string, string, string, time.Time) error
-	ResetPassword(context.Context, string, []byte, string, time.Time) error
+	// ResetPassword trả về user ID và SID của các phiên vừa bị thu hồi, để tầng
+	// usecase thu hồi chúng trên Redis sau khi transaction commit.
+	ResetPassword(context.Context, string, []byte, string, time.Time) (string, []string, error)
+	// PublishSessionEnded phát sự kiện đóng phiên ngoài transaction, dùng để bù
+	// khi phiên đã bị xoá khỏi Redis nhưng lượt ghi audit sau đó hỏng.
+	PublishSessionEnded(context.Context, []string) error
 	ChangePassword(context.Context, string, string, string, time.Time) error
 	UpdateProfile(context.Context, string, ProfilePatch) (*domain.User, error)
 	SetAvatar(context.Context, string, string) (*domain.User, *string, error)

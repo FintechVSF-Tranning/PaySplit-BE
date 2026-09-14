@@ -17,9 +17,9 @@ func (ScanArgs) Kind() string { return "settlement_scan" }
 
 type ScanWorker struct {
 	river.WorkerDefaults[ScanArgs]
-	service                 *usecase.Service
-	reminderAge, stalledAge time.Duration
-	maxCount                int
+	service     *usecase.Service
+	reminderAge time.Duration
+	maxCount    int
 }
 
 func (w *ScanWorker) Work(ctx context.Context, _ *river.Job[ScanArgs]) error {
@@ -28,26 +28,18 @@ func (w *ScanWorker) Work(ctx context.Context, _ *river.Job[ScanArgs]) error {
 		return err
 	}
 	platformmetrics.RecordSettlementWorkerRun("reminders", "success")
-	err := w.service.ProcessStalledPayments(ctx, time.Now().Add(-w.stalledAge))
-	if err != nil {
-		platformmetrics.RecordSettlementWorkerRun("stalled", "error")
-	} else {
-		platformmetrics.RecordSettlementWorkerRun("stalled", "success")
-	}
-	return err
+	return nil
 }
 
 type CleanupArgs struct{}
 
 func (CleanupArgs) Kind() string { return "settlement_cleanup" }
 
-type cleanupStorage interface {
-	Delete(context.Context, string) error
-}
+// CleanupWorker dọn khóa idempotency hết hạn. Hàng đợi xóa ảnh trên Cloudinary
+// (media_cleanup_jobs) do worker của module auth xử lý.
 type CleanupWorker struct {
 	river.WorkerDefaults[CleanupArgs]
-	repo    repository.Repository
-	storage cleanupStorage
+	repo repository.Repository
 }
 
 func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) error {
@@ -55,27 +47,19 @@ func (w *CleanupWorker) Work(ctx context.Context, _ *river.Job[CleanupArgs]) err
 		platformmetrics.RecordSettlementWorkerRun("cleanup", "error")
 		return err
 	}
-	err := w.repo.ProcessMediaCleanup(ctx, w.storage.Delete, platformmetrics.RecordMediaCleanupFailure)
-	if err != nil {
-		platformmetrics.RecordSettlementWorkerRun("cleanup", "error")
-	} else {
-		platformmetrics.RecordSettlementWorkerRun("cleanup", "success")
-	}
-	return err
+	platformmetrics.RecordSettlementWorkerRun("cleanup", "success")
+	return nil
 }
 
-func Register(workers *river.Workers, service *usecase.Service, repo repository.Repository, storage cleanupStorage, reminderAge, stalledAge time.Duration, maxCount int) []*river.PeriodicJob {
+func Register(workers *river.Workers, service *usecase.Service, repo repository.Repository, reminderAge time.Duration, maxCount int) []*river.PeriodicJob {
 	if reminderAge <= 0 {
 		reminderAge = 72 * time.Hour
-	}
-	if stalledAge <= 0 {
-		stalledAge = 48 * time.Hour
 	}
 	if maxCount <= 0 {
 		maxCount = 3
 	}
-	river.AddWorker(workers, &ScanWorker{service: service, reminderAge: reminderAge, stalledAge: stalledAge, maxCount: maxCount})
-	river.AddWorker(workers, &CleanupWorker{repo: repo, storage: storage})
+	river.AddWorker(workers, &ScanWorker{service: service, reminderAge: reminderAge, maxCount: maxCount})
+	river.AddWorker(workers, &CleanupWorker{repo: repo})
 	return []*river.PeriodicJob{
 		river.NewPeriodicJob(river.PeriodicInterval(time.Hour), func() (river.JobArgs, *river.InsertOpts) { return ScanArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}),
 		river.NewPeriodicJob(river.PeriodicInterval(24*time.Hour), func() (river.JobArgs, *river.InsertOpts) { return CleanupArgs{}, nil }, &river.PeriodicJobOpts{RunOnStart: true}),

@@ -22,8 +22,24 @@ import (
 )
 
 type postgresRepository struct {
-	pool   *pgxpool.Pool
-	events *realtime.Publisher
+	pool         *pgxpool.Pool
+	events       *realtime.Publisher
+	sessionPurge SessionPurgeEnqueuer
+}
+
+// SessionPurgeEnqueuer là cổng tới hàng đợi River. Khai báo tại đây thay vì
+// import auth/jobs để repository không phụ thuộc vào tầng job; bootstrap tiêm
+// implementation thật. Cùng khuôn với module admin.
+type SessionPurgeEnqueuer interface {
+	EnqueueTx(ctx context.Context, tx pgx.Tx, userID string, sids []string) error
+}
+
+// SetSessionPurgeEnqueuer nối backstop Redis vào repo. Theo đúng khuôn
+// SetRealtimePublisher: bootstrap là nơi duy nhất gọi.
+func SetSessionPurgeEnqueuer(repo repository.Repository, enqueuer SessionPurgeEnqueuer) {
+	if r, ok := repo.(*postgresRepository); ok {
+		r.sessionPurge = enqueuer
+	}
 }
 
 func New(pool *pgxpool.Pool) repository.Repository {
@@ -253,16 +269,20 @@ func (r *postgresRepository) CreateSession(ctx context.Context, p repository.Cre
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1 AND revoked_at=$2)`, p.UserID, p.Now); err != nil {
-		return nil, nil, err
-	}
 	var session domain.Session
-	err = tx.QueryRow(ctx, `INSERT INTO sessions (user_id,device_id,device_name,fcm_token,issued_at,expires_at) VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6) RETURNING id,user_id,device_id,fcm_token,expires_at`, p.UserID, p.DeviceID, p.DeviceName, p.FCMToken, p.Now, p.ExpiresAt).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.FCMToken, &session.ExpiresAt)
+	err = tx.QueryRow(ctx, `INSERT INTO sessions (user_id,device_id,device_name,issued_at,expires_at) VALUES ($1,$2,NULLIF($3,''),$4,$5) RETURNING id,user_id,device_id,expires_at`, p.UserID, p.DeviceID, p.DeviceName, p.Now, p.ExpiresAt).Scan(&session.ID, &session.UserID, &session.DeviceID, &session.ExpiresAt)
 	if err != nil {
 		return nil, nil, mapWriteError(err)
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO session_refresh_tokens (session_id,token_hash,issued_at,expires_at) VALUES ($1,$2,$3,$4)`, session.ID, p.RefreshTokenHash, p.Now, p.ExpiresAt); err != nil {
-		return nil, nil, err
+	// Địa chỉ push đi vào device_tokens, không vào hàng session: nó phải sống sót
+	// qua đăng xuất và qua việc phiên hết hạn.
+	if p.FCMToken != "" {
+		if _, err = tx.Exec(ctx,
+			`INSERT INTO device_tokens (user_id,device_id,fcm_token) VALUES ($1,$2,$3)
+			 ON CONFLICT (user_id,device_id) DO UPDATE SET fcm_token=EXCLUDED.fcm_token, updated_at=now()`,
+			p.UserID, p.DeviceID, p.FCMToken); err != nil {
+			return nil, nil, err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE users SET failed_login_count=0,failed_login_window_started_at=NULL,login_blocked_until=NULL WHERE id=$1`, p.UserID); err != nil {
 		return nil, nil, err
@@ -274,94 +294,6 @@ func (r *postgresRepository) CreateSession(ctx context.Context, p repository.Cre
 		return nil, nil, err
 	}
 	return user, &session, nil
-}
-
-func (r *postgresRepository) RotateRefresh(ctx context.Context, oldHash, newHash []byte, deviceID string, now time.Time) (*repository.RotateRefreshResult, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	var tokenID, sessionID, storedDevice, userID string
-	if err = tx.QueryRow(ctx, `SELECT t.session_id,s.user_id FROM session_refresh_tokens t JOIN sessions s ON s.id=t.session_id WHERE t.token_hash=$1`, oldHash).Scan(&sessionID, &userID); errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if err != nil {
-		return nil, err
-	}
-	user, err := getUserForUpdate(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	var tokenExpires, sessionExpires time.Time
-	var sessionRevoked *time.Time
-	err = tx.QueryRow(ctx, `SELECT device_id,expires_at,revoked_at FROM sessions WHERE id=$1 AND user_id=$2 FOR UPDATE`, sessionID, userID).Scan(&storedDevice, &sessionExpires, &sessionRevoked)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if err != nil {
-		return nil, err
-	}
-	var usedAt, tokenRevoked *time.Time
-	err = tx.QueryRow(ctx, `SELECT id,expires_at,used_at,revoked_at FROM session_refresh_tokens WHERE token_hash=$1 AND session_id=$2 FOR UPDATE`, oldHash, sessionID).Scan(&tokenID, &tokenExpires, &usedAt, &tokenRevoked)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if err != nil {
-		return nil, err
-	}
-	if usedAt != nil {
-		reusedIDs, reuseErr := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$2,revoked_reason='refresh_reuse' WHERE id=$1 AND revoked_at IS NULL RETURNING id`, sessionID, now)
-		if reuseErr != nil {
-			return nil, reuseErr
-		}
-		_, _ = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id=$1`, sessionID, now)
-		if err = r.notifySessionEnded(ctx, tx, reusedIDs); err != nil {
-			return nil, err
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return nil, err
-		}
-		return nil, domain.ErrSessionRevoked
-	}
-	if tokenRevoked != nil || sessionRevoked != nil || !now.Before(tokenExpires) || !now.Before(sessionExpires) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if storedDevice != deviceID {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if user.Status != domain.StatusActive {
-		return nil, domain.ErrAccountUnavailable
-	}
-	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET used_at=$2 WHERE id=$1`, tokenID, now); err != nil {
-		return nil, err
-	}
-	newExpiry := now.Add(7 * 24 * time.Hour)
-	if sessionExpires.Before(newExpiry) {
-		newExpiry = sessionExpires
-	}
-	if !newExpiry.After(now) {
-		return nil, domain.ErrInvalidOrExpiredToken
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO session_refresh_tokens (session_id,token_hash,issued_at,expires_at) VALUES ($1,$2,$3,$4)`, sessionID, newHash, now, newExpiry); err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return &repository.RotateRefreshResult{User: user, SessionID: sessionID, ExpiresAt: newExpiry}, nil
-}
-
-func (r *postgresRepository) ValidateSession(ctx context.Context, userID, sessionID string, now time.Time) (*domain.SessionIdentity, error) {
-	var out domain.SessionIdentity
-	err := r.pool.QueryRow(ctx, `SELECT u.id,u.role,s.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND s.expires_at>$3 AND u.status='active'`, sessionID, userID, now).Scan(&out.UserID, &out.Role, &out.SessionID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrSessionRevoked
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
 }
 
 func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionID, reason string, now time.Time) error {
@@ -381,7 +313,6 @@ func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionI
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id=$1`, sessionID, now)
 	if err != nil {
 		return err
 	}
@@ -391,23 +322,25 @@ func (r *postgresRepository) RevokeSession(ctx context.Context, userID, sessionI
 	return tx.Commit(ctx)
 }
 
-func (r *postgresRepository) ResetPassword(ctx context.Context, email string, otpHash []byte, newHash string, now time.Time) error {
+// ResetPassword trả về SID của các phiên vừa bị thu hồi để tầng usecase thu hồi
+// chúng trên Redis — nguồn phán quyết thật sự — sau khi transaction này commit.
+func (r *postgresRepository) ResetPassword(ctx context.Context, email string, otpHash []byte, newHash string, now time.Time) (string, []string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	defer tx.Rollback(ctx)
 
 	var userID, status string
 	err = tx.QueryRow(ctx, `SELECT id,status FROM users WHERE email=$1 FOR UPDATE`, email).Scan(&userID, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.ErrInvalidOrExpiredToken
+		return "", nil, domain.ErrInvalidOrExpiredToken
 	}
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if status != domain.StatusActive {
-		return domain.ErrInvalidOrExpiredToken
+		return "", nil, domain.ErrInvalidOrExpiredToken
 	}
 
 	var tokenID string
@@ -417,15 +350,15 @@ func (r *postgresRepository) ResetPassword(ctx context.Context, email string, ot
 	var used, superseded *time.Time
 	err = tx.QueryRow(ctx, `SELECT id,token_hash,attempt_count,expires_at,used_at,superseded_at FROM user_tokens WHERE user_id=$1 AND type=$2 AND used_at IS NULL AND superseded_at IS NULL FOR UPDATE`, userID, domain.TokenPasswordReset).Scan(&tokenID, &storedHash, &attemptCount, &expires, &used, &superseded)
 	if errors.Is(err, pgx.ErrNoRows) || used != nil || superseded != nil || !now.Before(expires) {
-		return domain.ErrInvalidOrExpiredToken
+		return "", nil, domain.ErrInvalidOrExpiredToken
 	}
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if attemptCount >= 5 {
 		_, _ = tx.Exec(ctx, `UPDATE user_tokens SET superseded_at=$2 WHERE id=$1`, tokenID, now)
 		_ = tx.Commit(ctx)
-		return domain.ErrInvalidOrExpiredToken
+		return "", nil, domain.ErrInvalidOrExpiredToken
 	}
 
 	if subtle.ConstantTimeCompare(storedHash, otpHash) != 1 {
@@ -436,26 +369,40 @@ func (r *postgresRepository) ResetPassword(ctx context.Context, email string, ot
 			_, _ = tx.Exec(ctx, `UPDATE user_tokens SET attempt_count=$2 WHERE id=$1`, tokenID, attemptCount)
 		}
 		_ = tx.Commit(ctx)
-		return domain.ErrInvalidOrExpiredToken
+		return "", nil, domain.ErrInvalidOrExpiredToken
 	}
 
 	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, newHash); err != nil {
-		return err
+		return "", nil, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE user_tokens SET used_at=$2 WHERE id=$1`, tokenID, now); err != nil {
-		return err
+		return "", nil, err
 	}
 	resetIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$2,revoked_reason='password_reset' WHERE user_id=$1 AND revoked_at IS NULL RETURNING id`, userID, now)
 	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$2) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1)`, userID, now); err != nil {
-		return err
+		return "", nil, err
 	}
 	if err = r.notifySessionEnded(ctx, tx, resetIDs); err != nil {
-		return err
+		return "", nil, err
 	}
-	return tx.Commit(ctx)
+	// Backstop bền vững, cùng lý do như đường khoá tài khoản: tầng usecase xoá
+	// Redis TRỰC TIẾP sau khi commit, và nếu lệnh đó lỡ thì không còn gì thu hồi
+	// phiên nữa — credential bị đánh cắp sống tới hết absolute TTL, tức ba mươi
+	// ngày. Đặt lại mật khẩu chính là thao tác nạn nhân dùng để giết credential
+	// đó, nên đây là call site ít được phép lỡ nhất.
+	//
+	// Enqueue TRONG transaction nên job chỉ tồn tại khi việc đổi mật khẩu thật sự
+	// commit. Job khớp theo SID, nên nếu user đăng nhập lại trước khi job chạy thì
+	// phiên mới mang SID khác và không bị giết oan.
+	if r.sessionPurge != nil {
+		if err = r.sessionPurge.EnqueueTx(ctx, tx, userID, uuidStrings(resetIDs)); err != nil {
+			return "", nil, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", nil, err
+	}
+	return userID, uuidStrings(resetIDs), nil
 }
 
 func (r *postgresRepository) ChangePassword(ctx context.Context, userID, sessionID, newHash string, now time.Time) error {
@@ -476,9 +423,6 @@ func (r *postgresRepository) ChangePassword(ctx context.Context, userID, session
 	}
 	changedIDs, err := collectUUIDs(ctx, tx, `UPDATE sessions SET revoked_at=$3,revoked_reason='password_changed' WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL RETURNING id`, userID, sessionID, now)
 	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE session_refresh_tokens SET revoked_at=COALESCE(revoked_at,$3) WHERE session_id IN (SELECT id FROM sessions WHERE user_id=$1 AND id<>$2)`, userID, sessionID, now); err != nil {
 		return err
 	}
 	if err = r.notifySessionEnded(ctx, tx, changedIDs); err != nil {
@@ -738,22 +682,40 @@ func mapGeneratedUser(u dbgen.User) *domain.User {
 
 func pgUUID(v uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: v, Valid: true} }
 
+// UpdateSessionFCMToken ghi địa chỉ push của thiết bị đang gắn với phiên này.
+//
+// Token được lưu ở `device_tokens` khoá theo (user_id, device_id) chứ không nằm
+// trên hàng `sessions`: nó mô tả thiết bị, sống tới khi người dùng gỡ app, và
+// phải tra cứu được cả khi phiên đã hết hạn — nếu không thì người lâu không mở
+// app sẽ không nhận được thông báo nhắc nợ. Phiên ở đây chỉ đóng vai trò xác
+// định thiết bị nào đang nói, nên chữ ký giữ nguyên `sessionID`.
 func (r *postgresRepository) UpdateSessionFCMToken(ctx context.Context, sessionID, fcmToken string) error {
 	sid, err := uuid.Parse(sessionID)
 	if err != nil {
 		return domain.ErrSessionRevoked
 	}
-	affected, err := dbgen.New(r.pool).UpdateSessionFCMToken(ctx, dbgen.UpdateSessionFCMTokenParams{
-		ID:       pgUUID(sid),
-		FcmToken: pgtype.Text{String: fcmToken, Valid: fcmToken != ""},
-	})
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("update session fcm token: %w", err)
+		return err
 	}
-	if affected == 0 {
+	defer tx.Rollback(ctx)
+
+	var userID, deviceID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT user_id,device_id FROM sessions WHERE id=$1 AND revoked_at IS NULL`, sid).Scan(&userID, &deviceID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrSessionRevoked
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("resolve session device: %w", err)
+	}
+
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO device_tokens (user_id,device_id,fcm_token) VALUES ($1,$2,$3)
+		 ON CONFLICT (user_id,device_id) DO UPDATE SET fcm_token=EXCLUDED.fcm_token, updated_at=now()`,
+		userID, deviceID, fcmToken); err != nil {
+		return fmt.Errorf("upsert device token: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func mapWriteError(err error) error {

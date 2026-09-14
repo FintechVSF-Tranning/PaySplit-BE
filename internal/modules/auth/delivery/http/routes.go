@@ -1,19 +1,20 @@
 package http
 
 import (
-	"github.com/go-chi/chi/v5"
 	"net/http"
+
+	"github.com/go-chi/chi/v5"
 )
 
-func (h *Handler) RegisterAuthRoutes(router chi.Router, tokenAuth func(http.Handler) http.Handler) {
+func (h *Handler) RegisterAuthRoutes(router chi.Router) {
 	router.Post("/sign-up", h.SignUp)
 	router.Post("/verify-email", h.VerifyEmail)
 	router.Post("/resend-verification", h.ResendVerification)
 	router.Post("/sign-in", h.SignIn)
-	router.Post("/refresh", h.Refresh)
 	router.Post("/forgot-password", h.ForgotPassword)
 	router.Post("/reset-password", h.ResetPassword)
-	router.With(tokenAuth).Post("/sign-out", h.SignOut)
+	// Không gắn middleware xác thực — xem chú thích ở Handler.SignOut.
+	router.Post("/sign-out", h.SignOut)
 }
 func (h *Handler) RegisterUserRoutes(router chi.Router, liveAuth func(http.Handler) http.Handler, sse *SSEHandler) {
 	router.Group(func(protected chi.Router) {

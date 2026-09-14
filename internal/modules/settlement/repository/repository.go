@@ -37,26 +37,13 @@ type CreatePaymentInput struct {
 	BeforeCommit     BeforeCommit
 }
 
-type SubmitProofInput struct {
+type MarkReceivedInput struct {
 	GroupID        string
 	CallerUserID   string
-	PaymentID      string
-	ObjectKey      string
-	Note           *string
+	DebtID         string
 	IdempotencyKey string
 	RequestHash    string
-	OperationID    string
-	BeforeCommit   BeforeCommit
-}
-
-type PaymentMutationInput struct {
-	GroupID        string
-	CallerUserID   string
-	PaymentID      string
-	Reason         *string
-	IdempotencyKey string
-	RequestHash    string
-	BeforeCommit   BeforeCommit
+	NotifyDebtor   BeforeCommit
 }
 
 type RemindInput struct {
@@ -69,20 +56,21 @@ type RemindInput struct {
 	BeforeCommit   BeforeCommit
 }
 
+type BankTransferInput struct {
+	Transfer domain.BankTransfer
+	// NotifyDebtor/NotifyCreditor chạy trong transaction gạch nợ, chỉ khi thực sự gạch.
+	NotifyDebtor   BeforeCommit
+	NotifyCreditor BeforeCommit
+}
+
 type Repository interface {
 	ListExpenses(context.Context, ListInput) (*domain.ExpensePage, error)
 	ListDebts(context.Context, ListDebtsInput) (*domain.DebtPage, error)
 	CreatePayment(context.Context, CreatePaymentInput) (*domain.Payment, bool, error)
 	GetPayment(context.Context, string, string, string) (*domain.Payment, error)
-	PrepareProof(context.Context, string, string, string, string, string) (string, *domain.Payment, error)
-	ResetProofAttempt(context.Context, string, string, string, string, bool) error
-	SubmitProof(context.Context, SubmitProofInput) (*domain.Payment, error)
-	QueueMediaCleanup(context.Context, string, string) error
-	ConfirmPayment(context.Context, PaymentMutationInput) (*domain.Payment, []string, error)
-	RejectPayment(context.Context, PaymentMutationInput) (*domain.Payment, []string, error)
+	SettleBankTransfer(context.Context, BankTransferInput) (domain.BankMatchResult, error)
+	MarkDebtReceived(context.Context, MarkReceivedInput) (*domain.Payment, []string, error)
 	RemindDebt(context.Context, RemindInput) (*domain.ReminderResult, error)
 	ProcessAutomatedReminders(context.Context, time.Time, int, BeforeCommit) error
-	ProcessStalledPayments(context.Context, time.Time, BeforeCommit) error
 	DeleteExpiredIdempotency(context.Context) error
-	ProcessMediaCleanup(context.Context, func(context.Context, string) error, func(string)) error
 }

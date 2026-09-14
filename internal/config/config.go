@@ -24,6 +24,7 @@ type Config struct {
 	Cleanup    CleanupConfig
 	Firebase   FirebaseConfig
 	River      RiverConfig
+	Redis      RedisConfig
 	Group      GroupConfig
 	OCR        OCRConfig
 	BillImage  BillImageConfig
@@ -32,6 +33,7 @@ type Config struct {
 	Metrics    MetricsConfig
 	Settlement SettlementConfig
 	Realtime   RealtimeConfig
+	SePay      SePayConfig
 }
 
 type RealtimeConfig struct {
@@ -86,12 +88,11 @@ func (c DatabaseConfig) UsesDedicatedListenerPool() bool {
 	return listener != "" && listener != strings.TrimSpace(c.URL)
 }
 
-// AuthConfig chứa các thiết lập cần thiết để phát hành access token.
+// AuthConfig chứa các thiết lập cho luồng xác thực qua email.
+//
+// Không còn khoá ký hay TTL access/refresh token: từ spec 0011, credential là một
+// session ID đục lưu trên Redis, và vòng đời của nó do RedisConfig quyết định.
 type AuthConfig struct {
-	JWTSecret            string
-	JWTIssuer            string
-	AccessTokenTTL       time.Duration
-	RefreshTokenTTL      time.Duration
 	EmailVerificationTTL time.Duration
 	PasswordResetTTL     time.Duration
 	EmailVerificationURL string
@@ -134,6 +135,20 @@ type RiverConfig struct {
 	FetchCooldown     time.Duration
 	PollOnly          bool
 	FetchPollInterval time.Duration
+}
+
+// RedisConfig chứa cấu hình kết nối tới Redis — nơi lưu phiên đăng nhập.
+//
+// Redis nằm trên đường đi của MỌI request có xác thực, nên nó là dependency bắt
+// buộc chứ không phải cache tuỳ chọn: mất Redis là mất khả năng xác thực. Vì vậy
+// URL không có giá trị mặc định và readiness probe phải ping nó.
+type RedisConfig struct {
+	URL         string
+	PoolSize    int
+	DialTimeout time.Duration
+	ReadTimeout time.Duration
+	IdleTTL     time.Duration
+	AbsoluteTTL time.Duration
 }
 
 // GroupConfig chứa cấu hình dùng riêng cho module group management.
@@ -187,14 +202,22 @@ type GroupSyncConfig struct {
 	EventRetention    time.Duration
 }
 
+// SePayConfig cấu hình webhook nhận biến động số dư từ SePay.
+type SePayConfig struct {
+	// WebhookAPIKey phải trùng API Key khai báo trên SePay (SePay gửi header
+	// "Authorization: Apikey <key>"). Để trống thì endpoint trả 503.
+	WebhookAPIKey string
+}
+
 type SettlementConfig struct {
-	VietQRServiceBaseURL   string
-	VietQRTemplate         string
-	ProofMaxBytes          int64
-	ProofSignedURLTTL      time.Duration
-	ReminderStaleAge       time.Duration
-	ReminderMaxCount       int
-	StalledConfirmationAge time.Duration
+	VietQRServiceBaseURL string
+	VietQRTemplate       string
+	// TransferContentPrefix đứng trước mã tham chiếu trong nội dung chuyển
+	// khoản. Có ngân hàng chỉ đẩy giao dịch sang bên đối soát khi nội dung bắt
+	// đầu bằng từ khóa của họ (VietinBank cá nhân qua SePay: "SEVQR").
+	TransferContentPrefix string
+	ReminderStaleAge      time.Duration
+	ReminderMaxCount      int
 }
 
 // Load đọc cấu hình runtime từ biến môi trường, áp dụng giá trị mặc định và
@@ -226,10 +249,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	accessTokenTTL, err := durationEnv("JWT_ACCESS_TOKEN_TTL_MINUTES", 15, time.Minute)
-	if err != nil {
-		return nil, err
-	}
 	// Ngưỡng tính theo IP, mà một IP có thể là cả một văn phòng sau NAT hoặc một
 	// máy đang đăng nhập nhiều tài khoản. Mỗi lần mở app đã tốn hơn chục request
 	// (hồ sơ, nhóm, hóa đơn, công nợ, thông báo), nên mức cũ 30/phút chặn nhầm
@@ -249,10 +268,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	refreshTTL, err := durationEnv("AUTH_REFRESH_TOKEN_TTL_HOURS", 168, time.Hour)
-	if err != nil {
-		return nil, err
-	}
 	verificationTTL, err := durationEnv("AUTH_EMAIL_VERIFICATION_TTL_MINUTES", 10, time.Minute)
 	if err != nil {
 		return nil, err
@@ -298,6 +313,26 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	fcmTimeout, err := durationEnv("FCM_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	redisPoolSize, err := intEnv("REDIS_POOL_SIZE", 20)
+	if err != nil {
+		return nil, err
+	}
+	redisDialTimeout, err := durationEnv("REDIS_DIAL_TIMEOUT_SECONDS", 5, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	redisReadTimeout, err := durationEnv("REDIS_READ_TIMEOUT_SECONDS", 2, time.Second)
+	if err != nil {
+		return nil, err
+	}
+	sessionIdleTTL, err := durationEnv("SESSION_IDLE_TTL_HOURS", 168, time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	sessionAbsoluteTTL, err := durationEnv("SESSION_ABSOLUTE_TTL_HOURS", 720, time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -361,23 +396,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	paymentProofMaxBytes, err := intEnv("PAYMENT_PROOF_MAX_BYTES", 10*1024*1024)
-	if err != nil {
-		return nil, err
-	}
-	paymentProofSignedTTL, err := durationEnv("PAYMENT_PROOF_SIGNED_URL_TTL", 300, time.Second)
-	if err != nil {
-		return nil, err
-	}
 	paymentReminderAge, err := durationEnv("PAYMENT_REMINDER_STALE_HOURS", 72, time.Hour)
 	if err != nil {
 		return nil, err
 	}
 	paymentReminderMax, err := intEnv("PAYMENT_REMINDER_MAX_COUNT", 3)
-	if err != nil {
-		return nil, err
-	}
-	stalledConfirmationAge, err := durationEnv("STALLED_CONFIRMATION_HOURS", 48, time.Hour)
 	if err != nil {
 		return nil, err
 	}
@@ -427,7 +450,11 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		App: AppConfig{
-			Environment:                stringEnv("APP_ENV", "development"),
+			// KHÔNG dùng stringEnv với mặc định "development": mặc định đó biến
+			// luật bắt buộc mật khẩu Redis bên dưới thành tùy chọn, vì một lần
+			// deploy quên đặt APP_ENV sẽ tự nhận là môi trường phát triển và được
+			// nới. Để trống, và coi "trống" là KHÔNG phải development.
+			Environment:                strings.TrimSpace(os.Getenv("APP_ENV")),
 			Host:                       httpHost,
 			Port:                       httpPort,
 			Address:                    httpAddress,
@@ -447,10 +474,6 @@ func Load() (*Config, error) {
 			HealthCheckPeriod: healthCheckPeriod,
 		},
 		Auth: AuthConfig{
-			JWTSecret:            os.Getenv("JWT_SECRET_KEY"),
-			JWTIssuer:            stringEnv("JWT_ISSUER", "paysplit-backend"),
-			AccessTokenTTL:       accessTokenTTL,
-			RefreshTokenTTL:      refreshTTL,
 			EmailVerificationTTL: verificationTTL,
 			PasswordResetTTL:     resetTTL,
 			EmailVerificationURL: os.Getenv("AUTH_EMAIL_VERIFICATION_URL"),
@@ -466,6 +489,14 @@ func Load() (*Config, error) {
 			FetchCooldown:     riverFetchCooldown,
 			PollOnly:          boolEnv("RIVER_POLL_ONLY", false),
 			FetchPollInterval: riverFetchPollInterval,
+		},
+		Redis: RedisConfig{
+			URL:         os.Getenv("REDIS_URL"),
+			PoolSize:    redisPoolSize,
+			DialTimeout: redisDialTimeout,
+			ReadTimeout: redisReadTimeout,
+			IdleTTL:     sessionIdleTTL,
+			AbsoluteTTL: sessionAbsoluteTTL,
 		},
 		Group: GroupConfig{
 			InviteBaseURL:    os.Getenv("APP_INVITE_BASE_URL"),
@@ -505,13 +536,17 @@ func Load() (*Config, error) {
 		Settlement: SettlementConfig{
 			VietQRServiceBaseURL: stringEnv("VIETQR_SERVICE_BASE_URL", "https://img.vietqr.io/image"),
 			VietQRTemplate:       stringEnv("VIETQR_TEMPLATE", "compact"),
-			ProofMaxBytes:        int64(paymentProofMaxBytes), ProofSignedURLTTL: paymentProofSignedTTL,
+			TransferContentPrefix: strings.ToUpper(
+				strings.TrimSpace(os.Getenv("PAYMENT_TRANSFER_CONTENT_PREFIX")),
+			),
 			ReminderStaleAge: paymentReminderAge, ReminderMaxCount: paymentReminderMax,
-			StalledConfirmationAge: stalledConfirmationAge,
 		},
 		Realtime: RealtimeConfig{
 			UserSSEEnabled:          boolEnv("USER_SSE_ENABLED", false),
 			MinUserStreamAppVersion: strings.TrimSpace(os.Getenv("REALTIME_MIN_USER_STREAM_APP_VERSION")),
+		},
+		SePay: SePayConfig{
+			WebhookAPIKey: strings.TrimSpace(os.Getenv("SEPAY_WEBHOOK_API_KEY")),
 		},
 	}
 
@@ -523,6 +558,16 @@ func Load() (*Config, error) {
 
 // Validate từ chối cấu hình thiếu hoặc không nhất quán để startup thất bại
 // trước khi mở cổng mạng hoặc kết nối database.
+// isDevelopment cho biết tiến trình đang chạy ở môi trường phát triển cục bộ.
+// Dùng để nới các ràng buộc vận hành vốn bắt buộc ở mọi nơi khác.
+//
+// Chỉ APP_ENV được đặt TƯỜNG MINH là "development" mới được nới. Chưa đặt thì
+// không phải development: một ràng buộc vận hành mà mặc định là tắt thì không
+// phải ràng buộc, nó chỉ là lời nhắc mà lần deploy vội vàng nào cũng bỏ qua.
+func (c Config) isDevelopment() bool {
+	return strings.EqualFold(strings.TrimSpace(c.App.Environment), "development")
+}
+
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config must not be nil")
@@ -554,16 +599,7 @@ func (c *Config) Validate() error {
 	if c.Database.MaxConnLifetime <= 0 || c.Database.MaxConnIdleTime <= 0 || c.Database.HealthCheckPeriod <= 0 {
 		return errors.New("database duration settings must be positive")
 	}
-	if strings.TrimSpace(c.Auth.JWTSecret) == "" {
-		return errors.New("JWT_SECRET_KEY must not be empty")
-	}
-	if strings.TrimSpace(c.Auth.JWTIssuer) == "" {
-		return errors.New("JWT_ISSUER must not be empty")
-	}
-	if c.Auth.AccessTokenTTL != 15*time.Minute {
-		return errors.New("JWT_ACCESS_TOKEN_TTL_MINUTES must be 15 for auth v1")
-	}
-	if c.Auth.RefreshTokenTTL != 7*24*time.Hour || c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
+	if c.Auth.EmailVerificationTTL != 10*time.Minute || c.Auth.PasswordResetTTL != 10*time.Minute {
 		return errors.New("auth TTL settings must match the v1 contract")
 	}
 	if strings.TrimSpace(c.Auth.EmailVerificationURL) == "" || strings.TrimSpace(c.Auth.PasswordResetURL) == "" {
@@ -595,6 +631,48 @@ func (c *Config) Validate() error {
 	}
 	if int32(c.River.WorkerCount) >= c.Database.MaxConns {
 		return errors.New("RIVER_WORKER_COUNT must be lower than DB_MAX_CONNS so the queue cannot starve the HTTP pool")
+	}
+	if strings.TrimSpace(c.Redis.URL) == "" {
+		return errors.New("REDIS_URL must not be empty")
+	}
+	redisURL, err := url.Parse(strings.TrimSpace(c.Redis.URL))
+	if err != nil || (redisURL.Scheme != "redis" && redisURL.Scheme != "rediss") || redisURL.Host == "" {
+		return errors.New("REDIS_URL must be a redis:// or rediss:// URL with a host")
+	}
+	// Redis giữ TOÀN BỘ phiên đăng nhập ở dạng dùng được ngay: ai nối được tới nó
+	// là đọc được mọi phiên và ghi được phiên mới. Mật khẩu đi vào qua userinfo của
+	// URL vì client chỉ gọi ParseURL — không có field mật khẩu riêng. Chỉ nới ở
+	// development, nơi Redis nằm sau loopback của docker-compose.
+	if !c.isDevelopment() {
+		if redisURL.User == nil {
+			return errors.New("REDIS_URL must carry a password in its userinfo outside development, for example redis://:secret@host:6379/0")
+		}
+		if password, ok := redisURL.User.Password(); !ok || strings.TrimSpace(password) == "" {
+			return errors.New("REDIS_URL userinfo must include a non-empty password outside development")
+		}
+	}
+	if c.Redis.PoolSize <= 0 {
+		return errors.New("REDIS_POOL_SIZE must be positive")
+	}
+	if c.Redis.DialTimeout <= 0 || c.Redis.ReadTimeout <= 0 {
+		return errors.New("REDIS_DIAL_TIMEOUT_SECONDS and REDIS_READ_TIMEOUT_SECONDS must be positive")
+	}
+	if c.Redis.IdleTTL <= 0 {
+		return errors.New("SESSION_IDLE_TTL_HOURS must be positive")
+	}
+	if c.Redis.AbsoluteTTL <= 0 {
+		return errors.New("SESSION_ABSOLUTE_TTL_HOURS must be positive")
+	}
+	// TTL trượt được gia hạn mỗi request; nếu nó vượt trần tuyệt đối thì trần
+	// không còn tác dụng và phiên sống mãi khi người dùng mở app đều đặn.
+	if c.Redis.IdleTTL > c.Redis.AbsoluteTTL {
+		return errors.New("SESSION_IDLE_TTL_HOURS must not exceed SESSION_ABSOLUTE_TTL_HOURS")
+	}
+	// Hàng audit trong `sessions` được đặt expires_at = now + AbsoluteTTL, và worker
+	// dọn rác xoá khi COALESCE(revoked_at, expires_at) < now - Retention. Retention
+	// ngắn hơn khoảng chênh này sẽ xoá mất bản ghi của phiên vẫn còn sống trên Redis.
+	if c.Cleanup.Retention < c.Redis.AbsoluteTTL-c.Redis.IdleTTL {
+		return errors.New("AUTH_RECORD_RETENTION_DAYS must cover SESSION_ABSOLUTE_TTL_HOURS minus SESSION_IDLE_TTL_HOURS so audit rows outlive live sessions")
 	}
 	inviteBaseURL, err := url.Parse(strings.TrimSpace(c.Group.InviteBaseURL))
 	if err != nil || inviteBaseURL.Scheme != "https" || inviteBaseURL.Host == "" || inviteBaseURL.User != nil || inviteBaseURL.RawQuery != "" || inviteBaseURL.Fragment != "" {
@@ -628,11 +706,17 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Settlement.VietQRTemplate) == "" {
 		return errors.New("VIETQR_TEMPLATE must not be empty")
 	}
-	if c.Settlement.ProofMaxBytes <= 0 {
-		return errors.New("PAYMENT_PROOF_MAX_BYTES must be positive")
-	}
-	if c.Settlement.ProofSignedURLTTL <= 0 {
-		return errors.New("PAYMENT_PROOF_SIGNED_URL_TTL must be positive")
+	// Nội dung chuyển khoản của VietQR chỉ chứa được 25 ký tự, mã tham chiếu đã
+	// chiếm 11 và dấu cách 1; tiền tố dài hơn 13 ký tự sẽ bị ngân hàng cắt.
+	if prefix := c.Settlement.TransferContentPrefix; prefix != "" {
+		if len(prefix) > 13 {
+			return errors.New("PAYMENT_TRANSFER_CONTENT_PREFIX must be at most 13 characters")
+		}
+		for _, r := range prefix {
+			if (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+				return errors.New("PAYMENT_TRANSFER_CONTENT_PREFIX must contain only letters and digits")
+			}
+		}
 	}
 	if c.Settlement.ReminderStaleAge <= 0 {
 		return errors.New("PAYMENT_REMINDER_STALE_HOURS must be positive")
@@ -640,8 +724,8 @@ func (c *Config) Validate() error {
 	if c.Settlement.ReminderMaxCount < 1 || c.Settlement.ReminderMaxCount > 3 {
 		return errors.New("PAYMENT_REMINDER_MAX_COUNT must be between 1 and 3")
 	}
-	if c.Settlement.StalledConfirmationAge <= 0 {
-		return errors.New("STALLED_CONFIRMATION_HOURS must be positive")
+	if key := c.SePay.WebhookAPIKey; key != "" && len(key) < 32 {
+		return errors.New("SEPAY_WEBHOOK_API_KEY must be at least 32 characters")
 	}
 	if strings.TrimSpace(c.Realtime.MinUserStreamAppVersion) != "" {
 		parts := strings.Split(c.Realtime.MinUserStreamAppVersion, "+")

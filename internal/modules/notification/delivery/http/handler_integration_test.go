@@ -15,28 +15,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	authdomain "paysplit-backend/internal/modules/auth/domain"
 	notificationhttp "paysplit-backend/internal/modules/notification/delivery/http"
 	notificationdomain "paysplit-backend/internal/modules/notification/domain"
 	notificationrepository "paysplit-backend/internal/modules/notification/repository"
 	notificationpostgres "paysplit-backend/internal/modules/notification/repository/postgres"
 	notificationusecase "paysplit-backend/internal/modules/notification/usecase"
+	"paysplit-backend/internal/platform/session"
 	authmw "paysplit-backend/internal/transport/http/middleware"
 )
 
-type fakeVerifier struct{}
+type fakeSessionStore struct{}
 
-func (fakeVerifier) Verify(token string) (string, string, string, error) {
-	if token == "" {
-		return "", "", "", fmt.Errorf("empty token")
+// Credential đục giờ vừa là thứ client gửi, vừa là khoá tra cứu. Test ở tầng này
+// dùng thẳng credential làm user ID để giữ nguyên cách các ca test đang gọi API.
+func (fakeSessionStore) Get(_ context.Context, raw string, _ time.Time) (*session.Session, error) {
+	if raw == "" {
+		return nil, session.ErrNotFound
 	}
-	return token, "user", "session-" + token, nil
-}
-
-type fakeSessions struct{}
-
-func (fakeSessions) ValidateSession(_ context.Context, userID, sessionID string, _ time.Time) (*authdomain.SessionIdentity, error) {
-	return &authdomain.SessionIdentity{UserID: userID, Role: "user", SessionID: sessionID}, nil
+	return &session.Session{UserID: raw, Role: "user", SID: "session-" + raw}, nil
 }
 
 func testHandler(t *testing.T) (stdhttp.Handler, *pgxpool.Pool, notificationrepository.Repository) {
@@ -56,7 +52,7 @@ func testHandler(t *testing.T) (stdhttp.Handler, *pgxpool.Pool, notificationrepo
 	handler := notificationhttp.NewHandler(service)
 
 	router := chi.NewRouter()
-	liveAuth := authmw.Auth(fakeVerifier{}, fakeSessions{})
+	liveAuth := authmw.Auth(fakeSessionStore{})
 	router.Route("/api/v1", func(api chi.Router) {
 		api.Route("/notifications", func(r chi.Router) { handler.RegisterRoutes(r, liveAuth) })
 	})

@@ -31,7 +31,7 @@ func (n *Notifier) NotifyTx(ctx context.Context, ex settlementrepo.Executor, use
 	if e != nil {
 		return e
 	}
-	notification := &notificationdomain.Notification{UserID: userID, Type: kind, Title: title, Body: body, Payload: raw}
+	notification := &notificationdomain.Notification{UserID: userID, Type: storedType(kind), Title: title, Body: body, Payload: raw}
 	if e = n.repo.CreateNotificationTx(ctx, ex, notification); e != nil {
 		return fmt.Errorf("create settlement notification: %w", e)
 	}
@@ -45,19 +45,29 @@ func (n *Notifier) NotifyTx(ctx context.Context, ex settlementrepo.Executor, use
 func message(kind string) (string, string) {
 	words := strings.ReplaceAll(kind, "_", " ")
 	switch kind {
-	case "payment_submitted":
-		return "Minh chứng thanh toán mới", "Có minh chứng chuyển tiền mới đang chờ bạn xác nhận."
 	case "payment_confirmed":
 		return "Thanh toán đã xác nhận", "Thanh toán của bạn đã được chủ nợ xác nhận thành công."
-	case "payment_rejected":
-		return "Thanh toán bị từ chối", "Minh chứng chuyển tiền bị từ chối. Vui lòng kiểm tra và gửi lại."
+	case "payment_marked_received":
+		return "Thanh toán đã xác nhận", "Người nhận đã xác nhận đã nhận đủ tiền, khoản nợ đã được gạch."
 	case "debt_reminded":
 		return "Nhắc nhở thanh toán nợ", "Bạn có khoản nợ chưa thanh toán. Vui lòng kiểm tra và chuyển khoản."
-	case "payment_stalled_confirmation":
-		return "Nhắc duyệt minh chứng", "Minh chứng thanh toán đã gửi lâu chưa được duyệt. Vui lòng xác nhận."
 	case "payment_created":
 		return "Yêu cầu thanh toán mới", "Đã tạo mã thanh toán VietQR cho khoản nợ."
+	case "payment_bank_confirmed":
+		return "Thanh toán thành công", "Ngân hàng đã ghi nhận chuyển khoản của bạn, khoản nợ đã được gạch."
+	case "payment_bank_received":
+		return "Bạn đã nhận được tiền", "Một khoản chuyển khoản trong nhóm đã vào tài khoản của bạn và được tự động đối soát."
 	default:
 		return "Thông báo từ PaySplit", words
 	}
+}
+
+// storedType gộp các biến thể xác nhận (ngân hàng, người nhận tự xác nhận) về payment_confirmed để
+// client hiện có vẫn điều hướng tới màn hình payment như cũ; chỉ câu chữ khác.
+func storedType(kind string) string {
+	switch kind {
+	case "payment_bank_confirmed", "payment_bank_received", "payment_marked_received":
+		return "payment_confirmed"
+	}
+	return kind
 }
